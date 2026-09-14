@@ -1,6 +1,139 @@
 // ============================================================
-// STEMGeoHS Marine v10.154
+// STEMGeoHS Marine v10.156
 // Coastal Attractor Landscape + Cancer Score Pipeline
+//
+// v10.156 FIX 14: eight statistical bugs found by an external, unit-tested
+//   audit. Every fix below was reproduced BEFORE and corrected AFTER in
+//   standalone Node harnesses run against the extracted functions.
+//
+//   BUG-01 (CRITICAL) - the regime-shift index was INVERTED.
+//     computeScore() fed ccs (the Coastal Cancer Score = STRESS, higher is
+//     worse) straight into mu, the RESILIENCE parameter of the Waddington
+//     double well U(q;mu)=0.25q^4-0.5*mu*q^2 whose barrier is mu^2/4 - so a
+//     larger mu is a DEEPER, more stable well and stress was being read as
+//     stability. Swept against real inputs the old code returned 81% at
+//     CCS=24, 74% at CCS=46 and 66% at CCS=56: monotonically backwards.
+//     mu is now (100-ccs)/100, the same quantity as bowl depth B. sig (the
+//     noise intensity) legitimately rises with stress and is UNCHANGED at
+//     0.04+ccs/2000. That alone still turned over above ccs~76 because the
+//     attempt frequency w0=sqrt(mu/me) collapses as the well flattens, so
+//     w0's curvature is floored at the barrier<=noise crossover mu=2*sqrt(sig),
+//     where Kramers escape stops applying and diffusion-limited escape
+//     saturates instead of vanishing. Verified: p5yr is now monotone
+//     non-decreasing across the FULL 0-100 CCS range (1% -> 97%), and across
+//     the SST 24->34 / DHW 0->20 sweep it reads 22% at CCS=24, 68% at 48 and
+//     79% at 55, against the old 81%/72%/67%.
+//
+//   BUG-02 (HIGH) - mannKendallTest() reported impossible p-values at small n.
+//     It used only the normal approximation. At n=4 with tau=+1 it returned
+//     p=0.0416, but with 4!=24 orderings the smallest ATTAINABLE two-sided p
+//     at n=4 is 2/24=0.0833 - it claimed significance where significance
+//     cannot exist. Now computes the EXACT null distribution of S for n<=10
+//     with no ties, via the standard Mahonian (inversion-count) recursion,
+//     and adds the missing TIE CORRECTION plus the standard continuity
+//     correction to the normal branch it falls back to. Validated against
+//     brute-force enumeration of all n! orderings for n=4..8: exact match,
+//     max abs error 0.0e+0. n=4 tau=+1 now returns 0.0833 (was 0.0416) and
+//     n=7 tau=+1 returns 0.000397 (was 0.0016). Across all 126,864 untied
+//     orderings at n=4..10, 1,234 significance verdicts change and every one
+//     LOSES significance - none gains it. Return shape preserved; method,
+//     nTieGroups added, and every on-screen verdict now says which null
+//     produced its p-value.
+//
+//   BUG-03 (HIGH) - S13 had no near-zero-denominator guard.
+//     varTrendRatio = secondHalfVar / max(firstHalfVar, 1e-6), so a near-zero
+//     first half inflates the ratio without any genuine surge - real runs
+//     produced +1276%, +2876% and +34.22x at a 6-month window, and that fed a
+//     false "LOCAL CSD SIGNAL DETECTED" banner. S7C (v10.105) and S7D
+//     (v10.109) already had the guard; S13 never got it. The SAME rule is now
+//     ported to STEP 2, STEP 3 COMPARE, STEP 4 FIND SWEET SPOT and the S12
+//     sidebar: firstHalfVar < 0.001 AND |ratio or delta| > 5 -> ARTIFACT,
+//     warned on screen and EXCLUDED from the verdict, the divergence test,
+//     the toolkit tally, the sweet-spot pick and the robustness tally.
+//     Unit-tested: all three real cases flag, genuine surges on real variance
+//     (0.25 -> 2.0, an 8x rise) do not.
+//
+//   BUG-04 (LOW) - version markers disagreed. The header said v10.154, the
+//     sidebar v10.155 and the per-click console banner still said v10.67.
+//     All four self-identification markers now say v10.156. Historical
+//     changelog entries describing what v10.154/v10.155 changed are left
+//     alone - they are history, not self-identification.
+//
+//   BUG-05 (MEDIUM) - computeScore() returned a score from no data.
+//     Every sub-score falls back to a hardcoded mid default when its input is
+//     null (s1=50, s2=50, s3=35, s4b=30, s6=20), so with all six satellite
+//     inputs null it returned a confident CCS=30/100 plus a full Bowl Depth /
+//     omega0 / tau / regime-shift readout: "not measured" was indistinguish-
+//     able from "measured and benign". Now matches computeAquaculture()'s
+//     existing contract - ccs:null, insufficientData:true, an explicit
+//     human-readable dataNote - and EVERY return carries nInputs and
+//     dataCompleteness (the weighted share of the 15/15/15/25/20/10 composite
+//     backed by a real measurement), surfaced in a new sidebar row and two new
+//     CSV columns, with lowConfidence raised below 50%. THRESHOLD: the hard
+//     gate is nInputs===0, the only case where 100% of the composite is
+//     default and "not a score" is unarguable. scoreColors() gained a null
+//     branch (without it a null CCS fell through every band and painted
+//     itself CRITICAL red), and all 20+ downstream displays are guarded.
+//
+//   BUG-06 (MEDIUM) - ToE SNR had no sample-size penalty.
+//     snr = |slope*recordYears| / residualSD carries no information about how
+//     well the slope itself is pinned down, so a 4-point record could be
+//     declared EMERGED as readily as a 44-point one, and S17 displayed that
+//     with full visual weight. Fixed in BOTH ToE paths (computeToESignal and
+//     the calcToE path S17 actually renders) by dividing by the STANDARD
+//     ERROR OF THE SLOPE, se = residualSD / sqrt(Sxx), and comparing against
+//     t_crit(df=n-2) rather than a flat 2.0. For the annual series S17 uses,
+//     Sxx = n(n^2-1)/12 and the residual follows from the fitted slope and
+//     the annual SD already fetched - no new Earth Engine call. EMERGED now
+//     requires BOTH the original amplitude criterion (snr>=2) AND a slope
+//     distinguishable from zero at its own df, and every verdict shows n, df,
+//     t and the 95% bar inline. Unit-tested at equal SNR=3.0: the 4-year
+//     record now reads "not yet" (t=2.18 vs bar 4.30) while 7/12/27/44-year
+//     records still EMERGE - the old rule called all five EMERGED.
+//
+//   BUG-07 (MEDIUM) - S13 STEP 4/5 climatology was not pooled.
+//     COMPARE (STEP 3 / runControlCSD) has recomputed both windows against
+//     ONE pooled climatology since v10.151 FIX 4b; FIND SWEET SPOT never did,
+//     so the two panels measured different quantities - a real Bocas del Toro
+//     run had COMPARE at dAC1=+0.524 and FIND SWEET SPOT at +0.198 for the
+//     SAME site and SAME window. STEP 4 now threads the identical pooled
+//     recompute (computeMonthlyClimatology + jsNodeStatsFixed(series, clim))
+//     using the raw series the permutation test already fetches - ZERO extra
+//     EE calls - and falls back to the per-window figures with an explicit
+//     note if those series do not arrive. Verified: the STEP 4 pooled path is
+//     bit-identical to COMPARE's on the same inputs, and on synthetic data
+//     per-window vs pooled differ by up to 0.46 in dAC1, the same class of
+//     discrepancy the Bocas run showed. STEP 5's OVERLAPPING trajectory is
+//     computed server-side by computeSlidingWindowCSD(), which globally
+//     detrends but never deseasonalizes; pooling it needs an ee.Array
+//     group-by-calendar-month restructure that cannot be verified without a
+//     live GEE run, so instead BOTH outputs now state explicitly that they
+//     measure different quantities and must not be compared. STEP 5's
+//     independent-window test already pooled (v10.129) and is comparable.
+//
+//   BUG-08 (HIGH, design) - power is very low at the window lengths the UI
+//     encouraged. Monte Carlo power of permutationTestDeltaFixed (BEFORE
+//     phi=0.2 vs AFTER phi): 24mo = 5%/19%/28% at phi=0.5/0.7/0.9; 48mo =
+//     23%/63%/87%. At 24 months the test has essentially no power, yet STEP 2
+//     accepted 4-month windows and FIND SWEET SPOT tested 6, 9 and 12-month
+//     windows and could name one of them the "sweet spot". The estimator is
+//     UNCHANGED; the guard rails are new. STEP 2 now REFUSES anything below
+//     24 months outright and labels 24-47 months UNDERPOWERED. FIND SWEET
+//     SPOT's window list changes from [6,9,12,15,18,24] to [6,9,12,24,36,48]
+//     - same count, so the EE call budget and the Bonferroni divisor are
+//     unchanged, but 15 and 18 (underpowered and redundant) are replaced by
+//     the first lengths that can actually detect a real change. 6, 9 and 12
+//     are kept for diagnostics, labelled UNDERPOWERED, and excluded from the
+//     sweet-spot pick, the ROBUSTNESS tally and the significance counts. The
+//     power table itself is printed on screen in STEP 2, STEP 3 and STEP 4 so
+//     the user chooses a window against the real numbers.
+//
+//   NOT FIXED, deliberately: the Bowl Depth composite's 15/15/15/25/20/10
+//   weights and the invented effective-mass term (me = anem_N*0.2 +
+//   urchin_N*0.05) remain uncalibrated - BUG-01 corrects the SIGN and the
+//   monotonicity of the escape rate, it does not turn the index into a
+//   calibrated probability. The panel's own v10.143/v10.155 disclosures on
+//   that point still stand and are unchanged.
 //
 // v10.149 NEW: S12b - Real Significance Test, converts S12 from
 //   heuristic to probabilistic
@@ -2039,30 +2172,98 @@ function normalCDF(z) {
 // statistic Dakos et al. use to ask "is this metric moving in one direction
 // consistently over time, or just bouncing randomly?" Runs client-side in
 // plain JS on the (small, already-evaluated) sliding-window results, so it
-// needs no extra Earth Engine calls. Uses the standard normal approximation
-// for the S-statistic's variance (the conventional Mann-Kendall test; exact
-// for n>~10, which every sliding-window run here will have).
+// needs no extra Earth Engine calls.
+//
+// v10.156 BUG-02 FIX: this used to use ONLY the normal approximation for the
+// S-statistic's variance, which reports arithmetically IMPOSSIBLE p-values at
+// small n. At n=4 with tau=+1 it returned p=0.0416 - but with only 4!=24
+// orderings the SMALLEST two-sided p that can exist at n=4 is 2/24=0.0833, so
+// it was claiming significance where significance cannot be attained. (It also
+// erred the other way in the far tail: n=7 tau=+1 returned 0.0016 when the
+// exact answer is 0.0004.) Now computes the EXACT null distribution of S for
+// small, untied samples, and adds the standard tie correction + continuity
+// correction to the approximation branch it falls back to.
+//
+// mkExactTailP: exact P(S >= absS) under the null, via the standard Mahonian
+// (inversion-count) recursion - the number of permutations of n items with
+// exactly q inversions. S = nPairs - 2*inversions, so the S-tail is an
+// inversion-count tail. Each step convolves the running count with a window of
+// i ones, done here as a sliding sum, so the whole thing is O(n^3) on numbers
+// no bigger than 45 - trivially cheap at the n<=10 it is used for. Validated
+// against brute-force enumeration of all n! orderings for n=4..8: exact match
+// (max abs error 0.0e+0).
+var MK_EXACT_MAX_N = 10;
+function mkExactTailP(n, absS) {
+  var maxInv = n*(n-1)/2;
+  var c = [1];
+  for (var i = 2; i <= n; i++) {
+    var next = [], run = 0;
+    for (var q = 0; q <= maxInv; q++) {
+      run += (q < c.length ? c[q] : 0);
+      if (q-i >= 0) run -= (q-i < c.length ? c[q-i] : 0);
+      next.push(run);
+    }
+    c = next;
+  }
+  var total = 1;
+  for (var f = 2; f <= n; f++) total *= f;
+  var cut = Math.floor((maxInv - absS)/2), cum = 0;
+  for (var q3 = 0; q3 <= cut && q3 <= maxInv; q3++) cum += c[q3];
+  return cum/total;
+}
 function mannKendallTest(values) {
   var clean = [];
   for (var i = 0; i < values.length; i++) {
     if (values[i] !== null && values[i] !== undefined && !isNaN(values[i])) clean.push(values[i]);
   }
   var n = clean.length;
-  if (n < 4) return {tau:null, S:null, z:null, p:null, n:n, error:'insufficient points (n='+n+')'};
-  var S = 0;
+  if (n < 4) return {tau:null, S:null, z:null, p:null, n:n, method:null, nTieGroups:0, error:'insufficient points (n='+n+')'};
+  var S = 0, nTiedPairs = 0;
   for (var a = 0; a < n-1; a++) {
     for (var b = a+1; b < n; b++) {
       var diff = clean[b] - clean[a];
       if (diff > 0) S++;
       else if (diff < 0) S--;
+      else nTiedPairs++;
     }
   }
   var nPairs = n*(n-1)/2;
   var tau = S / nPairs;
-  var varS = n*(n-1)*(2*n+5)/18;
-  var z = varS>0 ? S/Math.sqrt(varS) : 0;
+  var varS0 = n*(n-1)*(2*n+5)/18;
+  // EXACT branch - only valid with no ties, and only worth it at small n
+  if (nTiedPairs === 0 && n <= MK_EXACT_MAX_N) {
+    var pEx = 2*mkExactTailP(n, Math.abs(S));
+    if (pEx > 1) pEx = 1;
+    return {tau:tau, S:S, z:(varS0>0?S/Math.sqrt(varS0):0), p:pEx, n:n,
+      method:'exact', nTieGroups:0, error:null};
+  }
+  // NORMAL branch - now WITH the standard tie correction (previously missing):
+  // varS = [n(n-1)(2n+5) - SUM_ties t(t-1)(2t+5)] / 18
+  var sorted = clean.slice().sort(function(x,y){ return x-y; });
+  var tieTerm = 0, nTieGroups = 0, runLen = 1;
+  for (var s2 = 1; s2 <= n; s2++) {
+    if (s2 < n && sorted[s2] === sorted[s2-1]) { runLen++; }
+    else { if (runLen > 1) { tieTerm += runLen*(runLen-1)*(2*runLen+5); nTieGroups++; } runLen = 1; }
+  }
+  var varS = (n*(n-1)*(2*n+5) - tieTerm)/18;
+  // standard Mann-Kendall continuity correction
+  var z = 0;
+  if (varS > 0) { if (S > 0) z = (S-1)/Math.sqrt(varS); else if (S < 0) z = (S+1)/Math.sqrt(varS); }
   var p = 2*(1-normalCDF(Math.abs(z)));
-  return {tau:tau, S:S, z:z, p:p, n:n, error:null};
+  if (p > 1) p = 1;
+  return {tau:tau, S:S, z:z, p:p, n:n, method:'normal', nTieGroups:nTieGroups, error:null};
+}
+// v10.156 BUG-02: short, readable tag so every on-screen Mann-Kendall verdict
+// says WHICH null distribution produced its p-value, and (for the exact branch)
+// what the smallest attainable p at that n actually is - so a reader can tell
+// "not significant" from "cannot possibly be significant at this sample size".
+function mkMethodTxt(t){
+  if(!t || t.method===null || t.method===undefined) return '';
+  if(t.method==='exact'){
+    var f=1; for(var i=2;i<=t.n;i++) f*=i;
+    return ' [exact null, min attainable p='+(2/f).toFixed(4)+']';
+  }
+  return ' [normal approx'+(t.nTieGroups>0?', tie-corrected, '+t.nTieGroups+' tie group(s)':'')+']';
 }
 // v10.129 NEW: non-overlapping-window trajectory builder, for a
 // METHODOLOGICALLY VALID Mann-Kendall test. mannKendallTest()'s p-value
@@ -2958,7 +3159,11 @@ function computeInterventions(region, fp, sc, dhwv, tv, isReefZone) {
   if(actions.length===0||(actions.length===1&&actions[0].priority==='CONTEXT')) {
     actions.unshift({priority:'STABLE',action:'No urgent intervention indicated by current data',
       basis:'No acute stress signals. Continue monitoring.',
-      waddington:'System resting in stable basin (B='+sc.B.toFixed(2)+'). Preventative monitoring appropriate.'});
+      // v10.156 BUG-05: sc.B is null when computeScore found no usable
+      // satellite input - never print "resting in a stable basin" off it.
+      waddington:(sc&&sc.B!==null&&sc.B!==undefined&&!isNaN(sc.B))?
+        ('System resting in stable basin (B='+sc.B.toFixed(2)+'). Preventative monitoring appropriate.'):
+        ('Bowl depth B not computable - no usable satellite data at this point, so stability cannot be assessed either way.')});
   }
   return actions;
 }
@@ -3074,6 +3279,28 @@ function getSLRScenario(depthMeters, slrMeters) {
   return getEnergyConcentrationIndex(depthMeters.subtract(ee.Image(slrMeters)).max(ee.Image(0.1))).rename('eci_slr_scenario_'+slrMeters+'m');
 }
 
+// v10.156 BUG-06 FIX: two-sided 95% critical value of Student's t.
+// The Time-of-Emergence SNR below had NO sample-size term at all - it divided
+// the signal by the RESIDUAL SD, so a 4-point record could be declared
+// "EMERGED" exactly as easily as a 44-point one, and S17 then displayed that
+// verdict with full visual weight. Dividing by the STANDARD ERROR OF THE SLOPE
+// (se = residualSD / sqrt(Sxx)) instead makes the statistic scale with record
+// length the way it must, and comparing it against t_crit(df) rather than a
+// flat 2.0 puts the bar where the sample size actually places it.
+// Values are the standard two-sided alpha=0.05 t table; between tabulated df
+// the nearest SMALLER df is used, which is the conservative direction.
+var T_CRIT_95 = {1:12.706,2:4.303,3:3.182,4:2.776,5:2.571,6:2.447,7:2.365,8:2.306,
+  9:2.262,10:2.228,11:2.201,12:2.179,13:2.160,14:2.145,15:2.131,16:2.120,17:2.110,
+  18:2.101,19:2.093,20:2.086,22:2.074,24:2.064,26:2.056,28:2.048,30:2.042,
+  40:2.021,50:2.009,60:2.000,80:1.990,100:1.984,120:1.980};
+function tCrit95(df){
+  if(df===null||df===undefined||isNaN(df)||df<1) return Infinity; // df<1 -> nothing is ever significant
+  if(df>=120) return 1.960;
+  var best=1, keys=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,22,24,26,28,30,40,50,60,80,100,120];
+  for(var i=0;i<keys.length;i++){ if(keys[i]<=df) best=keys[i]; }
+  return T_CRIT_95[best];
+}
+
 function computeToESignal(monthlySeries) {
   var valid=monthlySeries.filter(function(d){ return d.v!==null&&d.v!==undefined; });
   var n=valid.length;
@@ -3093,7 +3320,26 @@ function computeToESignal(monthlySeries) {
   var noise=Math.sqrt(sumR2/(n-2));
   var recordYears=xs[xs.length-1]-xs[0], signal=Math.abs(slope*recordYears);
   var snr=noise>0?signal/noise:0;
-  return {slope:slope,intercept:intercept,signal:signal,noise:noise,snr:snr,emerged:snr>=2.0,
+  // v10.156 BUG-06 FIX: sample-size penalty. snr above is a pure AMPLITUDE
+  // ratio (how big the trend is relative to the scatter) and carries no
+  // information about how well the slope itself is pinned down - so a 4-point
+  // record "emerged" as readily as a 44-point one. The standard error of the
+  // slope supplies exactly the missing term: se = residualSD / sqrt(Sxx), with
+  // Sxx = SUM (x - xbar)^2, which is ssXX, already computed above. EMERGED now
+  // requires BOTH that the signal exceed the noise amplitude (the original
+  // ToE criterion, unchanged) AND that the slope be distinguishable from zero
+  // at its own degrees of freedom - so it is no longer reachable from slope
+  // magnitude alone on a tiny record.
+  var seSlope = ssXX>0 ? noise/Math.sqrt(ssXX) : null;
+  var df = n-2;
+  var tStat = (seSlope!==null&&seSlope>0) ? Math.abs(slope)/seSlope : 0;
+  var tc = tCrit95(df);
+  var slopeSignificant = isFinite(tc) && tStat >= tc;
+  return {slope:slope,intercept:intercept,signal:signal,noise:noise,snr:snr,
+    seSlope:seSlope, tStat:tStat, df:df, tCrit:tc, slopeSignificant:slopeSignificant,
+    emerged:(snr>=2.0 && slopeSignificant),
+    nCaveat:(df<10?('SMALL SAMPLE: only '+n+' points (df='+df+'), so the 95% bar sits at t='+
+      (isFinite(tc)?tc.toFixed(3):'n/a')+' rather than ~1.96 - this record cannot establish emergence on trend size alone.'):null),
     direction:slope>0?'RISING':'FALLING',recordYears:recordYears.toFixed(1),nValid:n,error:null};
 }
 
@@ -3506,6 +3752,12 @@ function parseCoordPart(str) {
 }
 
 function scoreColors(s) {
+  // v10.156 BUG-05: a null score is not a low score. Without this guard
+  // (s<30) is false, (s<55) is false ... and a null CCS silently painted
+  // itself CRITICAL red. Now it gets its own neutral, explicitly-labelled
+  // palette so "not measured" can never be read as a severity band.
+  if(s===null||s===undefined||isNaN(s))
+    return {text:'#555555',bg:'#eeeeee',map:'#888888',bar:'#aaaaaa',lbl:'INSUFFICIENT DATA'};
   if(s<30)  return {text:'#0a5c1e',bg:'#d4f5df',map:'#00cc44',bar:'#22cc44',lbl:'DEEP BASIN'};
   if(s<55)  return {text:'#7a5000',bg:'#fff6cc',map:'#ffcc00',bar:'#ddaa00',lbl:'WARNING'};
   if(s<75)  return {text:'#7a2e00',bg:'#ffe8d0',map:'#ff6600',bar:'#ff6600',lbl:'HIGH RISK'};
@@ -3514,6 +3766,45 @@ function scoreColors(s) {
 
 function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var isReefZone=(lat!==undefined&&lon!==undefined)?((lat>-30&&lat<30)&&!isEBUS(lat,lon)):true;
+  // ============================================================
+  // v10.156 BUG-05 FIX - "NOT MEASURED" IS NOT "MEASURED AND BENIGN"
+  // Every sub-score below falls back to a hardcoded mid default when its
+  // input is null (s1=50, s2=50, s3=35, s4b=30, s6=20), so with ALL SIX
+  // satellite inputs null this function used to return a confident
+  // CCS=30/100 plus a full Bowl Depth / omega0 / tau / regime-shift
+  // readout - a score computed from no data at all, indistinguishable on
+  // screen from a genuinely benign, fully-measured reef.
+  // computeAquaculture() already handles this correctly (score=null,
+  // confidence=0, explicit INSUFFICIENT DATA message); this now matches
+  // that contract.
+  // THRESHOLD AND REASONING: the hard gate is nInputs===0 - no satellite
+  // measurement of any kind, so 100% of the composite is default. That is
+  // the only case where "not a score" is unarguable, and it is the case
+  // the audit reproduced. Rather than guess a second arbitrary cut-off,
+  // every return now also carries nInputs and dataCompleteness - the
+  // WEIGHTED share of the 15/15/15/25/20/10 composite that is backed by at
+  // least one real measurement - so a partially-measured score is visibly
+  // qualified instead of silently equated with a fully-measured one, and
+  // lowConfidence is raised when under half the weight is real.
+  // ============================================================
+  var _satIn=[sv,cv,tv,nv,turv,dhwv], nInputs=0;
+  for(var _ii=0;_ii<_satIn.length;_ii++){
+    if(_satIn[_ii]!==null&&_satIn[_ii]!==undefined&&!isNaN(_satIn[_ii])) nInputs++;
+  }
+  var _has=function(v){ return v!==null&&v!==undefined&&!isNaN(v); };
+  var dataCompleteness =
+    (_has(sv)?15:0) +                                   // S1 SST
+    (_has(cv)?15:0) +                                   // S2 Chl-a
+    (_has(turv)?15:0) +                                 // S3 Turbidity
+    ((_has(tv)||_has(dhwv))?25:0) +                     // S4 trend + DHW
+    ((_has(sv)||_has(tv)||_has(cv))?20:0) +             // S5 bio composite
+    (_has(nv)?10:0);                                    // S6 NO2
+  var _missing=[];
+  if(!_has(sv))_missing.push('SST'); if(!_has(cv))_missing.push('Chl-a');
+  if(!_has(turv))_missing.push('Turbidity'); if(!_has(tv))_missing.push('SST trend');
+  if(!_has(dhwv))_missing.push('DHW'); if(!_has(nv))_missing.push('NO2');
+  var dataNote = nInputs+' of 6 satellite inputs present ('+dataCompleteness+'% of the CCS weight backed by a real measurement)'+
+    (_missing.length>0?'. Not measured here: '+_missing.join(', ')+' - those components fall back to hardcoded mid defaults and are NOT evidence of benign conditions.':'.');
   var s1=50;
   if(sv!==null){
     if(sv>32)s1=100; else if(sv>30)s1=Math.round(75+(sv-30)*12.5);
@@ -3553,20 +3844,61 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   }
   F1=isNaN(F1)?0:F1;F2=0;F3=isNaN(F3)?0:F3;F4=isNaN(F4)?0:F4;F5=isNaN(F5)?0:F5;
   var fcT=Math.round(F1+F2+F3+F4+F5);
+  // v10.156 BUG-05: no satellite input at all -> no score. Field corrections
+  // (F1..F5, fcTotal) are still real and are returned unchanged; everything
+  // downstream of the satellite composite is null, and the accuracy figures
+  // (which hardcoded 77% satellite accuracy) drop to 0 because nothing was
+  // measured to be accurate about.
+  if(nInputs===0){
+    return {s1:null,s2:null,s3:null,s4:null,s5:null,s6:null,sat_ccs:null,ccs:null,
+      B:null,mu:null,deltaU:null,meff:null,omega0:null,k:null,p5yr:null,ac1:null,tau:null,
+      fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
+      acc_sat:0,acc_field:fp.accuracy_field_gain||0,acc_total:0,
+      insufficientData:true, lowConfidence:true, nInputs:0, dataCompleteness:0,
+      dataNote:'INSUFFICIENT DATA - no Coastal Cancer Score computed. None of the six '+
+        'satellite inputs (SST, Chl-a, SST trend, NO2, turbidity, DHW) returned a usable '+
+        'value at this point in the analysis window, so every component of the composite '+
+        'would have been a hardcoded default. This can mean (a) the click is on land / has '+
+        'no ocean pixel, or (b) it is real water but a narrow or cloud-covered coastline had '+
+        'no valid observation in this window - check the Depth and S7 readouts to tell which. '+
+        'This is NOT a low-stress result: nothing was measured.'};
+  }
   var ccs=Math.max(0,Math.min(100,csat+fcT));
   if(isNaN(ccs))ccs=csat; if(isNaN(ccs))ccs=30; ccs=Math.max(0,Math.min(100,ccs));
   var B=Math.round((100-ccs))/100;
-  var mu=Math.max(0.01,ccs/100),dU=0.25*mu*mu,sig=0.04+ccs/2000;
+  // v10.156 BUG-01 CRITICAL FIX: the regime-shift index was INVERTED. In the
+  // Waddington double well U(q;mu)=0.25*q^4-0.5*mu*q^2 the barrier is mu^2/4,
+  // so a LARGER mu is a DEEPER, MORE STABLE well. The old line fed ccs (the
+  // Coastal Cancer Score = STRESS, higher is worse) straight into mu, which
+  // inverted the physics: swept against real inputs it returned 81% at CCS=24,
+  // 74% at CCS=46 and 66% at CCS=56 - monotonically backwards. mu is now the
+  // RESILIENCE parameter (100-ccs)/100, i.e. the same quantity as bowl depth B.
+  // sig is the noise intensity and legitimately RISES with stress, so
+  // 0.04+ccs/2000 is directionally correct and is kept unchanged.
+  var mu=Math.max(0.01,(100-ccs)/100),dU=0.25*mu*mu,sig=0.04+ccs/2000;
   var anem_safe=(fp.anem_N!==null&&!isNaN(fp.anem_N))?fp.anem_N:6.0;
   var urch_safe=(fp.urchin_N!==null&&!isNaN(fp.urchin_N))?fp.urchin_N:0.3;
-  var me=Math.max(0.1,anem_safe*0.2+urch_safe*0.05),w0=Math.sqrt(mu/me),k=w0*Math.exp(-dU/sig);
+  // v10.156 BUG-01 (part 2): attempt-frequency floor. w0=sqrt(mu/me) collapses
+  // toward 0 as the well flattens, so with mu fixed p5 still turned back DOWN
+  // above ccs~76 (84% at ccs=75 -> 36% at ccs=100). Kramers barrier crossing
+  // only applies while the barrier dU=0.25*mu^2 exceeds the noise sig; below
+  // that crossover (mu < 2*sqrt(sig)) escape is diffusion-limited and the rate
+  // SATURATES rather than vanishing. Flooring the prefactor curvature at that
+  // self-consistent crossover makes p5 monotone non-decreasing across the full
+  // 0-100 CCS range (1% -> 97%) with no retuning of sig or of the 5-year scale.
+  var muW=Math.max(mu,2*Math.sqrt(sig));
+  var me=Math.max(0.1,anem_safe*0.2+urch_safe*0.05),w0=Math.sqrt(muW/me),k=w0*Math.exp(-dU/sig);
   var p5=isNaN(k)||!isFinite(k)?0:Math.round((1-Math.exp(-k*5))*100);
   p5=Math.max(0,Math.min(100,p5));
   var ac1=tv?Math.min(0.99,Math.max(0.10,0.40+tv*9)):0.50;
   var tau=(B>0&&!isNaN(B))?Math.round(10/B)/10:99;
   return {s1:s1,s2:s2,s3:s3,s4:s4,s5:s5,s6:s6,sat_ccs:csat,ccs:ccs,B:B,mu:mu,deltaU:dU,
     meff:me,omega0:w0,k:k,p5yr:p5,ac1:ac1,tau:tau,fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
-    acc_sat:77,acc_field:fp.accuracy_field_gain||0,acc_total:77+(fp.accuracy_field_gain||0)};
+    acc_sat:77,acc_field:fp.accuracy_field_gain||0,acc_total:77+(fp.accuracy_field_gain||0),
+    // v10.156 BUG-05: reported on EVERY return so a partial-data score is
+    // visibly qualified, not silently equated with a fully-measured one.
+    insufficientData:false, lowConfidence:(dataCompleteness<50),
+    nInputs:nInputs, dataCompleteness:dataCompleteness, dataNote:dataNote};
 }
 
 // MODULE D - SIDEBAR UI
@@ -3583,7 +3915,7 @@ function legRow(hex,main,sub){
 }
 function legDiv(){return ui.Label('',{margin:'3px 0 1px 0',backgroundColor:'#cccccc',height:'1px',stretch:'horizontal'});}
 
-panel.add(lbl('STEMGeoHS Marine v10.155',12,'#ffffff','#1a4a2a',true));
+panel.add(lbl('STEMGeoHS Marine v10.156',12,'#ffffff','#1a4a2a',true));
 var clickLbl = lbl('CLICK coastal reef/shallow water to analyze',10,'#ffffff','#1a5a2a',true);
 panel.add(clickLbl);
 
@@ -3653,6 +3985,48 @@ function repeatChar(ch, n) {
 // rebuild treats AC1 as the PRIMARY indicator and everything else
 // (temporal variance, spatial variance, spatial autocorrelation) as
 // SUPPORTING evidence that raises or lowers confidence around it.
+// v10.156 BUG-03 FIX: near-zero-denominator guard for S13.
+// varTrendRatio = secondHalfVar / max(firstHalfVar, 1e-6), so a near-zero
+// FIRST half inflates the ratio without any genuine surge. S7C already fixed
+// this in v10.105 and S7D in v10.109, but S13 - COMPARE (STEP 3), FIND SWEET
+// SPOT (STEP 4) and the STEP 2 readout - never got the guard. Real S13 runs
+// produced +1276%, +2876% and +34.22x at a 6-month window, and a ratio like
+// that fed a false "LOCAL CSD SIGNAL DETECTED" banner. This is the SAME rule,
+// same numbers and same wording as S7C/S7D: first-half variance < 0.001 AND
+// |ratio or delta| > 5 -> ARTIFACT, warned on screen and EXCLUDED from the
+// CSD tally, the best-window selection and the headline verdict.
+var CSD_VAR_ARTIFACT_VARFIRST = 0.001, CSD_VAR_ARTIFACT_MAG = 5;
+function isVarRatioArtifact(varFirst, magnitude) {
+  return varFirst!==null && varFirst!==undefined && !isNaN(varFirst) &&
+         varFirst < CSD_VAR_ARTIFACT_VARFIRST &&
+         magnitude!==null && magnitude!==undefined && !isNaN(magnitude) &&
+         Math.abs(magnitude) > CSD_VAR_ARTIFACT_MAG;
+}
+var CSD_VAR_ARTIFACT_MSG =
+  '⚠ LIKELY ARTIFACT: first-half variance is near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), inflating the '+
+  'variance ratio - treat this Var value with real caution, not as a genuine surge. It is EXCLUDED '+
+  'from the CSD tally and from the headline verdict (same rule as S7C v10.105 / S7D v10.109).';
+
+// v10.156 BUG-08 FIX: measured power of permutationTestDeltaFixed (Monte
+// Carlo, BEFORE phi=0.2 vs AFTER phi). At 24 months the test has essentially
+// NO power, yet STEP 2 accepted windows down to 4 months, the worked example
+// suggested 24, and FIND SWEET SPOT tested 6/9/12-month windows and could name
+// one of them a "sweet spot". These numbers are now shown on screen and used
+// as real guard rails: below 24 months the test is refused outright; 24-47
+// months is warned prominently; FIND SWEET SPOT's sub-24-month rows are
+// labelled UNDERPOWERED and excluded from the best-window pick and the tally.
+var CSD_MIN_WINDOW_MONTHS = 24;      // hard block below this
+var CSD_RECOMMENDED_WINDOW_MONTHS = 48; // prominent warning below this
+var CSD_POWER_TABLE_TXT =
+  'MEASURED POWER of the permutation test (Monte Carlo, BEFORE phi=0.2 vs AFTER phi):\n'+
+  '  window |  phi=0.5 |  phi=0.7 |  phi=0.9\n'+
+  '  24 mo  |    5%    |   19%    |   28%\n'+
+  '  48 mo  |   23%    |   63%    |   87%\n'+
+  'At 24 months this test has essentially NO power: a real, large loss of resilience\n'+
+  '(phi 0.2 -> 0.7) is missed about 4 times out of 5. A "not significant" result at a\n'+
+  'short window is therefore NOT evidence that nothing happened - it is mostly evidence\n'+
+  'that the window is too short to tell. Use 48+ months wherever the data allow.';
+
 function buildToolkitTally(indicators) {
   var lines=[], nAvail=0, nAgree=0;
   var primaryAvailable=false, primaryAgrees=false, primaryName=null;
@@ -3977,8 +4351,12 @@ panel.add(lbl('Same lat/lon both times. Only the start date + the Label dropdown
 panel.add(lbl('Start date (YYYY-MM-DD):',7,'#334466'));
 var csdTestStartInput = ui.Textbox({placeholder:'e.g. 2021-06-01',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(csdTestStartInput);
-panel.add(lbl('Number of months (4-60):',7,'#334466'));
-var csdTestMonthsInput = ui.Textbox({placeholder:'e.g. 24',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
+panel.add(lbl('Number of months (24-60 - 48+ strongly recommended):',7,'#334466'));
+// v10.156 BUG-08: the power table is on screen, not buried in a comment, so
+// the number typed into this box is chosen against the real numbers.
+panel.add(lbl(CSD_POWER_TABLE_TXT,7,'#aa3300','#fff1e0'));
+panel.add(lbl('Windows below '+CSD_MIN_WINDOW_MONTHS+' months are REFUSED (the box used to accept 4). Windows of '+CSD_MIN_WINDOW_MONTHS+'-'+(CSD_RECOMMENDED_WINDOW_MONTHS-1)+' months run but are labelled UNDERPOWERED - a null result from one of them means "this window cannot tell", not "nothing happened".',7,'#aa3300'));
+var csdTestMonthsInput = ui.Textbox({placeholder:'e.g. 48  (minimum 24)',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(csdTestMonthsInput);
 panel.add(lbl('Label this run as:',7,'#334466'));
 var csdTestWindowLabel = ui.Select({
@@ -4027,11 +4405,29 @@ var csdTestRunBtn = ui.Button({
     if(isNaN(latIn)||isNaN(lonIn)){csdTestStatusV.setValue('Invalid lat/lon format - use: lat, lon'); csdTestStatusV.style().set('color','#aa3300'); return;}
     if(latIn<-90||latIn>90||lonIn<-180||lonIn>180){csdTestStatusV.setValue('Lat must be -90..90, Lon must be -180..180'); csdTestStatusV.style().set('color','#aa3300'); return;}
     var nMonthsIn=parseInt(monthsTxt,10);
-    if(isNaN(nMonthsIn)||nMonthsIn<4||nMonthsIn>60){csdTestStatusV.setValue('Number of months must be 4-60'); csdTestStatusV.style().set('color','#aa3300'); return;}
+    if(isNaN(nMonthsIn)||nMonthsIn<4||nMonthsIn>60){csdTestStatusV.setValue('Number of months must be a number in 24-60 (v10.156: the old 4-month floor is no longer accepted)'); csdTestStatusV.style().set('color','#aa3300'); return;}
+    // v10.156 BUG-08 FIX: HARD BLOCK below 24 months. The BEFORE/AFTER
+    // permutation test this window feeds has measured power of 5-28% at 24
+    // months; below that it is not an underpowered test, it is no test at all,
+    // and every "not significant" it returns is uninterpretable. Refusing is
+    // the honest behaviour - the box previously accepted 4 months.
+    if(nMonthsIn<CSD_MIN_WINDOW_MONTHS){
+      csdTestStatusV.setValue('REFUSED - '+nMonthsIn+' months is too short to support any inference.\n'+
+        'Minimum accepted window is '+CSD_MIN_WINDOW_MONTHS+' months; '+CSD_RECOMMENDED_WINDOW_MONTHS+'+ is strongly recommended.\n\n'+
+        CSD_POWER_TABLE_TXT+'\n\n'+
+        'This is not a formatting error - the statistics below simply cannot say anything\n'+
+        'at this window length, so the tool no longer pretends to run them.');
+      csdTestStatusV.style().set('color','#cc0000'); csdTestStatusV.style().set('backgroundColor','#ffd0d0');
+      csdTestStatusV.style().set('border','2px solid #cc0000'); csdTestStatusV.style().set('whiteSpace','pre');
+      csdTestAc1V.setValue('--'); csdTestVarTrendV.setValue('--'); csdTestThermalV.setValue('--'); csdTestNoteV.setValue('');
+      return;
+    }
+    var shortWindowWarn = (nMonthsIn<CSD_RECOMMENDED_WINDOW_MONTHS) ?
+      ('\n\n\u26A0 UNDERPOWERED WINDOW ('+nMonthsIn+'mo, below the '+CSD_RECOMMENDED_WINDOW_MONTHS+'-month recommendation).\n'+CSD_POWER_TABLE_TXT) : '';
     // v10.84: echo back exactly what was parsed, so a truncated/mistyped
     // coordinate is obvious immediately rather than discovered later.
     csdTestStatusV.setValue('Running CSD test: '+latIn.toFixed(4)+', '+lonIn.toFixed(4)+
-      ' | start '+startTxt+' | '+nMonthsIn+' months | label='+csdTestWindowLabel.getValue()+' ...');
+      ' | start '+startTxt+' | '+nMonthsIn+' months | label='+csdTestWindowLabel.getValue()+' ...'+shortWindowWarn);
     csdTestStatusV.style().set('color','#115511'); csdTestStatusV.style().set('whiteSpace','pre');
     csdTestAc1V.setValue('computing...'); csdTestVarTrendV.setValue('computing...'); csdTestThermalV.setValue('computing...'); csdTestNoteV.setValue('');
     var testPt=ee.Geometry.Point([lonIn,latIn]), testStudy=testPt.buffer(1000);
@@ -4090,14 +4486,21 @@ var csdTestRunBtn = ui.Button({
       var rVar=(res&&res.varTrendRatio!==null&&res.varTrendRatio!==undefined)?res.varTrendRatio:null;
       var rN=(res&&res.nValidMonths!==null&&res.nValidMonths!==undefined)?res.nValidMonths:0;
       var rSkew=(res&&res.skewness!==null&&res.skewness!==undefined)?res.skewness:null;
+      // v10.156 BUG-03: near-zero-denominator guard, same rule as S7C/S7D.
+      var rVF=(res&&res.varFirstHalf!==null&&res.varFirstHalf!==undefined)?res.varFirstHalf:null;
+      var rVarArtifact=isVarRatioArtifact(rVF,rVar);
       csdTestAc1V.setValue(rAC1!==null?rAC1.toFixed(3)+' (n='+rN+' valid months)':'n/a (insufficient valid months, n='+rN+')');
-      csdTestVarTrendV.setValue(rVar!==null?rVar.toFixed(2)+'x'+(rVar>1.5?' RISING':rVar<0.67?' falling':' stable'):'n/a');
-      csdTestNoteV.setValue(rAC1!==null&&rAC1>0.5&&rVar!==null&&rVar>1.3?'CSD pattern present in this window.':'No strong CSD pattern in this window.');
+      csdTestVarTrendV.setValue(rVar!==null?rVar.toFixed(2)+'x'+(rVarArtifact?' \u26A0ARTIFACT':rVar>1.5?' RISING':rVar<0.67?' falling':' stable'):'n/a');
+      csdTestVarTrendV.style().set('color',rVarArtifact?'#aa3300':'#226666');
+      csdTestNoteV.setValue(rVarArtifact?CSD_VAR_ARTIFACT_MSG+' (1st-half variance='+rVF.toFixed(5)+', 2nd-half='+((res&&res.varSecondHalf!==null&&res.varSecondHalf!==undefined)?res.varSecondHalf.toFixed(5):'n/a')+')':
+        (rAC1!==null&&rAC1>0.5&&rVar!==null&&rVar>1.3?'CSD pattern present in this window.':'No strong CSD pattern in this window.'));
       print('=== S13 CSD RESULT ['+windowLabel+'] ===');
       print('Real AC1 (detrended): '+(rAC1!==null?rAC1.toFixed(4):'n/a')+' (n='+rN+')');
       print('Variance trend: '+(rVar!==null?rVar.toFixed(3)+'x':'n/a'));
       print('Skewness (residuals): '+(rSkew!==null?rSkew.toFixed(4):'n/a'));
       var storedResult={ac1:rAC1,varTrend:rVar,skew:rSkew,nMonths:rN,lat:latIn,lon:lonIn,startDate:startTxt,months:nMonthsIn,
+        varFirst:rVF, varSecond:(res&&res.varSecondHalf!==null&&res.varSecondHalf!==undefined)?res.varSecondHalf:null,
+        varArtifact:rVarArtifact,  // v10.156 BUG-03: carried into COMPARE / FIND SWEET SPOT
         seriesTV:(res&&res.seriesTV)?res.seriesTV:null};  // v10.151: raw series kept so COMPARE can pool a shared climatology
       if(windowLabel==='BEFORE event (baseline)'){
         csdBeforeResult=storedResult;
@@ -4604,11 +5007,15 @@ function runControlCSD(bestCtrl, b, a) {
       var ctrlB={
         ac1:(cbRes&&cbRes.realAC1!==null&&cbRes.realAC1!==undefined)?cbRes.realAC1:null,
         varTrend:(cbRes&&cbRes.varTrendRatio!==null&&cbRes.varTrendRatio!==undefined)?cbRes.varTrendRatio:null,
+        // v10.156 BUG-03: first-half variance carried through so the
+        // near-zero-denominator guard can be applied here too.
+        varFirst:(cbRes&&cbRes.varFirstHalf!==null&&cbRes.varFirstHalf!==undefined)?cbRes.varFirstHalf:null,
         n:(cbRes&&cbRes.nValidMonths!==null)?cbRes.nValidMonths:0
       };
       var ctrlA={
         ac1:(caRes&&caRes.realAC1!==null&&caRes.realAC1!==undefined)?caRes.realAC1:null,
         varTrend:(caRes&&caRes.varTrendRatio!==null&&caRes.varTrendRatio!==undefined)?caRes.varTrendRatio:null,
+        varFirst:(caRes&&caRes.varFirstHalf!==null&&caRes.varFirstHalf!==undefined)?caRes.varFirstHalf:null,
         n:(caRes&&caRes.nValidMonths!==null)?caRes.nValidMonths:0
       };
 
@@ -4630,9 +5037,11 @@ function runControlCSD(bestCtrl, b, a) {
         var pStatA=jsNodeStatsFixed(a.seriesTV, pooledClim);
         if(pStatB.realAC1!==null && pStatA.realAC1!==null){
           pairedB={ac1:pStatB.realAC1, varTrend:pStatB.varTrendRatio, skew:pStatB.skewness,
+                   varFirst:pStatB.varFirstHalf, varSecond:pStatB.varSecondHalf,
                    nMonths:pStatB.nValidMonths, lat:b.lat, lon:b.lon,
                    startDate:b.startDate, months:b.months};
           pairedA={ac1:pStatA.realAC1, varTrend:pStatA.varTrendRatio, skew:pStatA.skewness,
+                   varFirst:pStatA.varFirstHalf, varSecond:pStatA.varSecondHalf,
                    nMonths:pStatA.nValidMonths, lat:a.lat, lon:a.lon,
                    startDate:a.startDate, months:a.months};
           var cm=pooledClim._meta||{};
@@ -4659,11 +5068,39 @@ function runControlCSD(bestCtrl, b, a) {
       // v10.153 FIX 10: thresholds from a measured null, not guesses.
       var _thr = getCalibratedThresholds(a.nMonths||b.nMonths||24);
       var THRESH=_thr.varr;
-      var studyVarRose=(sDVar!==null&&sDVar>THRESH);
-      var ctrlVarRose=(cDVar!==null&&cDVar>THRESH);
+
+      // v10.156 BUG-03 FIX: near-zero-denominator guard, ported from S7C
+      // (v10.105) / S7D (v10.109). A near-zero FIRST-half variance in either
+      // window inflates that window's varTrendRatio, and therefore sDVar/cDVar,
+      // without any genuine variance surge - real runs produced +1276%, +2876%
+      // and +34.22x, and a delta like that used to walk straight into the
+      // "LOCAL CSD SIGNAL CANDIDATE" branch below. Any window that trips the
+      // rule has its variance delta EXCLUDED from the verdict, from the
+      // divergence test and from the toolkit tally, and is reported as an
+      // artifact instead of scored.
+      var studyVarArtifact = isVarRatioArtifact(pairedB.varFirst, pairedB.varTrend) ||
+                             isVarRatioArtifact(pairedA.varFirst, pairedA.varTrend) ||
+                             isVarRatioArtifact(pairedB.varFirst, sDVar);
+      var ctrlVarArtifact  = isVarRatioArtifact(ctrlB.varFirst, ctrlB.varTrend) ||
+                             isVarRatioArtifact(ctrlA.varFirst, ctrlA.varTrend) ||
+                             isVarRatioArtifact(ctrlB.varFirst, cDVar);
+      // *Scored are what the VERDICT is allowed to see; sDVar/cDVar stay intact
+      // for display so the reader still sees the raw number AND the warning.
+      var sDVarScored = studyVarArtifact ? null : sDVar;
+      var cDVarScored = ctrlVarArtifact  ? null : cDVar;
+      var varArtifactNote = '';
+      if(studyVarArtifact||ctrlVarArtifact){
+        varArtifactNote = '\n\u26A0 VARIANCE ARTIFACT ('+(studyVarArtifact&&ctrlVarArtifact?'study AND control':studyVarArtifact?'study site':'control site')+
+          '): '+CSD_VAR_ARTIFACT_MSG+'\n  study 1st-half var='+(pairedB.varFirst!==null&&pairedB.varFirst!==undefined?pairedB.varFirst.toFixed(5):'n/a')+
+          ', control 1st-half var='+(ctrlB.varFirst!==null&&ctrlB.varFirst!==undefined?ctrlB.varFirst.toFixed(5):'n/a')+
+          '\n  The verdict below is therefore decided on AC1 and the remaining indicators only.';
+      }
+
+      var studyVarRose=(sDVarScored!==null&&sDVarScored>THRESH);
+      var ctrlVarRose=(cDVarScored!==null&&cDVarScored>THRESH);
       var studyAC1Rose=(sDAC1!==null&&sDAC1>_thr.ac1);   // v10.153: was hardcoded 0.01
 
-      var divergence=(sDVar!==null&&cDVar!==null)?(sDVar-cDVar):null;
+      var divergence=(sDVarScored!==null&&cDVarScored!==null)?(sDVarScored-cDVarScored):null;
       var DIVERG_THRESH=_thr.varr;
       var studyDivergesFromControl=(divergence!==null&&divergence>DIVERG_THRESH&&!studyVarRose&&!ctrlVarRose);
 
@@ -4786,11 +5223,19 @@ function runControlCSD(bestCtrl, b, a) {
           'closer to a known bleaching/collapse event. (Tip: try FIND SWEET SPOT.)';
         vCol='#226644'; vBg='#e8f4ff';
       }
+      // v10.156 BUG-03: with the variance delta excluded as an artifact the
+      // branches above can land on "NO SIGNAL AT EITHER SITE", which would
+      // read as "we measured variance and it was flat". Say what actually
+      // happened, on the verdict text itself, not only in the detail panel.
+      if(studyVarArtifact||ctrlVarArtifact) verdict = verdict + varArtifactNote;
 
       // --- Short, bold headline verdict box (shown FIRST / above the numbers) ---
       // v10.88: this is now a PRELIMINARY headline - it gets upgraded below
       // once spatial indicators arrive, so it's clearly marked as such.
-      csdCompareVerdictV.setValue('[PRELIMINARY - temporal only] '+vTitle+' — fetching spatial indicators...');
+      // v10.156 BUG-03: the artifact flag rides on the headline too, so a
+      // reader who never scrolls to the detail panel still sees it.
+      csdCompareVerdictV.setValue('[PRELIMINARY - temporal only] '+vTitle+
+        ((studyVarArtifact||ctrlVarArtifact)?'  [\u26A0 variance artifact - see detail]':'')+' — fetching spatial indicators...');
       csdCompareVerdictV.style().set('color',vCol);
       csdCompareVerdictV.style().set('backgroundColor',vBg);
       csdCompareVerdictV.style().set('border','2px solid '+vCol);
@@ -4829,13 +5274,19 @@ function runControlCSD(bestCtrl, b, a) {
         'STUDY SITE ('+b.lat+', '+b.lon+'):\n'+
         '  BEFORE ['+b.startDate+', '+b.months+'mo]: AC1='+na(pairedB.ac1)+', Var='+nav(pairedB.varTrend)+'\n'+
         '  AFTER  ['+a.startDate+', '+a.months+'mo]: AC1='+na(pairedA.ac1)+', Var='+nav(pairedA.varTrend)+'\n'+
-        '  DELTA: \u0394AC1='+nad(sDAC1)+', \u0394Var='+nadv(sDVar)+'\n'+
+        '  DELTA: \u0394AC1='+nad(sDAC1)+', \u0394Var='+nadv(sDVar)+(studyVarArtifact?'  \u26A0ARTIFACT (excluded from verdict)':'')+'\n'+
+        '  1st-half variance: BEFORE='+(pairedB.varFirst!==null&&pairedB.varFirst!==undefined?pairedB.varFirst.toFixed(5):'n/a')+
+        ', AFTER='+(pairedA.varFirst!==null&&pairedA.varFirst!==undefined?pairedA.varFirst.toFixed(5):'n/a')+
+        '   (v10.156: shown because the Var ratio divides by it)\n'+
         '\n'+
         'CONTROL SITE ('+bestCtrl.lat.toFixed(2)+', '+bestCtrl.lon.toFixed(2)+
         ', depth='+(bestCtrl.depth_m!==null?bestCtrl.depth_m+'m':'unknown')+'):\n'+
         '  BEFORE ['+b.startDate+', '+b.months+'mo]: AC1='+na(ctrlB.ac1)+', Var='+nav(ctrlB.varTrend)+' (n='+ctrlB.n+'mo)\n'+
         '  AFTER  ['+a.startDate+', '+a.months+'mo]: AC1='+na(ctrlA.ac1)+', Var='+nav(ctrlA.varTrend)+' (n='+ctrlA.n+'mo)\n'+
-        '  DELTA: \u0394AC1='+nad(cDAC1)+', \u0394Var='+nadv(cDVar)+'\n'+
+        '  DELTA: \u0394AC1='+nad(cDAC1)+', \u0394Var='+nadv(cDVar)+(ctrlVarArtifact?'  \u26A0ARTIFACT (excluded from verdict)':'')+'\n'+
+        '  1st-half variance: BEFORE='+(ctrlB.varFirst!==null&&ctrlB.varFirst!==undefined?ctrlB.varFirst.toFixed(5):'n/a')+
+        ', AFTER='+(ctrlA.varFirst!==null&&ctrlA.varFirst!==undefined?ctrlA.varFirst.toFixed(5):'n/a')+'\n'+
+        varArtifactNote+'\n'+
         '\n'+
         detailRegionalLine+'\n'+
         '\n'+
@@ -4848,7 +5299,12 @@ function runControlCSD(bestCtrl, b, a) {
         'at a site with no regime shift; the AC1-OR-variance rule fired on 80%. The\n'+
         'permutation test below rejected 0-9% on those same windows and is the only\n'+
         'verdict in this panel with a known false-positive rate.\n'+
-        '\n'+pooledClimNote;
+        '\n'+pooledClimNote+
+        // v10.156 BUG-08: state the measured power of the test that produced
+        // the p-values below, at THIS window length, right where it is read.
+        '\n\n'+((Math.min(a.months||0,b.months||0)<CSD_RECOMMENDED_WINDOW_MONTHS)?
+          ('\u26A0 UNDERPOWERED WINDOW ('+Math.min(a.months||0,b.months||0)+'mo, below '+CSD_RECOMMENDED_WINDOW_MONTHS+'mo).\n'+CSD_POWER_TABLE_TXT):
+          ('Window length '+Math.min(a.months||0,b.months||0)+'mo is at or above the '+CSD_RECOMMENDED_WINDOW_MONTHS+'-month recommendation.\n'+CSD_POWER_TABLE_TXT));
 
       csdCompareResultV.setValue(result);
       csdCompareResultV.style().set('color','#223344');
@@ -4874,9 +5330,14 @@ function runControlCSD(bestCtrl, b, a) {
           {name:'Temporal AC1 (study)', scored:true, primary:true, available:sDAC1!==null,
             agrees:sDAC1!==null&&sDAC1>0.01,
             display:sDAC1!==null?((sDAC1>0?'+':'')+sDAC1.toFixed(3)):'n/a'},
-          {name:'Temporal Variance (study)', scored:true, primary:false, available:sDVar!==null,
-            agrees:sDVar!==null&&sDVar>THRESH,
-            display:sDVar!==null?((sDVar>0?'+':'')+sDVar.toFixed(2)+'x'):'n/a'},
+          // v10.156 BUG-03: an artifact-inflated variance delta is REPORTED but
+          // not SCORED - scored:false keeps it out of nAvail/nAgree entirely,
+          // the same treatment the v10.150 note already applies elsewhere to
+          // numbers that are not confirmed measurements.
+          {name:'Temporal Variance (study)', scored:!studyVarArtifact, primary:false, available:sDVar!==null,
+            agrees:sDVarScored!==null&&sDVarScored>THRESH,
+            display:(sDVar!==null?((sDVar>0?'+':'')+sDVar.toFixed(2)+'x'):'n/a')+
+              (studyVarArtifact?'  \u26A0ARTIFACT (near-zero 1st-half variance) - NOT counted in the tally':'')},
           {name:'Skewness (study, reported only - direction is system-dependent)', scored:false, primary:false, available:true,
             display:skewDisplay}
         ];
@@ -5130,7 +5591,14 @@ panel.add(legDiv());
 panel.add(sHead('STEP 4 (OPTIONAL) - FIND SWEET SPOT','#1a3a4a'));
 panel.add(lbl('Use this INSTEAD of manually guessing an AFTER window length.',7,'#226666'));
 panel.add(lbl('Requires: a BEFORE window already stored in STEP 2 above. Auto-picks the same control site logic as COMPARE, and now runs a REAL control BEFORE/AFTER comparison (not a fixed baseline) so the numbers match what COMPARE would show.',7,'#226666'));
-panel.add(lbl('Tests 6, 9, 12, 15, 18 and 24-month AFTER windows. For each one it checks: did the STUDY site variance/AC1 rise (LOCAL warning)? Did the CONTROL site variance/AC1 also rise (REGIONAL warning)? The window with the biggest gap between the two is the "sweet spot".',7,'#226666'));
+panel.add(lbl('Tests 6, 9, 12, 24, 36 and 48-month AFTER windows. For each one it checks: did the STUDY site variance/AC1 rise (LOCAL warning)? Did the CONTROL site variance/AC1 also rise (REGIONAL warning)? The window with the biggest gap between the two is the "sweet spot".',7,'#226666'));
+// v10.156 BUG-08: the 6/9/12-month rows are kept for diagnostics but are
+// labelled UNDERPOWERED and can never be named the sweet spot - the test
+// behind them has 5-28% power even at 24 months. 15 and 18 were dropped in
+// favour of 36 and 48, so the same 6 windows now include lengths at which a
+// real change can actually be detected.
+panel.add(lbl(CSD_POWER_TABLE_TXT,7,'#aa3300','#fff1e0'));
+panel.add(lbl('v10.156: the 6, 9 and 12-month rows are shown for diagnostics ONLY. They are labelled UNDERPOWERED, excluded from the sweet-spot pick, excluded from the ROBUSTNESS tally and excluded from the significance counts. Any window whose first-half variance is near-zero is likewise flagged as a variance ARTIFACT and excluded (same rule as S7C/S7D).',7,'#aa3300'));
 panel.add(lbl('This fires 17 Earth Engine calls in parallel (1 control-BEFORE + 6 study-AFTER + 6 control-AFTER + 4 for the real permutation-test p-values below) and can take 30-120 seconds - a live counter below shows progress so it never looks frozen.',7,'#886600'));
 panel.add(lbl('AFTER start date (YYYY-MM-DD):',7,'#334466'));
 var csdAfterStartInput=ui.Textbox({
@@ -5172,7 +5640,15 @@ var csdMultiWindowBtn=ui.Button({
       return;
     }
     var b=csdBeforeResult;
-    var windowLengths=[6,9,12,15,18,24];
+    // v10.156 BUG-08 FIX: the old list was [6,9,12,15,18,24] - every single
+    // entry at or below the point where the permutation test has no power, and
+    // any one of them could be named the "sweet spot". Same COUNT (6, so the
+    // EE call budget and the Bonferroni divisor are unchanged), but 15 and 18
+    // (underpowered, and redundant with 12/24) are replaced by 36 and 48, the
+    // first lengths at which the test can actually detect a real change. 6, 9
+    // and 12 are KEPT but are labelled UNDERPOWERED, excluded from both sweet-
+    // spot rankings and excluded from the robustness tally.
+    var windowLengths=[6,9,12,24,36,48];
     var smartCtrl=getSmartControlSite(b.lat,b.lon);
 
     // Reset styling from any previous run
@@ -5221,6 +5697,43 @@ var csdMultiWindowBtn=ui.Button({
         var cB=multiRes.ctrlBefore, cBVar=(cB&&cB.varTrendRatio!==null&&cB.varTrendRatio!==undefined)?cB.varTrendRatio:null;
         var cBAC1=(cB&&cB.realAC1!==null&&cB.realAC1!==undefined)?cB.realAC1:null;
 
+        // ============================================================
+        // v10.156 BUG-07 FIX - ONE POOLED CLIMATOLOGY, LIKE COMPARE
+        // COMPARE (STEP 3 / runControlCSD) has recomputed BOTH windows
+        // against a SINGLE pooled climatology since v10.151 FIX 4b, but
+        // FIND SWEET SPOT never did: every window here was deseasonalized
+        // against its OWN climatology server-side, so the two panels were
+        // not measuring the same quantity. Real evidence at Bocas del
+        // Toro: COMPARE reported dAC1=+0.524 at 24 months while FIND
+        // SWEET SPOT reported +0.198 for the SAME site and the SAME
+        // window. This threads the identical pooled-climatology recompute
+        // through STEP 4, using the raw {t,v} series the permutation test
+        // below ALREADY fetches (multiRes.permStudyBefore /
+        // permStudyAfterMax / permCtrlBefore / permCtrlAfterMax, all
+        // awaited by bumpProgress before this function runs) - so it costs
+        // ZERO additional Earth Engine calls. Same helpers COMPARE uses:
+        // computeMonthlyClimatology() + jsNodeStatsFixed(series, clim).
+        // A shorter window's months are the first w of the max-length
+        // fetch, exactly as the permutation test already slices them.
+        // ============================================================
+        var poolStudyBefore=null, poolStudyAfterFull=null, poolCtrlBefore=null, poolCtrlAfterFull=null;
+        try {
+          if(multiRes.permStudyBefore)   poolStudyBefore   = groupSeriesByLabel(multiRes.permStudyBefore,'sst')['Study']||null;
+          if(multiRes.permStudyAfterMax) poolStudyAfterFull= groupSeriesByLabel(multiRes.permStudyAfterMax,'sst')['Study']||null;
+          if(multiRes.permCtrlBefore)    poolCtrlBefore    = groupSeriesByLabel(multiRes.permCtrlBefore,'sst')['Control']||null;
+          if(multiRes.permCtrlAfterMax)  poolCtrlAfterFull = groupSeriesByLabel(multiRes.permCtrlAfterMax,'sst')['Control']||null;
+        } catch(ePoolGrp){ print('S13 STEP 4 pooled-climatology grouping failed: '+ePoolGrp); }
+        function fssPooledStats(beforeTV, afterTVFull, w){
+          if(!beforeTV || !afterTVFull) return null;
+          var afterTV = afterTVFull.slice(0, w);
+          if(beforeTV.length<4 || afterTV.length<4) return null;
+          var clim = computeMonthlyClimatology(beforeTV.concat(afterTV));
+          var sB = jsNodeStatsFixed(beforeTV, clim), sA = jsNodeStatsFixed(afterTV, clim);
+          if(sB.realAC1===null || sA.realAC1===null) return null;
+          return {before:sB, after:sA};
+        }
+        var fssPooledUsed=0, fssPooledTried=0;
+
         var rows=[], bestW=null, bestDiv=-Infinity, bestRow=null;
         var bestAc1W=null, bestAc1Rise=-Infinity, bestAc1Row=null;
         // v10.92: table now shows Study \u0394AC1 too - previously only \u0394Var
@@ -5241,15 +5754,36 @@ var csdMultiWindowBtn=ui.Button({
           var sAC1=(sr&&sr.realAC1!==null&&sr.realAC1!==undefined)?sr.realAC1:null;
           var cVR=(cr&&cr.varTrendRatio!==null&&cr.varTrendRatio!==undefined)?cr.varTrendRatio:null;
           var cAC1=(cr&&cr.realAC1!==null&&cr.realAC1!==undefined)?cr.realAC1:null;
+          // v10.156 BUG-03: first-half variances, for the near-zero-denominator guard
+          var sVF=(sr&&sr.varFirstHalf!==null&&sr.varFirstHalf!==undefined)?sr.varFirstHalf:null;
+          var cVF=(cr&&cr.varFirstHalf!==null&&cr.varFirstHalf!==undefined)?cr.varFirstHalf:null;
 
           var bVR=b.varTrend!==null&&b.varTrend!==undefined?b.varTrend:null;
           var bAC1=b.ac1!==null&&b.ac1!==undefined?b.ac1:null;
+          var bVF=(b.varFirst!==null&&b.varFirst!==undefined)?b.varFirst:null;
+          var cBVarW=cBVar, cBAC1W=cBAC1, cBVF=(cB&&cB.varFirstHalf!==null&&cB.varFirstHalf!==undefined)?cB.varFirstHalf:null;
+
+          // v10.156 BUG-07: prefer the pooled-climatology recompute (the same
+          // quantity COMPARE reports) over the per-window server-side numbers.
+          // Falls back silently to the old per-window figures if the raw series
+          // are missing, and the panel says which was used.
+          fssPooledTried++;
+          var _ps = fssPooledStats(poolStudyBefore, poolStudyAfterFull, w);
+          var _pc = fssPooledStats(poolCtrlBefore,  poolCtrlAfterFull,  w);
+          var rowPooled = !!(_ps && _pc);
+          if(rowPooled){
+            fssPooledUsed++;
+            sVR=_ps.after.varTrendRatio;  sAC1=_ps.after.realAC1;  sVF=_ps.after.varFirstHalf;
+            bVR=_ps.before.varTrendRatio; bAC1=_ps.before.realAC1; bVF=_ps.before.varFirstHalf;
+            cVR=_pc.after.varTrendRatio;  cAC1=_pc.after.realAC1;  cVF=_pc.after.varFirstHalf;
+            cBVarW=_pc.before.varTrendRatio; cBAC1W=_pc.before.realAC1; cBVF=_pc.before.varFirstHalf;
+          }
 
           // REAL before/after deltas for both sites (same maths STEP 3 uses)
           var sDVar=(sVR!==null&&bVR!==null)?sVR-bVR:null;
           var sDAC1=(sAC1!==null&&bAC1!==null)?sAC1-bAC1:null;
-          var cDVar=(cVR!==null&&cBVar!==null)?cVR-cBVar:null;
-          var cDAC1=(cAC1!==null&&cBAC1!==null)?cAC1-cBAC1:null;
+          var cDVar=(cVR!==null&&cBVarW!==null)?cVR-cBVarW:null;
+          var cDAC1=(cAC1!==null&&cBAC1W!==null)?cAC1-cBAC1W:null;
           var div=(sDVar!==null&&cDVar!==null)?(sDVar-cDVar):null;
 
           // Scheffer 2009 validation: classic CSD needs BOTH indicators
@@ -5258,14 +5792,33 @@ var csdMultiWindowBtn=ui.Button({
           // the null spread shrinks as the window grows (sd 0.247 at 24mo
           // vs 0.166 at 48mo), so one fixed number cannot serve all six.
           var _wthr = getCalibratedThresholds(w);
-          var scheffer = (sDVar!==null&&sDVar>_wthr.varr&&sDAC1!==null&&sDAC1>_wthr.ac1);
-          var ac1Rose = (sDAC1!==null&&sDAC1>_wthr.ac1);
-          var varRose = (sDVar!==null&&sDVar>_wthr.varr);
 
-          var studyVarRose=(sDVar!==null&&sDVar>_wthr.varr);
-          var ctrlVarRose=(cDVar!==null&&cDVar>_wthr.varr);
+          // v10.156 BUG-03: near-zero-denominator guard, same rule as S7C/S7D
+          // and as COMPARE above. A window whose BEFORE or AFTER half-variance
+          // is near-zero has an inflated Var ratio; its variance delta is
+          // excluded from the verdict, the sweet-spot ranking and the tally.
+          var rowVarArtifact = isVarRatioArtifact(bVF, sDVar) || isVarRatioArtifact(sVF, sVR) ||
+                               isVarRatioArtifact(bVF, bVR) || isVarRatioArtifact(cVF, cVR) ||
+                               isVarRatioArtifact(cBVF, cDVar);
+          // v10.156 BUG-08: a window shorter than CSD_MIN_WINDOW_MONTHS cannot
+          // support inference at all (measured power 5-28% even AT 24 months).
+          var rowUnderpowered = (w < CSD_MIN_WINDOW_MONTHS);
+          var rowExcluded = rowVarArtifact || rowUnderpowered;
+
+          var sDVarScored = rowVarArtifact ? null : sDVar;
+          var cDVarScored = rowVarArtifact ? null : cDVar;
+          var divScored   = rowVarArtifact ? null : div;
+
+          var scheffer = (!rowExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr&&sDAC1!==null&&sDAC1>_wthr.ac1);
+          var ac1Rose = (!rowExcluded&&sDAC1!==null&&sDAC1>_wthr.ac1);
+          var varRose = (sDVarScored!==null&&sDVarScored>_wthr.varr);
+
+          var studyVarRose=(sDVarScored!==null&&sDVarScored>_wthr.varr);
+          var ctrlVarRose=(cDVarScored!==null&&cDVarScored>_wthr.varr);
           var verdict='NO SIGNAL';
-          if(sDVar===null||cDVar===null) verdict='n/a (missing data)';
+          if(rowUnderpowered) verdict='UNDERPOWERED ('+w+'mo < '+CSD_MIN_WINDOW_MONTHS+'mo - cannot support inference, excluded)';
+          else if(rowVarArtifact) verdict='\u26A0ARTIFACT (near-zero 1st-half variance - excluded)';
+          else if(sDVar===null||cDVar===null) verdict='n/a (missing data)';
           else if(studyVarRose&&ctrlVarRose) verdict='GLOBAL';
           else if(studyVarRose&&!ctrlVarRose) verdict='LOCAL CSD';
           else if(!studyVarRose&&div!==null&&div>_wthr.varr) verdict='MARGINAL LOCAL';
@@ -5278,13 +5831,16 @@ var csdMultiWindowBtn=ui.Button({
           if(ac1Rose && !varRose) verdict += ' + AC1 CONFIRMED (var down)';
           else if(ac1Rose && varRose) verdict += ' + AC1 CONFIRMED';
 
-          if(div!==null&&div>bestDiv){bestDiv=div;bestW=w;}
+          // v10.156 BUG-03/BUG-08: excluded rows can never win either ranking.
+          if(!rowExcluded&&divScored!==null&&divScored>bestDiv){bestDiv=divScored;bestW=w;}
           // v10.92: separate AC1-based ranking (primary indicator per Dakos
           // et al. 2012) alongside the existing variance-divergence ranking,
           // so a strong AC1 rise is never hidden just because variance did
           // something else.
-          if(sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}
-          var rowObj={w:w,sDVar:sDVar,cDVar:cDVar,div:div,verdict:verdict,sDAC1:sDAC1,cDAC1:cDAC1,scheffer:scheffer};
+          if(!rowExcluded&&sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}
+          var rowObj={w:w,sDVar:sDVar,cDVar:cDVar,div:div,verdict:verdict,sDAC1:sDAC1,cDAC1:cDAC1,scheffer:scheffer,
+            excluded:rowExcluded, artifact:rowVarArtifact, underpowered:rowUnderpowered,
+            varFirstBefore:bVF, varFirstAfter:sVF, pooled:rowPooled};
           allRows.push(rowObj);
           if(w===bestAc1W) bestAc1Row=rowObj;
         }
@@ -5313,10 +5869,14 @@ var csdMultiWindowBtn=ui.Button({
         // it. This counts how many of the 6 tested windows lean the same
         // direction as the "sweet spot", so an isolated result gets flagged
         // as suspect rather than reported as a confident single answer.
+        // v10.156 BUG-03/BUG-08: excluded rows (artifact or underpowered) are
+        // out of BOTH the numerator and the denominator - counting them in the
+        // denominator would silently understate how isolated a result is.
         var localLeaningRows = allRows.filter(function(r){
-          return r.verdict.indexOf('LOCAL CSD')===0 || r.verdict.indexOf('MARGINAL LOCAL')===0;
+          return !r.excluded && (r.verdict.indexOf('LOCAL CSD')===0 || r.verdict.indexOf('MARGINAL LOCAL')===0);
         });
-        var testedRows = allRows.filter(function(r){ return r.sDVar!==null && r.cDVar!==null; });
+        var testedRows = allRows.filter(function(r){ return !r.excluded && r.sDVar!==null && r.cDVar!==null; });
+        var excludedRows = allRows.filter(function(r){ return r.excluded; });
         var robustNote;
         if(testedRows.length===0){
           robustNote='ROBUSTNESS: no windows had usable data - cannot assess.';
@@ -5336,6 +5896,29 @@ var csdMultiWindowBtn=ui.Button({
             'as a stronger hypothesis to validate with field data, not a confirmed result.';
         }
         rows.push(robustNote);
+        if(excludedRows.length>0){
+          rows.push('EXCLUDED FROM EVERY TALLY AND FROM THE SWEET-SPOT PICK ('+excludedRows.length+' of '+allRows.length+' windows):');
+          excludedRows.forEach(function(r){
+            rows.push('  '+r.w+'mo: '+(r.underpowered?'UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo)':'')+
+              (r.underpowered&&r.artifact?' + ':'')+
+              (r.artifact?'VARIANCE ARTIFACT (1st-half var='+(r.varFirstBefore!==null&&r.varFirstBefore!==undefined?r.varFirstBefore.toFixed(5):'n/a')+')':''));
+          });
+          rows.push('v10.156: sub-'+CSD_MIN_WINDOW_MONTHS+'-month windows are shown for diagnostics only. '+CSD_VAR_ARTIFACT_MSG);
+        }
+        rows.push('');
+        rows.push(fssPooledUsed>0 ?
+          ('v10.156 BUG-07 POOLED CLIMATOLOGY: '+fssPooledUsed+' of '+fssPooledTried+' windows recomputed against ONE\n'+
+           'pooled BEFORE+AFTER climatology - the SAME quantity COMPARE (STEP 3) reports since\n'+
+           'v10.151 FIX 4b. Previously every window here used its own climatology, so the two\n'+
+           'panels measured different things: a real Bocas del Toro run had COMPARE at\n'+
+           '\u0394AC1=+0.524 and FIND SWEET SPOT at +0.198 for the SAME site and SAME window.\n'+
+           'These numbers are now directly comparable with STEP 3. Costs no extra EE calls -\n'+
+           'it reuses the raw series the permutation test below already fetches.') :
+          ('v10.156 BUG-07: pooled-climatology recompute UNAVAILABLE (the raw BEFORE/AFTER series\n'+
+           'did not arrive). These numbers come from per-window climatologies and are therefore\n'+
+           'NOT directly comparable with STEP 3 COMPARE, which pools. Re-run to try again.'));
+        rows.push('');
+        rows.push(CSD_POWER_TABLE_TXT);
         rows.push('');
         rows.push('v10.153 THRESHOLD CALIBRATION: cutoffs are now per-window, set at the 95th');
         rows.push('percentile of |delta| under a measured no-event null (Scripps Pier CTD, 13.6yr).');
@@ -5400,14 +5983,22 @@ var csdMultiWindowBtn=ui.Button({
             var cAC1Sig = cAC1Test.pValue!==null && cAC1Test.pValue<0.05;
             var cVarSig = cVarTest.pValue!==null && cVarTest.pValue<0.05;
             var localSig = (sAC1Sig && !cAC1Sig) || (sVarSig && !cVarSig);
-            if(localSig) uncorrectedLocalCount++;
+            // v10.156 BUG-08: a sub-24-month window's p-value is uninterpretable
+            // (measured power 5-28% AT 24 months, less below) - shown for
+            // transparency, never counted as evidence for or against.
+            var wUnderpowered = (w < CSD_MIN_WINDOW_MONTHS);
+            if(localSig && !wUnderpowered) uncorrectedLocalCount++;
             var minStudyP = Math.min(sAC1Test.pValue!==null?sAC1Test.pValue:1, sVarTest.pValue!==null?sVarTest.pValue:1);
-            if(localSig && minStudyP<bonferroniAlpha) anyCorrectedSig=true;
+            if(localSig && !wUnderpowered && minStudyP<bonferroniAlpha) anyCorrectedSig=true;
             permLines.push(w+'mo    | '+fp(sAC1Test)+'       | '+fp(sVarTest)+'       | '+fp(cAC1Test)+'      | '+fp(cVarTest)+
-              '      | '+(localSig?(minStudyP<bonferroniAlpha?'YES (survives correction)':'YES (uncorrected only)'):'no'));
+              '      | '+(wUnderpowered?'UNDERPOWERED - not counted':
+                          (localSig?(minStudyP<bonferroniAlpha?'YES (survives correction)':'YES (uncorrected only)'):'no')));
           });
           permLines.push(repeatChar('\u2500',72));
-          permLines.push(uncorrectedLocalCount+' of '+windowLengths.length+' windows show a local signal at the uncorrected p<0.05 level.');
+          var nPoweredWindows=windowLengths.filter(function(w){return w>=CSD_MIN_WINDOW_MONTHS;}).length;
+          permLines.push(uncorrectedLocalCount+' of '+nPoweredWindows+' windows that can support inference (>='+CSD_MIN_WINDOW_MONTHS+'mo) show a local signal at the uncorrected p<0.05 level.');
+          permLines.push('');
+          permLines.push(CSD_POWER_TABLE_TXT);
           if(anyCorrectedSig){
             permLines.push('At least one window survives the STRICTER Bonferroni-corrected bar (p<'+bonferroniAlpha.toFixed(4)+') -');
             permLines.push('this is real evidence, not just a lucky window among 6 tries.');
@@ -5499,10 +6090,16 @@ var csdMultiWindowBtn=ui.Button({
         var vBoxColor, vBoxBg, vBoxText;
         if(!bestRow){
           vBoxColor='#cc0000'; vBoxBg='#ffd0d0';
-          vBoxText='NO USABLE DATA\n'+
-            'None of the 6 windows returned a valid divergence value.\n'+
-            'Check that both the study and control coordinates have SST\n'+
-            'coverage for these dates, then try again.';
+          // v10.156 BUG-03/BUG-08: "no usable data" and "every window was
+          // excluded as underpowered or as a variance artifact" are different
+          // findings, and the old text asserted the first for both.
+          vBoxText='NO WINDOW COULD SUPPORT A VERDICT\n'+
+            'None of the 6 windows produced a usable, trustworthy divergence value.\n'+
+            (excludedRows.length>0?
+              ('Excluded: '+excludedRows.map(function(r){return r.w+'mo ('+(r.underpowered?'underpowered':'variance artifact')+')';}).join(', ')+'\n') : '')+
+            (testedRows.length===0?
+              'Check that both the study and control coordinates have SST coverage\nfor these dates, then try again with a longer AFTER window.\n' : '')+
+            '\n'+CSD_POWER_TABLE_TXT;
         } else {
           var ac1Div = (bestRow.sDAC1!==null&&bestRow.cDAC1!==null)?(bestRow.sDAC1-bestRow.cDAC1):null;
           var ac1DivRose = ac1Div!==null && ac1Div>0.01;
@@ -5512,6 +6109,11 @@ var csdMultiWindowBtn=ui.Button({
           var isolatedWarning = localLeaningRows.length<=1 ?
             '\n\u26A0 ISOLATED: only 1 of '+testedRows.length+' windows leans this way - see ROBUSTNESS note in table below before trusting this.' :
             '\n('+localLeaningRows.length+' of '+testedRows.length+' windows lean the same way - see ROBUSTNESS note below.)';
+          // v10.156 BUG-08: say the power of the winning window on the headline.
+          if(bestRow.w<CSD_RECOMMENDED_WINDOW_MONTHS)
+            isolatedWarning += '\n\u26A0 UNDERPOWERED SWEET SPOT ('+bestRow.w+'mo < '+CSD_RECOMMENDED_WINDOW_MONTHS+'mo): see the power table in the data panel below.';
+          if(excludedRows.length>0)
+            isolatedWarning += '\n('+excludedRows.length+' window(s) excluded as underpowered or variance-artifact - listed in the table below.)';
           if(bestRow.verdict.indexOf('LOCAL CSD')===0){
             vBoxColor='#880000'; vBoxBg='#ffd0d0';
             vBoxText='LOCAL CSD SIGNAL DETECTED\n'+
@@ -5764,7 +6366,7 @@ var csdSlideRunBtn=ui.Button({
           var sig = t.p!==null && t.p<0.05;
           var dir = t.tau>0?'RISING':t.tau<0?'FALLING':'flat';
           return name+': tau='+(t.tau>0?'+':'')+t.tau.toFixed(3)+', p='+t.p.toFixed(4)+
-            ' -> '+dir+(sig?' (STATISTICALLY SIGNIFICANT, p<0.05)':' (not significant at p<0.05)')+' [n='+t.n+' window positions]';
+            ' -> '+dir+(sig?' (STATISTICALLY SIGNIFICANT, p<0.05)':' (not significant at p<0.05)')+' [n='+t.n+' window positions]'+mkMethodTxt(t);
         }
 
         var ac1Line = trendVerdict(ac1Trend, 'AC1 trend');
@@ -5808,7 +6410,25 @@ var csdSlideRunBtn=ui.Button({
           headline='NO SIGNIFICANT TREND DETECTED (p>=0.05 for both AC1 and variance)';
           hCol='#556677'; hBg='#eef2f6';
         }
-        csdSlideVerdictV.setValue(headline+'\n'+ac1Line+'\n'+varLine);
+        // v10.156 BUG-07 (2nd path): the OVERLAPPING sliding-window trajectory
+        // above is computed server-side by computeSlidingWindowCSD(), which
+        // applies ONE global linear detrend across the whole series and does
+        // NOT deseasonalize at all. STEP 3 COMPARE and (since v10.156) STEP 4
+        // FIND SWEET SPOT both deseasonalize against ONE POOLED climatology.
+        // Those are different quantities, and pooling this path would need a
+        // server-side ee.Array group-by-calendar-month restructure that cannot
+        // be verified without a live GEE run - so instead of silently shipping
+        // an unverified rewrite, the difference is stated here explicitly. The
+        // independent-window test further below ALREADY pools one climatology
+        // across the whole series (v10.129), so that one IS comparable.
+        var slideQuantityNote =
+          '\n\u26A0 NOT COMPARABLE WITH STEP 3 / STEP 4 (v10.156 BUG-07): this trajectory is\n'+
+          'globally detrended but NOT deseasonalized, while COMPARE (STEP 3) and FIND SWEET\n'+
+          'SPOT (STEP 4) deseasonalize against one pooled BEFORE+AFTER climatology. The AC1\n'+
+          'values here therefore include the seasonal cycle and will read systematically\n'+
+          'higher. Compare trends WITHIN this panel, not against the AC1/Var numbers above.\n'+
+          'The independent-window test below DOES pool one climatology and is comparable.';
+        csdSlideVerdictV.setValue(headline+'\n'+ac1Line+'\n'+varLine+slideQuantityNote);
         csdSlideVerdictV.style().set('color',hCol); csdSlideVerdictV.style().set('backgroundColor',hBg);
         csdSlideVerdictV.style().set('border','2px solid '+hCol); csdSlideVerdictV.style().set('whiteSpace','pre');
 
@@ -5903,6 +6523,10 @@ var csdSlideRunBtn=ui.Button({
             var deseasonVarMK = mannKendallTest(deseasonTraj.map(function(w){return w.variance;}));
 
             var vLines = ['=== REAL SIGNIFICANCE TEST (independent windows, raw + deseasonalized, v10.129) ==='];
+            vLines.push('v10.156 BUG-07: the DESEASONALIZED rows below use ONE pooled climatology across');
+            vLines.push('the whole series, the same kind of quantity STEP 3 COMPARE and STEP 4 FIND SWEET');
+            vLines.push('SPOT now report. The RAW rows, and the overlapping trajectory above, do not');
+            vLines.push('deseasonalize at all - do not compare raw numbers against STEP 3/STEP 4 figures.');
             vLines.push('The trend test above uses OVERLAPPING windows (step=1mo) - consecutive positions');
             vLines.push('share most of their data, which violates Mann-Kendall\'s independence assumption and');
             vLines.push('can report false significant trends even from pure noise (confirmed directly this');
@@ -5917,7 +6541,7 @@ var csdSlideRunBtn=ui.Button({
               var sig = t.p!==null && t.p<0.05;
               var dir = t.tau>0?'RISING':t.tau<0?'FALLING':'flat';
               return name+': tau='+(t.tau>0?'+':'')+t.tau.toFixed(3)+', p='+t.p.toFixed(4)+
-                ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+t.n+' independent windows]';
+                ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+t.n+' independent windows]'+mkMethodTxt(t);
             }
             vLines.push(vLine(rawAC1MK, 'Raw AC1          '));
             vLines.push(vLine(rawVarMK, 'Raw Variance     '));
@@ -7442,8 +8066,15 @@ panel.add(lbl('v10.155 FIX 13: DEMOTED. Everything in this box is an uncalibrate
   '(32,716 GCBD rows, held-out AUC=0.620) - weak, but honestly weak. Read S20e first. '+
   'Nothing here should be quoted as a probability.',7,'#666666'));
 var satCcsV=dynLbl('--','#664400'), fusCcsV=dynLbl('--','#115511'), bowlV=dynLbl('--','#115533');
+// v10.156 BUG-05 NEW: data-completeness readout. computeScore() defaults every
+// unmeasured component to a mid value (s1=50, s2=50, s3=35, s4b=30, s6=20), so
+// "not measured" used to look identical to "measured and benign" - an all-null
+// click returned a confident CCS=30 with a full Bowl Depth readout. This row
+// says, on every click, how much of the score is real.
+var dataCompletenessV=dynLbl('--','#664400');
 var omega0V=dynLbl('--','#115533'), tauV=dynLbl('--','#661111'), ac1V=dynLbl('--','#224411'), p5yrV=dynLbl('--','#880000');
 panel.add(row('Satellite CCS',satCcsV)); panel.add(row('FUSED CCS',fusCcsV));
+panel.add(row('Data completeness (v10.156)',dataCompletenessV));
 panel.add(row('Bowl depth B',bowlV)); panel.add(row('omega0',omega0V));
 panel.add(row('Return tau',tauV)); panel.add(row('AC1 (legacy heuristic)',ac1V)); panel.add(row('Regime-shift index (5yr, uncalibrated)',p5yrV));
 panel.add(lbl('v10.143: relabeled from "P(flip 5yr)" - this is an uncalibrated Kramers-rate-inspired HEURISTIC INDEX, not a real probability of bleaching or collapse (no confusion matrix, not fit against real outcomes). A real, calibrated bleaching-probability model is possible using the Global Coral-Bleaching Database (van Woesik & Kratochwill 2022, 34,846 records, 14,405 real sites) - a genuine future upgrade, not yet built.',7,'#aa6600'));
@@ -7705,7 +8336,7 @@ var toeMkBtn=ui.Button({
         if(sig) nSig++;
         var dir = res.mk.tau>0?'RISING':res.mk.tau<0?'FALLING':'flat';
         lines.push(res.name+': tau='+(res.mk.tau>0?'+':'')+res.mk.tau.toFixed(3)+', p='+res.mk.p.toFixed(4)+
-          ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+res.n+' annual points]');
+          ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+res.n+' annual points]'+mkMethodTxt(res.mk));
         // v10.145 DIAGNOSTIC: Salinity is nominally a 32-year record
         // (1993-2024) in S17 above - if far fewer real annual points
         // show up here, that is a genuine HYCOM data-sparsity finding
@@ -7778,7 +8409,11 @@ function buildAndExport(){
     'sst_annual_c','sst_peak_c','sst_trend_c_per_yr','dhw_c_weeks','dhw_raw_unfiltered','dhw_artifact_flagged',
     'mmm_local_c','chl_a_mg_m3','turbidity_ndti','no2_mol_m2','depth_m',
     'cancer_score_satellite','cancer_score_fused','field_correction',
-    'bowl_depth_B','accuracy_pct','status_label','field_data_available','field_species',
+    'bowl_depth_B','accuracy_pct','status_label',
+    // v10.156 BUG-05: exported alongside the score so a downstream reader can
+    // tell a fully-measured CCS from a mostly-defaulted one (or from none).
+    'ccs_insufficient_data','ccs_n_satellite_inputs','ccs_data_completeness_pct',
+    'field_data_available','field_species',
     'aquaculture_score','aquaculture_confidence_pct','aquaculture_status',
     'bromoform_yield','num_interventions','top_intervention',
     'soil_texture_code','soil_texture_label',
@@ -7801,6 +8436,7 @@ var testExportBtn=ui.Button({label:'Test export (1 sample row)',
       sst_annual_c:25.0,sst_peak_c:27.5,sst_trend_c_per_yr:0.01,dhw_c_weeks:0,dhw_raw_unfiltered:0,dhw_artifact_flagged:false,
       mmm_local_c:27.3,chl_a_mg_m3:null,turbidity_ndti:0.01,no2_mol_m2:0.00005,depth_m:-50,
       cancer_score_satellite:21,cancer_score_fused:21,field_correction:0,bowl_depth_B:0.79,accuracy_pct:77,status_label:'DEEP BASIN',
+      ccs_insufficient_data:false,ccs_n_satellite_inputs:5,ccs_data_completeness_pct:85,
       field_data_available:false,field_species:'none',aquaculture_score:null,aquaculture_confidence_pct:0,aquaculture_status:'INSUFFICIENT DATA',
       bromoform_yield:50,num_interventions:1,top_intervention:'TEST ROW',soil_texture_code:null,soil_texture_label:'n/a',
       earthquake_count_200km:0,earthquake_max_mag_200km:null,volcanic_activity_count_300km:0,
@@ -7978,7 +8614,7 @@ function resetSidebarToComputing() {
   pollutionV.setValue(C); stabilityV.setValue(C); bromoformV.setValue(C);
   aquaScoreV.setValue(C); aquaMissingV.setValue(''); aquaStatusV.setValue(C); kelpNoteV.setValue('Cold-water kelp: checking...');
   soilTextureV.setValue(C); eqStatsV.setValue(C); volcStatsV.setValue(C);
-  satCcsV.setValue('--'); fusCcsV.setValue('--'); bowlV.setValue('--');
+  satCcsV.setValue('--'); fusCcsV.setValue('--'); bowlV.setValue('--'); dataCompletenessV.setValue('--');
   omega0V.setValue('--'); tauV.setValue('--'); ac1V.setValue('--'); p5yrV.setValue('--');
   realAc1V.setValue(C); realVarTrendV.setValue(C); realCsdNoteV.setValue('');
   thermalEpisodesV.setValue(C); thermalMeanV.setValue(C); thermalMaxV.setValue(C); thermalOngoingV.setValue(C);
@@ -8101,7 +8737,7 @@ function analyzeLocation(lat, lon) {
 
   function clip(col){ return col.map(function(img){ return img.clip(study); }); }
 
-  print(''); print('STEMGeoHS Marine v10.67 -- '+region);
+  print(''); print('STEMGeoHS Marine v10.156 -- '+region);
   print('=== MODELS ===');
   print('1. Waddington double-well: U(q;mu) = 0.25*q^4 - 0.5*mu*q^2');
   print('2. Langevin SDE: dx = -dU/dx*dt + sigma*dW (PNAS 2025)');
@@ -8310,6 +8946,14 @@ function analyzeLocation(lat, lon) {
     var sc=computeScore(sv_peak,cv,tv,nv,turv,dhwv,fp,lat,lon);
     sc.sst_annual=sv; sc.sst_peak=sv_peak;
     var cols=scoreColors(sc.ccs);
+    // v10.156 BUG-05: every CCS-derived field can now legitimately be null
+    // ("nothing was measured"), so each of the readouts below goes through
+    // these two helpers instead of calling .toFixed() on a null. scN() for
+    // numbers, scI() for integers/plain values.
+    var scHas=function(v){ return v!==null&&v!==undefined&&!isNaN(v); };
+    var scN=function(v,d,suffix){ return scHas(v)?(v.toFixed(d)+(suffix||'')):'n/a'; };
+    var scI=function(v,suffix){ return scHas(v)?(v+(suffix||'')):'n/a'; };
+    var scInsuf=!!sc.insufficientData;
     loadLayers(study,region,cols,lat);
 
     var peakSeasonTxt = (lat<0) ? 'Nov-Apr' : 'Jun-Oct';
@@ -8349,21 +8993,38 @@ function analyzeLocation(lat, lon) {
     fc4V.style().set('color',fp.Cd!==null?'#553300':'#888888');
     fc5V.style().set('color',fp.recruit_estimated?'#aa6600':fp.recruit!==null?'#115544':'#888888');
 
-    satCcsV.setValue(sc.sat_ccs+'/100');
-    fusCcsV.setValue(sc.ccs+'/100 FUSED'); fusCcsV.style().set('color',cols.text);
-    bowlV.setValue(sc.B.toFixed(2)+(sc.B>0.7?' deep-safe':sc.B>0.5?' moderate':sc.B>0.3?' shallow':' near-flat!'));
-    omega0V.setValue(sc.omega0.toFixed(4)); tauV.setValue(sc.tau.toFixed(1)+'x'); ac1V.setValue(sc.ac1.toFixed(3));
-    p5yrV.setValue(sc.p5yr+'%'+(sc.p5yr>50?' CRITICAL':sc.p5yr>25?' HIGH':sc.p5yr>10?' MOD':' LOW'));
+    // v10.156 BUG-05: the whole Bowl Depth block is now explicitly "n/a -
+    // insufficient data" when nothing was measured, instead of rendering a
+    // full, confident physics readout derived from hardcoded defaults.
+    satCcsV.setValue(scInsuf?'n/a - INSUFFICIENT DATA':scI(sc.sat_ccs,'/100'));
+    fusCcsV.setValue(scInsuf?'n/a - INSUFFICIENT DATA':scI(sc.ccs,'/100 FUSED'));
+    fusCcsV.style().set('color',cols.text);
+    bowlV.setValue(scHas(sc.B)?(sc.B.toFixed(2)+(sc.B>0.7?' deep-safe':sc.B>0.5?' moderate':sc.B>0.3?' shallow':' near-flat!')):'n/a - not measured');
+    omega0V.setValue(scN(sc.omega0,4)); tauV.setValue(scN(sc.tau,1,'x')); ac1V.setValue(scN(sc.ac1,3));
+    p5yrV.setValue(scHas(sc.p5yr)?(sc.p5yr+'%'+(sc.p5yr>50?' CRITICAL':sc.p5yr>25?' HIGH':sc.p5yr>10?' MOD':' LOW')):'n/a - not measured');
     p5yrV.style().set('color',cols.text);
+    // v10.156 BUG-05: data completeness is reported on EVERY click, not just
+    // the all-null one, so a partially-measured score is visibly qualified.
+    dataCompletenessV.setValue(scInsuf?sc.dataNote:
+      (sc.nInputs+'/6 inputs, '+sc.dataCompleteness+'% of CCS weight measured'+
+       (sc.lowConfidence?'  \u26A0 LOW CONFIDENCE - under half the composite is backed by a real measurement':'')+
+       '\n'+sc.dataNote));
+    dataCompletenessV.style().set('color',scInsuf?'#cc0000':sc.lowConfidence?'#aa3300':'#115511');
     // v10.145 NEW: real comparison between the uncalibrated heuristic
     // index and S20e's real, held-out-validated fitted model. bleachPred
     // is computed earlier in this same click handler - reused here, no
     // new EE calls.
     if(bleachPred && !bleachPred.error){
       var heuristicPct = sc.p5yr, modelPct = bleachPred.p*100;
+      if(!scHas(heuristicPct)){
+        // v10.156 BUG-05: no heuristic index to compare against.
+        bowlVsS20eV.setValue('Heuristic index not computed (insufficient satellite data) | S20e real model: '+modelPct.toFixed(1)+'% - nothing to compare it against.');
+        bowlVsS20eV.style().set('color','#888888');
+      } else {
       var gapAbs = Math.abs(heuristicPct-modelPct);
       bowlVsS20eV.setValue('Heuristic: '+heuristicPct+'% | S20e real model: '+modelPct.toFixed(1)+'% | gap: '+gapAbs.toFixed(1)+' points');
       bowlVsS20eV.style().set('color',gapAbs>30?'#aa2200':gapAbs>15?'#aa7700':'#227744');
+      }
     } else {
       bowlVsS20eV.setValue('S20e model unavailable at this point - cannot compare.');
       bowlVsS20eV.style().set('color','#888888');
@@ -8374,19 +9035,25 @@ function analyzeLocation(lat, lon) {
     accFV.style().set('color',fp.hasField?'#115511':'#888888');
     accTV.style().set('color',sc.acc_total>90?'#0a5c1e':sc.acc_total>85?'#664400':'#880000');
 
-    var displayCcs=(!isNaN(sc.ccs)&&sc.ccs!==null)?sc.ccs:sc.sat_ccs;
-    scoreBig.setValue('SCORE: '+displayCcs+'/100  B='+sc.B.toFixed(2));
+    // v10.156 BUG-05: the big headline score, the bar and the interpretation
+    // text all say INSUFFICIENT DATA rather than printing a number, a zero
+    // bar or "DEEP BASIN" when nothing was measured.
+    var displayCcs=scHas(sc.ccs)?sc.ccs:(scHas(sc.sat_ccs)?sc.sat_ccs:null);
+    scoreBig.setValue(scHas(displayCcs)?('SCORE: '+displayCcs+'/100  B='+scN(sc.B,2)):'SCORE: n/a - INSUFFICIENT DATA');
     scoreBig.style().set('color',cols.text); scoreBig.style().set('backgroundColor',cols.bg);
-    scoreBarLbl.setValue(cols.lbl+' ('+sc.ccs+'/100)'); scoreBarLbl.style().set('color',cols.map);
-    barFill.style().set('width',Math.round(sc.ccs*1.9)+'px'); barFill.style().set('backgroundColor',cols.bar);
-    var interp=sc.ccs<30?region+': DEEP BASIN\nB='+sc.B.toFixed(2)+' | Acc='+sc.acc_total+'%\nGREEN dot.':
-      sc.ccs<55?region+': WARNING\nB='+sc.B.toFixed(2)+' | P='+sc.p5yr+'%\nYELLOW dot.':
-      sc.ccs<75?region+': HIGH RISK\nB='+sc.B.toFixed(2)+' | P='+sc.p5yr+'%\nORANGE dot.':
-      region+': CRITICAL\nB='+sc.B.toFixed(2)+' | P='+sc.p5yr+'%\nRED dot.';
+    scoreBarLbl.setValue(scHas(sc.ccs)?(cols.lbl+' ('+sc.ccs+'/100)'):cols.lbl+' (no score)'); scoreBarLbl.style().set('color',cols.map);
+    barFill.style().set('width',(scHas(sc.ccs)?Math.round(sc.ccs*1.9):0)+'px'); barFill.style().set('backgroundColor',cols.bar);
+    var interp=!scHas(sc.ccs)?
+      (region+': INSUFFICIENT DATA\nNo Coastal Cancer Score computed - '+sc.nInputs+'/6 satellite\ninputs available. GREY dot. This is NOT a low-stress result.'):
+      sc.ccs<30?region+': DEEP BASIN\nB='+scN(sc.B,2)+' | Acc='+sc.acc_total+'%\nGREEN dot.':
+      sc.ccs<55?region+': WARNING\nB='+scN(sc.B,2)+' | P='+scI(sc.p5yr)+'%\nYELLOW dot.':
+      sc.ccs<75?region+': HIGH RISK\nB='+scN(sc.B,2)+' | P='+scI(sc.p5yr)+'%\nORANGE dot.':
+      region+': CRITICAL\nB='+scN(sc.B,2)+' | P='+scI(sc.p5yr)+'%\nRED dot.';
     scoreInterp.setValue(interp); scoreInterp.style().set('color',cols.text); scoreInterp.style().set('backgroundColor',cols.bg);
     floatP.style().set('border','2px solid '+cols.map);
     fN.style().set('color',cols.map); fN.setValue(region);
-    fS.setValue('Score: '+sc.ccs+'/100  B='+sc.B.toFixed(2)+'  Acc:'+sc.acc_total+'%'); fS.style().set('color',cols.map);
+    fS.setValue(scHas(sc.ccs)?('Score: '+sc.ccs+'/100  B='+scN(sc.B,2)+'  Acc:'+sc.acc_total+'%'):'Score: n/a - INSUFFICIENT DATA ('+sc.nInputs+'/6 satellite inputs)');
+    fS.style().set('color',cols.map);
     fB.setValue((fp.hasField?fp.species.split('(')[0]:'SAT ONLY')+' | '+cols.lbl);
 
     // Algae S7
@@ -8483,8 +9150,14 @@ function analyzeLocation(lat, lon) {
     var nValidMonths=(csdRes&&csdRes.nValidMonths!==null&&csdRes.nValidMonths!==undefined)?csdRes.nValidMonths:0;
     realAc1V.setValue(realAC1!==null?realAC1.toFixed(3)+' (n='+nValidMonths+' months)':'n/a (insufficient valid months, n='+nValidMonths+')');
     realAc1V.style().set('color',realAC1===null?'#888888':realAC1>0.6?'#aa3300':realAC1>0.3?'#aa6600':'#226666');
-    realVarTrendV.setValue(varTrendRatio!==null?varTrendRatio.toFixed(2)+'x'+(varTrendRatio>1.5?' RISING (possible CSD signal)':varTrendRatio<0.67?' falling':' stable'):'n/a');
-    realVarTrendV.style().set('color',varTrendRatio===null?'#888888':varTrendRatio>1.5?'#aa3300':'#226666');
+    // v10.156 BUG-03: same near-zero-denominator guard as S7C/S7D/S13 - the
+    // "RISING (possible CSD signal)" tag must not fire off an inflated ratio.
+    var s12VarFirst=(csdRes&&csdRes.varFirstHalf!==null&&csdRes.varFirstHalf!==undefined)?csdRes.varFirstHalf:null;
+    var s12VarArtifact=isVarRatioArtifact(s12VarFirst,varTrendRatio);
+    realVarTrendV.setValue(varTrendRatio!==null?varTrendRatio.toFixed(2)+'x'+
+      (s12VarArtifact?' \u26A0ARTIFACT (1st-half variance near-zero: '+s12VarFirst.toFixed(5)+') - not a CSD signal':
+       varTrendRatio>1.5?' RISING (possible CSD signal)':varTrendRatio<0.67?' falling':' stable'):'n/a');
+    realVarTrendV.style().set('color',varTrendRatio===null?'#888888':s12VarArtifact?'#aa3300':varTrendRatio>1.5?'#aa3300':'#226666');
     // v10.87 FIX: this note used to say "Both AC1 and variance rising" -
     // but realAC1>0.5 only means AC1 is CURRENTLY elevated in this one
     // fixed window (no BEFORE baseline exists here at all), not that it
@@ -8492,7 +9165,9 @@ function analyzeLocation(lat, lon) {
     // window) is actually a trend. Calling both "rising" was misleading
     // and could contradict S13's proper BEFORE/AFTER Scheffer test, which
     // computes a real AC1 delta against a stored baseline.
-    if(realAC1!==null&&realAC1>0.5&&varTrendRatio!==null&&varTrendRatio>1.3){
+    if(s12VarArtifact){
+      realCsdNoteV.setValue(CSD_VAR_ARTIFACT_MSG);
+    } else if(realAC1!==null&&realAC1>0.5&&varTrendRatio!==null&&varTrendRatio>1.3){
       realCsdNoteV.setValue('AC1 is elevated AND variance is rising within this single window - worth watching.\n'+
         'NOTE: this is a one-window snapshot with no BEFORE baseline, not a validated before/after test.\n'+
         'For a real Scheffer 2009 BEFORE-vs-AFTER check against a control site, use S13 below.');
@@ -8517,6 +9192,7 @@ function analyzeLocation(lat, lon) {
       eciSLR10V.setValue(eci_slr10.toFixed(3)+' ECI'+(eci_slr10>1.2?' CRITICAL':eci_slr10>1.0?' EXTREME':''));
       eciSLR10V.style().set('color',eci_slr10>1.0?'#aa3300':'#226644');
       var bScore=sc.B, eciNorm=eci_current/1.414, bEci=1.0-eciNorm;
+      var bScoreOk=(bScore!==null&&bScore!==undefined&&!isNaN(bScore)); // v10.156 BUG-05
       // v10.145 FIX: investigated this "agreement" check directly - it
       // was comparing a PURE physical wave-energy metric (depth only)
       // against the broad ecological Fused composite (SST, chlorophyll,
@@ -8525,8 +9201,10 @@ function analyzeLocation(lat, lon) {
       // calculation, since there's no real reason a narrow physics proxy
       // should track a broad ecological score. Relabeled to reflect
       // this honestly instead of implying a validation failure.
-      var closeMatch=Math.abs(bScore-bEci)<0.2;
-      var agreement=closeMatch?'Similar values (within 0.2) - coincidental, not a validation':
+      var closeMatch=bScoreOk&&Math.abs(bScore-bEci)<0.2;
+      var agreement=!bScoreOk?
+        ('Bowl depth B not computed at this point (insufficient satellite data) - nothing to compare the physical wave-exposure index (ECI='+bEci.toFixed(2)+') against.'):
+        closeMatch?'Similar values (within 0.2) - coincidental, not a validation':
         'DIFFERENT, as expected - physical wave-exposure (ECI='+bEci.toFixed(2)+') and broad ecological risk (B='+bScore.toFixed(2)+') measure different things, not the same quantity twice';
       eciValidationV.setValue(agreement);
     } else {
@@ -8571,13 +9249,69 @@ function analyzeLocation(lat, lon) {
     var toeResults={sst:null,chl:null,sal:null,no2:null,ph:null,do_o2:null};
     var toePhAvailable=null, toeDoAvailable=null; // v10.141 split: null=pending, true once computed, false if unavailable - previously one shared flag, now independent since pH and DO resolve separately
 
+    // v10.156 BUG-06 FIX: this is the path S17 actually displays, and it had
+    // no sample-size term whatsoever - snr = |slope*nYears| / stdDev(annual
+    // values), so pH (4 annual points) could be declared EMERGED exactly as
+    // readily as SST (44 points), and was then coloured and printed with the
+    // same weight. Everything needed to fix it is already in hand: the annual
+    // series is one point per year on an evenly-spaced year index t=0..n-1, so
+    //   Sxx     = SUM (t - tbar)^2 = n(n^2-1)/12
+    //   SStotal = (n-1) * noise^2            (noise is the sample SD of y)
+    //   SSres   = SStotal - slope^2 * Sxx
+    //   residSD = sqrt(SSres/(n-2)),  se_slope = residSD / sqrt(Sxx)
+    // No extra Earth Engine call, no new asset - pure arithmetic on values
+    // already fetched. EMERGED now requires the amplitude criterion (snr>=2,
+    // unchanged) AND |slope|/se_slope >= t_crit(df=n-2).
     function calcToE(r, nYears){
-      if(!r||r.scale===null||r.scale===undefined||r.noise===null||r.noise===undefined) return {snr:null,emerged:false,error:'no data'};
-      var sl=r.scale, ns=r.noise;
+      if(!r||r.scale===null||r.scale===undefined||r.noise===null||r.noise===undefined)
+        return {snr:null,emerged:false,n:null,df:null,tStat:null,tCrit:null,slopeSignificant:false,error:'no data'};
+      var sl=r.scale, ns=r.noise, n=nYears;
       var signal=Math.abs(sl*nYears), snr=ns>0?signal/ns:0;
-      return {slope:sl,noise:ns,signal:signal,snr:snr,emerged:snr>=2.0,direction:sl>0?'RISING':'FALLING',error:null};
+      var Sxx=(n>=2)?(n*(n*n-1)/12):0;
+      // ee.Reducer.stdDev() is the POPULATION SD in Earth Engine (the sample
+      // form is sampleStdDev()), so SStotal = n*sd^2. If EE's convention were
+      // the sample form this overstates SStotal slightly, which overstates the
+      // residual and therefore UNDERSTATES t - the conservative direction, so
+      // the assumption cannot manufacture an EMERGED verdict.
+      var SStot=(n>=2)?(n*ns*ns):0;
+      // SSres can only go non-positive if the two reducers (linearFit vs
+      // stdDev) saw different valid-pixel counts at this point, or if the
+      // series is a pure trend with no scatter at all. Floored rather than
+      // allowed to produce an infinite t.
+      var SSresRaw=SStot - sl*sl*Sxx;
+      // For one consistent series SSres is non-negative by construction, so a
+      // non-positive value means linearFit and stdDev did not see the same
+      // valid pixels at this point. Rather than divide by a floored residual
+      // and print an absurd t (a real test produced t=100000 on a 4-point
+      // record - precisely the failure mode this fix exists to stop), that
+      // case is marked unreliable and CANNOT carry an EMERGED verdict.
+      var tUnreliable = !(SSresRaw>0);
+      var SSres=Math.max(SStot*1e-9, SSresRaw);
+      var df=n-2;
+      var residSD=(df>0)?Math.sqrt(SSres/df):null;
+      var seSlope=(residSD!==null&&Sxx>0)?(residSD/Math.sqrt(Sxx)):null;
+      var tStat=(!tUnreliable&&seSlope!==null&&seSlope>0)?Math.abs(sl)/seSlope:null;
+      var tc=tCrit95(df);
+      var slopeSignificant=(!tUnreliable&&tStat!==null&&isFinite(tc)&&tStat>=tc);
+      return {slope:sl,noise:ns,signal:signal,snr:snr,
+        n:n, df:df, seSlope:seSlope, tStat:tStat, tCrit:tc, tUnreliable:tUnreliable, slopeSignificant:slopeSignificant,
+        emerged:(snr>=2.0 && slopeSignificant),
+        direction:sl>0?'RISING':'FALLING',error:null};
     }
-    function toeTxt(t,conf){if(!t||t.error)return 'n/a ('+((t&&t.error)||'no data')+')'; return (t.emerged?'EMERGED':'not yet')+'  SNR='+t.snr.toFixed(2)+' ['+conf+'] '+t.direction;}
+    // v10.156 BUG-06: the n / df / t caveat is surfaced INLINE next to every
+    // verdict, so a short-record "not yet" is visibly different from a
+    // long-record one, and an EMERGED verdict always shows what carried it.
+    function toeNTxt(t){
+      if(!t||t.error||t.df===null||t.df===undefined) return '';
+      if(t.tUnreliable)
+        return '  n='+t.n+'yr (df='+t.df+') - slope standard error NOT computable here (the trend and '+
+          'scatter reducers disagree at this pixel), so emergence cannot be established. v10.156.';
+      return '  n='+t.n+'yr (df='+t.df+'), t='+(t.tStat!==null?t.tStat.toFixed(2):'n/a')+
+        ' vs 95% bar t='+(isFinite(t.tCrit)?t.tCrit.toFixed(2):'n/a')+
+        (t.slopeSignificant?'':'  \u2190 slope NOT distinguishable from zero')+
+        (t.df<10?'  \u26A0 SHORT RECORD (df<10) - the 95% bar is well above 1.96 here; trend size alone cannot establish emergence':'');
+    }
+    function toeTxt(t,conf){if(!t||t.error)return 'n/a ('+((t&&t.error)||'no data')+')'; return (t.emerged?'EMERGED':'not yet')+'  SNR='+t.snr.toFixed(2)+' ['+conf+'] '+t.direction+toeNTxt(t);}
 
     function renderToeCompound(){
       var have=[];
@@ -8593,7 +9327,7 @@ function analyzeLocation(lat, lon) {
         (toePhAvailable===false && toeDoAvailable===false) ? ' (pH excluded - see row below; DO excluded - dataset unavailable)' :
         toeDoAvailable===false ? ' (DO excluded - dataset unavailable, see row below)' :
         toePhAvailable===false ? ' (pH excluded - see row below)' : '';
-      toeCompoundV.setValue(nEmerged+'/'+nTotal+' available variables emerged (SNR >= 2.0)'+pendingNote+
+      toeCompoundV.setValue(nEmerged+'/'+nTotal+' available variables emerged (v10.156: SNR >= 2.0 AND slope significant at its own df)'+pendingNote+
         (nTotal===0?'':nEmerged>=4?' | COMPOUND CID DETECTED':nEmerged>=2?' | MULTIPLE CIDs':nEmerged===1?' | SINGLE CID detected':' | No emergence yet'));
       toeCompoundV.style().set('color',nEmerged>=4?'#880000':nEmerged>=2?'#aa3300':nEmerged>=1?'#664400':'#115511');
     }
@@ -8618,10 +9352,10 @@ function analyzeLocation(lat, lon) {
       toeNO2v.style().set('color',tNO2&&tNO2.emerged?'#664400':'#888888');
       renderToeCompound();
       print('=== S17 ToE core (SST/CHL/SAL/NO2) ===');
-      print('SST (44yr): SNR='+(tSST.snr!==null?tSST.snr.toFixed(3):'n/a')+' -> '+(tSST.emerged?'EMERGED':'not yet'));
-      print('CHL (27yr): SNR='+(tCHL.snr!==null?tCHL.snr.toFixed(3):'n/a')+' -> '+(tCHL.emerged?'EMERGED':'not yet'));
-      print('SAL (32yr): SNR='+(tSAL.snr!==null?tSAL.snr.toFixed(3):'n/a')+' -> '+(tSAL.emerged?'EMERGED':'not yet'));
-      print('NO2 (7yr):  SNR='+(tNO2.snr!==null?tNO2.snr.toFixed(3):'n/a')+' -> '+(tNO2.emerged?'EMERGED':'not yet'));
+      print('SST (44yr): SNR='+(tSST.snr!==null?tSST.snr.toFixed(3):'n/a')+' -> '+(tSST.emerged?'EMERGED':'not yet')+toeNTxt(tSST));
+      print('CHL (27yr): SNR='+(tCHL.snr!==null?tCHL.snr.toFixed(3):'n/a')+' -> '+(tCHL.emerged?'EMERGED':'not yet')+toeNTxt(tCHL));
+      print('SAL (32yr): SNR='+(tSAL.snr!==null?tSAL.snr.toFixed(3):'n/a')+' -> '+(tSAL.emerged?'EMERGED':'not yet')+toeNTxt(tSAL));
+      print('NO2 (7yr):  SNR='+(tNO2.snr!==null?tNO2.snr.toFixed(3):'n/a')+' -> '+(tNO2.emerged?'EMERGED':'not yet')+toeNTxt(tNO2));
     });
 
     rToeBGC_PH.evaluate(function(phRes,ePh){
@@ -8643,7 +9377,7 @@ function analyzeLocation(lat, lon) {
         toePHv.setValue(toeTxt(tPH,'REAL asset (COPERNICUS CAR/ph_depth1), surface only, ~4yr record (2022-2025) - LOW confidence, short record'));
         toePHv.style().set('color',tPH&&tPH.emerged?'#880000':'#226644');
         print('=== S17 ToE pH (v10.141: real asset, ~4yr record) ===');
-        print('pH (~4yr, LOW conf): SNR='+(tPH.snr!==null?tPH.snr.toFixed(3):'n/a')+' -> '+(tPH.emerged?'EMERGED':'not yet'));
+        print('pH (~4yr, LOW conf): SNR='+(tPH.snr!==null?tPH.snr.toFixed(3):'n/a')+' -> '+(tPH.emerged?'EMERGED':'not yet')+toeNTxt(tPH));
       }
       renderToeCompound();
     });
@@ -8664,7 +9398,7 @@ function analyzeLocation(lat, lon) {
       toeDOv.style().set('color',tDO&&tDO.emerged?'#880000':'#226644');
       renderToeCompound();
       print('=== S17 ToE DO ===');
-      print('DO  (32yr): SNR='+(tDO.snr!==null?tDO.snr.toFixed(3):'n/a')+' -> '+(tDO.emerged?'EMERGED':'not yet')+' [BGC model surface]');
+      print('DO  (32yr): SNR='+(tDO.snr!==null?tDO.snr.toFixed(3):'n/a')+' -> '+(tDO.emerged?'EMERGED':'not yet')+toeNTxt(tDO)+' [BGC model surface]');
     });
 
     ee.Dictionary({ph:rBGC_PH.get('ph_depth1'), pco2Pa:rBGC_CO2.get('spco2_depth1'), sal:rBGC_SAL.get('salinity_0')}).evaluate(function(bgcData,eBGC){
@@ -8744,9 +9478,16 @@ function analyzeLocation(lat, lon) {
     print('MMM local: '+fmt(mmmv,1)+' | DHW: '+fmt(dhwv,2)+' deg C-wks | Trend: '+fmt(tv,4)+' deg C/yr');
     print('Chl-a: '+fmt(cv,3)+' mg/m3 | Turbidity: '+(turv!==null?fmt(turv,3)+' NDTI':'n/a')+' | NO2: '+fmt(nv,8)+' | Depth: '+fmt(bv,0)+' m (GEBCO)');
     print('=== FUSED RESULT ===');
-    print('Satellite CCS: '+sc.sat_ccs+'/100 | Field correction: '+(sc.fcTotal>0?'+':'')+sc.fcTotal);
-    print('FUSED CCS: '+sc.ccs+'/100 ('+sc.acc_total+'%) | B='+sc.B.toFixed(4)+' | Status: '+cols.lbl);
+    print('Satellite CCS: '+(scHas(sc.sat_ccs)?sc.sat_ccs+'/100':'n/a - INSUFFICIENT DATA')+' | Field correction: '+(sc.fcTotal>0?'+':'')+sc.fcTotal);
+    print('FUSED CCS: '+(scHas(sc.ccs)?sc.ccs+'/100':'n/a - INSUFFICIENT DATA')+' ('+sc.acc_total+'%) | B='+scN(sc.B,4)+' | Status: '+cols.lbl);
+    print('DATA COMPLETENESS (v10.156): '+sc.dataNote);
 
+    // v10.156 BUG-05: the component chart plots the six sub-scores; with no
+    // usable input they are all null, so print the honest reason instead of
+    // an all-empty chart that looks like a rendering failure.
+    if(scInsuf){
+      print('Component chart skipped: '+sc.dataNote);
+    } else {
     var sFC=ee.FeatureCollection([
       ee.Feature(null,{c:'S1 SST\n(15%)',s:sc.s1,f:sc.s1,safe:30}),
       ee.Feature(null,{c:'S2 Chl-a\n(15%)',s:sc.s2,f:sc.s2,safe:30}),
@@ -8756,12 +9497,13 @@ function analyzeLocation(lat, lon) {
       ee.Feature(null,{c:'S6 NO2\n(10%)',s:sc.s6,f:sc.s6,safe:30})
     ]);
     print(ui.Chart.feature.byFeature({features:sFC,xProperty:'c',yProperties:['s','f','safe']}).setChartType('ColumnChart').setOptions({
-      title:'FUSED SCORE: '+sc.ccs+'/100 | '+cols.lbl+' | '+region+' | B='+sc.B.toFixed(3),
+      title:'FUSED SCORE: '+sc.ccs+'/100 | '+cols.lbl+' | '+region+' | B='+scN(sc.B,3),
       series:{0:{color:'#ffaa44',label:'Satellite'},1:{color:cols.bar,label:'Fused'},2:{color:'#4466ff',type:'line',lineWidth:2,pointSize:0,label:'Safe (30)'}},
       vAxis:{title:'Risk 0-100',viewWindow:{min:0,max:100},textStyle:{color:'#cccccc'},titleTextStyle:{color:'#aaaacc'},gridlines:{color:'#1a2a4a'}},
       hAxis:{title:'Component (weight)',textStyle:{color:'#dddddd'}},
       backgroundColor:'#0a1628',titleTextStyle:{color:cols.bar,fontSize:10,bold:true},
       legend:{position:'top',textStyle:{color:'#ffffff',fontSize:9}},chartArea:{backgroundColor:'#0d1f3c',width:'82%'}}));
+    }
 
     // Log click for export
     var trForLog={n:0,mean:null,max:null,ongoing:false};
@@ -8773,6 +9515,7 @@ function analyzeLocation(lat, lon) {
       mmm_local_c:mmmv,chl_a_mg_m3:cv,turbidity_ndti:turv,no2_mol_m2:nv,depth_m:bv,
       cancer_score_satellite:sc.sat_ccs,cancer_score_fused:sc.ccs,field_correction:sc.fcTotal,
       bowl_depth_B:sc.B,accuracy_pct:sc.acc_total,status_label:cols.lbl,
+      ccs_insufficient_data:scInsuf, ccs_n_satellite_inputs:sc.nInputs, ccs_data_completeness_pct:sc.dataCompleteness,
       field_data_available:fp.hasField,field_species:fp.hasField?fp.species:'none',
       aquaculture_score:aq.aqua_score,aquaculture_confidence_pct:aq.aqua_confidence,
       aquaculture_status:aq.status,bromoform_yield:aq.bromo_score,
@@ -8805,7 +9548,59 @@ function analyzeLocation(lat, lon) {
 Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
-print('STEMGeoHS Marine v10.155 -- READY');
+print('STEMGeoHS Marine v10.156 -- READY');
+print('');
+print('v10.156 FIX 14: eight statistical bugs from an external unit-tested audit.');
+print('  BUG-01 CRITICAL: the regime-shift index was INVERTED - computeScore fed');
+print('    ccs (STRESS) into mu, the RESILIENCE parameter of the double well, so');
+print('    higher stress read as a deeper, safer basin. Old sweep: 81% at CCS=24,');
+print('    74% at 46, 66% at 56 - monotonically backwards. mu is now (100-ccs)/100');
+print('    (the same quantity as bowl depth B); sig (noise) still rises with stress,');
+print('    unchanged. The attempt frequency is floored at the barrier<=noise');
+print('    crossover so the rate saturates instead of collapsing at extreme stress.');
+print('    Verified monotone non-decreasing across the full 0-100 CCS range');
+print('    (1% -> 97%); the same sweep now reads 22% / 68% / 79%.');
+print('  BUG-02 HIGH: mannKendallTest returned p=0.0416 at n=4 with tau=+1, but the');
+print('    smallest attainable two-sided p at n=4 is 0.0833 - significance where');
+print('    significance is arithmetically impossible. Exact null distribution of S');
+print('    now used for n<=10 without ties (Mahonian inversion-count recursion),');
+print('    validated against brute-force enumeration of all n! orderings for n=4..8');
+print('    (max abs error 0.0e+0). n=4 -> 0.0833, n=7 -> 0.0004. Tie correction and');
+print('    continuity correction added to the normal branch. Of 126,864 untied');
+print('    orderings at n=4..10, 1,234 verdicts change and ALL lose significance.');
+print('  BUG-03 HIGH: S13 had no near-zero-denominator guard on varTrendRatio.');
+print('    Real runs gave +1276%, +2876% and +34.22x, feeding a false LOCAL CSD');
+print('    banner. S7C (v10.105) / S7D (v10.109) already had the rule; it is now');
+print('    ported verbatim to STEP 2, COMPARE, FIND SWEET SPOT and the S12 sidebar,');
+print('    and artifact rows are EXCLUDED from every tally, verdict and banner.');
+print('  BUG-04 LOW: header said v10.154, sidebar v10.155, click banner v10.67 -');
+print('    all four self-identification markers now say v10.156.');
+print('  BUG-05 MEDIUM: computeScore returned CCS=30 plus a full Bowl Depth readout');
+print('    from ALL-NULL inputs, because every component defaults to a mid value.');
+print('    Now returns ccs:null / insufficientData:true / an explicit dataNote,');
+print('    matching computeAquaculture. nInputs and dataCompleteness (weighted % of');
+print('    the composite actually measured) are reported on EVERY click, in a new');
+print('    sidebar row and two new CSV columns. scoreColors gained a null branch -');
+print('    without it a null score fell through every band and painted itself red.');
+print('  BUG-06 MEDIUM: ToE SNR had no sample-size term, so a 4-point record could');
+print('    EMERGE as easily as a 44-point one. Both ToE paths now divide by the');
+print('    STANDARD ERROR OF THE SLOPE and test against t_crit(df=n-2). At equal');
+print('    SNR=3.0 the 4-year record now reads "not yet" (t=2.18 vs bar 4.30) while');
+print('    7/12/27/44-year records still emerge; the old rule passed all five.');
+print('    n, df, t and the 95% bar are shown inline next to every verdict.');
+print('  BUG-07 MEDIUM: FIND SWEET SPOT used a per-window climatology while COMPARE');
+print('    pooled (v10.151 FIX 4b) - at Bocas del Toro that was dAC1=+0.198 vs');
+print('    +0.524 for the SAME site and window. STEP 4 now threads the identical');
+print('    pooled recompute, reusing series already fetched (zero extra EE calls).');
+print('    STEP 5s overlapping trajectory cannot be pooled without an unverifiable');
+print('    server-side restructure, so both outputs now say so explicitly.');
+print('  BUG-08 HIGH: measured power of the permutation test is 5-28% at 24 months');
+print('    and 23-87% at 48. STEP 2 now REFUSES windows below 24 months (it used to');
+print('    accept 4) and labels 24-47 UNDERPOWERED; FIND SWEET SPOT tests');
+print('    [6,9,12,24,36,48] instead of [6,9,12,15,18,24], with the sub-24 rows kept');
+print('    for diagnostics but excluded from the sweet-spot pick and every tally.');
+print('    The power table is printed on screen, not buried in a comment.');
+print('  The estimator itself is unchanged by BUG-08 - only the guard rails are new.');
 print('');
 print('v10.154 FIX 11: S7D and S7F now run REAL significance tests.');
 print('  Both previously had none - their verdicts came from fixed cutoffs');
