@@ -1,7 +1,315 @@
 // ============================================================
-// STEMGeoHS Marine v10.160
+// STEMGeoHS Marine
 // Coastal Attractor Landscape + Cancer Score Pipeline
+// RUNNING VERSION: declared ONCE, in code, as TOOL_VERSION at the top of
+// MODULE A. Do not write a running-version literal here or anywhere else -
+// three consecutive rounds of this file shipped with a stale marker because
+// someone typed the number in more than one place. The changelog entries
+// below keep their own version numbers: they are history, not identity.
 //
+//
+// v10.161 FIX 19: seven defects found in a REAL Earth Engine browser run at
+//   Bocas del Toro, Panama (9.175, -81.981). Unlike previous rounds these are
+//   OBSERVED BEHAVIOURS from live satellite data, not simulated ones. The
+//   on-screen output is quoted verbatim where it is the evidence.
+//
+//   CHANGELOG HONESTY, the standing rule in this file: every numeric claim
+//   below either (a) is quoted AS OBSERVED from that browser session and is
+//   labelled so, or (b) was re-derived THIS session in a standalone Node
+//   harness against the pure-JS functions extracted from this file, and states
+//   the design that produced it. Nothing here is asserted from memory, and no
+//   precision is invented around the live figures. Earth Engine itself was NOT
+//   run this session - see RESIDUAL RISK at the end of this entry.
+//
+//   S1 VERSION MARKERS - THE MECHANISM IS FIXED, NOT THE LITERALS.
+//     OBSERVED: the sidebar footer read "Scroll up for measurements | v10.159
+//     + GEM" while the sidebar title read "STEMGeoHS Marine v10.160", in the
+//     same panel, on the same screen. This is the THIRD CONSECUTIVE ROUND a
+//     version marker has been missed (found at v10.149 in round 3; round 5
+//     claimed "all five reconciled"; wrong again one version later).
+//     Patching literals has now failed three times, so the literals are gone.
+//     var TOOL_VERSION = 'v10.161' near the top of MODULE A is the ONLY place
+//     the running version is written down. All SIX self-identifying markers -
+//     sidebar title, S13 section header, sidebar footer, per-click console
+//     banner, startup READY line, and the file header comment (which now
+//     carries no version at all, because a comment cannot concatenate) - are
+//     derived from it. VERIFIED: grep for a hardcoded self-identifying version
+//     literal returns exactly ONE hit, the constant.
+//     DELIBERATELY NOT TOUCHED, and why: well over two hundred string literals
+//     in this file contain a v10.1xx token (228 at the moment this entry was
+//     written, counted by script over non-comment lines - the figure moves with
+//     every changelog line added, so treat it as an order of magnitude, not a
+//     constant). They are (a) changelog text, (b) provenance -
+//     "(v10.160, Monte Carlo)" says WHEN a figure was measured, "S7D - FULL
+//     9-NODE ALGAE COUPLING NETWORK (v10.106)" says when a module was
+//     introduced. Both are WRONG if they move with the running version. Only
+//     markers that assert "the tool you are running is version X" were
+//     converted. The stale comment "// S13 - CSD EARLY WARNING TEST (v10.149)"
+//     above the S13 header had its version dropped rather than corrected.
+//
+//   S2 THE v10.158 CHLOROPHYLL INVERSION NEVER REACHED THE MAP LEGEND.
+//     OBSERVED: the sidebar readout correctly said "1.024 mg/m3 (ocean)
+//     [enriched]" - a stressor - while the map legend on the same screen said
+//       < 0.1  Oligotrophic | 0.5-1.0 Moderate | 1.0-2.0 Good | > 5.0 Bloom
+//     i.e. 1.024 mg/m3 read as STRESS in one panel and "Good" in the other.
+//     v10.158 W-08 reversed the direction in computeScore()'s s2 and s5;
+//     v10.158/v10.159 reworded the readout; the legend was never touched.
+//     The legend now lists EXACTLY the six s2 bins in computeScore, including
+//     the 0.45 mg/m3 GBR annual-mean guideline (De'ath & Fabricius 2010) the
+//     readout uses, with each bin's s2 sub-score printed next to it so the two
+//     cannot drift again without the numbers visibly disagreeing. The old
+//     legend was also incomplete, not just misdirected: four bands with two
+//     gaps (0.1-0.5, 2.0-5.0) and a top band at >5.0 that no scoring rule has
+//     ever used. RE-DERIVED against the shipped computeScore this session
+//     (sat inputs SST 29.0, trend 0.04, NO2 1.2e-4, turb 0.15, DHW 5, Bocas
+//     profile): s2 = 5 / 5 / 15 / 35 / 35 / 60 / 80 / 80 / 95 / 95 at chl =
+//     0 / 0.05 / 0.15 / 0.3 / 0.44 / 0.46 / 1.024 / 1.5 / 2.5 / 6.0 - monotone
+//     non-decreasing, with the step at the 0.45 guideline.
+//     THE MAP PALETTE WAS ALSO WRONG, not just the labels: it ran blue ->
+//     GREEN -> dark green over 0.01-5.0, painting the most enriched water in
+//     the colour this tool uses for "safe" everywhere else (score dot: green =
+//     DEEP BASIN). Now a blue -> red stress ramp stretched 0-2.0, so the 0.45
+//     guideline and the 1.0/2.0 bin edges fall inside the ramp instead of
+//     being squeezed into its first fifth.
+//     GREPPED FOR OTHER MISSED DIRECTION TEXT: the only remaining "chlorophyll
+//     is good" wording is in S8 computeAquaculture() and its sidebar rows
+//     ("Nutrients Chl-a gate", "SST and chlorophyll both favorable"). That
+//     direction is CORRECT there - chlorophyll is food for a seaweed crop -
+//     and is deliberately left alone, as v10.158 W-08 already stated.
+//
+//   S3 ECI WAS TWO DIFFERENT NUMBERS IN THE SAME PANEL.
+//     OBSERVED, S16, four lines apart:
+//       Energy risk (current):  0.159 low risk
+//       ... physical wave-exposure (ECI=0.89) and broad ecological risk
+//           (B=0.45) measure different things
+//     TRACED: 0.159 IS the ECI (eci_current = min(1.414, 1/sqrt(depth)); a
+//     ~39.5 m GEBCO depth gives 0.159). 0.89 was the local variable bEci =
+//     1 - ECI/1.414, a DIFFERENT quantity constructed only so the comparison
+//     would sit on B's 0-1 "higher = safer" scale. It was never the ECI. It is
+//     now named shelterIdx and labelled "shelter index = 1 - ECI/1.414", and
+//     the comparison line also prints the ECI itself, explicitly tagged as the
+//     same value the Energy risk row above displays. Two names, two numbers,
+//     no collision. The v10.145 point that this comparison is NOT a validation
+//     is unchanged and still correct.
+//
+//   S4 THE FAI MODULES SPENT THEIR WHOLE CALL BUDGET BEFORE REFUSING.
+//     OBSERVED at Bocas del Toro, Sentinel-2 FAI:
+//       Study data density: 11% (0/24 BEFORE, 4/12 AFTER valid months) - INSUFFICIENT
+//       Reference data density: 11% (0/24 BEFORE, 4/12 AFTER valid months) - INSUFFICIENT
+//     ZERO valid months in the entire 24-month BEFORE window. The refusal is
+//     correct and well explained - but it arrived only after S7D/S7E/S7F had
+//     fired 3, 3 and 6 heavy reduceRegions graphs over 36 monthly composites
+//     and the user had waited out the run.
+//     NEW: faiPrecheckThenRun(), a data-density gate that runs BEFORE the
+//     budget is committed. ONE .evaluate() of
+//       S2_SR_HARMONIZED.filterBounds(point).filterDate(union of the windows)
+//                       .filter(CLOUDY_PIXEL_PERCENTAGE < 20)
+//                       .aggregate_array('system:time_start')
+//     - a metadata/index query that reads no pixels, runs no reducer and
+//     touches no imagery. The timestamps are bucketed into calendar months
+//     client-side and compared against the 4-valid-months-per-window floor the
+//     modules already refuse on.
+//     WHY A SCENE COUNT IS THE RIGHT PROXY: mkMoFAIRange() applies NO per-pixel
+//     cloud mask, so a month with no qualifying scene over the point CANNOT
+//     produce a valid FAI value, and a month that has one normally does. The
+//     scene count is an UPPER BOUND on valid months that is expected to be
+//     tight. It can prove insufficiency conclusively; it can never promise
+//     sufficiency, and the gate is written to refuse only, never to guarantee.
+//     S7D/S7E/S7F refuse below 4 scene-months in either window, naming the
+//     counts and saying "S7C-S7F cannot run here". S7C is DELIBERATELY
+//     advisory - its stated job is to measure whether FAI is dense enough at
+//     all, so refusing it for sparseness would refuse the one module that
+//     exists to report sparseness - and it refuses only a completely empty
+//     window (zero scene-months), otherwise running with the count shown up
+//     front and a warning below the floor. FAIL-OPEN: if the pre-check errors
+//     or returns nothing, the run proceeds and says the pre-check did not run.
+//     UNIT-TESTED this session in Node on the pure half, faiPrecheckSummary(),
+//     with synthetic scene-timestamp lists against windows BEFORE 2021-06-01
+//     +24mo and AFTER 2023-11-01 +12mo: the live-run shape (scenes only in
+//     4 AFTER months) gives BEFORE 0 of 24 | AFTER 4 of 12 and REFUSES; 24 and
+//     11 pass; exactly 4 in AFTER passes (floor is inclusive); 3 refuses; five
+//     scenes inside one calendar month count as ONE month; a scene at
+//     2023-12-31T23:30Z buckets to 2023-12, not 2024-01. Month arithmetic
+//     verified separately: 2021-06-01 +24 -> 2023-06-01, 2023-12-01 +1 ->
+//     2024-01-01, 24-month key list runs 2021-06 .. 2023-05.
+//     COST: NOT measured against live Earth Engine - there is no EE access
+//     from the Node harness. What can be said is structural: one extra
+//     .evaluate() of a metadata aggregation against 3-6 .evaluate()s of
+//     reduceRegions over 36 monthly median composites at 20 m. See RESIDUAL
+//     RISK.
+//     ASKED SEPARATELY - CAN THE REFERENCE DENSITY SILENTLY INHERIT THE
+//     STUDY'S? (both reported 0/24 and 4/12 at sites 20 km apart). TRACED
+//     THROUGH THE CODE: IT CANNOT. Study and Reference are two distinct
+//     labelled features of ONE FeatureCollection; extractMultiNodeSeries runs
+//     reduceRegions per image over both and carries each feature's own `label`
+//     through the flatten; groupSeriesByLabel() buckets strictly on that label,
+//     has no default bucket and no copy-from-sibling path, and DROPS a feature
+//     with no label rather than merging it. A missing Reference series would
+//     yield [] and 0 valid months - which would DIFFER from the study, not
+//     match it. They match for a real reason: with no per-pixel cloud mask,
+//     validity is scene availability, which is a per-granule property, and an
+//     S2 granule is ~110 km across - two sites 20 km apart normally share the
+//     same scene list month for month. Both S7E and S7F now SAY this on screen
+//     when the counts come back identical.
+//
+//   S5 A PLACEHOLDER WAS MOVING THE HEADLINE SCORE *AND* BUYING ACCURACY.
+//     OBSERVED:
+//       F1 Urchin grazer:   0 (N=0.3/m2)
+//       F3 Anem density:   -6 (aN=6/m2) [ESTIMATED]
+//       F4 Metals:         +0 (Cd=0.006)
+//       F5 Recruitment:     0 (recruit=2) [ESTIMATED]
+//       Total correction:  -6 total
+//       Satellite CCS: 61/100  ->  FUSED CCS: 55/100
+//       Field gain: +12%  ->  Combined: 89% TOTAL
+//     The only non-zero correction was F3 = -6, from anem_N = 6.0, which
+//     getFieldProfile() itself flags anem_N_estimated:true and whose notes say
+//     "Densities are ESTIMATED PLACEHOLDERS". So a placeholder moved the
+//     headline 61 -> 55 and then earned +12 percentage points of claimed
+//     accuracy for having done so.
+//     ROUTE TAKEN, and why: the task offered "exclude estimated fields from
+//     accuracy_field_gain" OR "scale their contribution and label it". BOTH
+//     halves of the first route, and none of the second - the CORRECTION is
+//     left at full strength (deleting it would hide a real modelling choice),
+//     and it is the ACCURACY CLAIM that is scaled, because accuracy is the
+//     thing a placeholder cannot honestly buy. The gain is apportioned by the
+//     share of the correction's MAGNITUDE contributed by non-estimated fields,
+//     with a count-based fallback when every correction is exactly zero so a
+//     genuinely measured all-zero profile is not punished. Nominal and earned
+//     are both returned (acc_field_nominal / acc_field) so the forfeited part
+//     is visible rather than quietly deleted. The fused score, the total-
+//     correction row and the console block now all carry the split.
+//     ALSO FIXED HERE, a NaN swallowed by the same guards: every field guard
+//     tested `!== null`, which is TRUE for a MISSING KEY. The Caribbean
+//     profile has recruit:2.0 and NO recruit_healthy key, so
+//     `fp.recruit_healthy !== null` passed, 2.0/undefined gave NaN, and the
+//     isNaN() line turned it into a silent 0 - which is exactly why the live
+//     run shows "F5 Recruitment: 0 (recruit=2)" instead of taking the intended
+//     recruit<=5.0 fallback. Guards now use _fhas(), which rejects undefined
+//     and NaN.
+//     MEASURED IN NODE against the shipped functions, region 'Bocas del Toro,
+//     Panama', with the same satellite inputs throughout:
+//       before  F1 -0.3  F3 -6  F4 0  F5  0    fcTotal -6  acc_field 12  acc_total 89
+//       after   F1 -0.3  F3 -6  F4 0  F5 -3.2  fcTotal -9  acc_field  0  acc_total 77
+//     i.e. the correction gets BIGGER (the F5 branch now runs) and the
+//     accuracy claim goes to zero, because -9.2 of the -9.5 raw correction is
+//     placeholder and only -0.3 is a real measurement. A satellite composite
+//     of 61 therefore fuses to 52, not 55. STATED PLAINLY: this changes the
+//     headline score at Caribbean / Florida / Gulf / Atlantic-USA sites.
+//     REGRESSION-CHECKED on the other profiles: Great Barrier Reef keeps its
+//     full +7% (recruit 187/247, not flagged estimated), Mediterranean keeps
+//     its full +10% (urchin + metals, not flagged), Red Sea keeps its full +8%
+//     - its contribution is dhw_calibration, which feeds s4d INSIDE the
+//     satellite composite rather than any F-term, so it is counted explicitly
+//     as a present non-estimated contribution; without that it would have been
+//     silently zeroed. Pacific Coast USA and the other hasField:false regions
+//     stay at +0%.
+//     DISCLOSED LIMIT of the apportioning rule: the dhw_calibration
+//     contribution carries no point magnitude, so a hypothetical region with
+//     BOTH a real dhw_calibration AND a placeholder F-term would apportion on
+//     the F-terms alone. No shipped region has that combination today.
+//     NOT CHANGED: profiles whose notes say "NOT independently verified"
+//     (Mediterranean metals, GBR recruits) are UNVERIFIED, not PLACEHOLDERS,
+//     and carry no *_estimated flag. Only an explicit flag scales the gain.
+//
+//   S6 INSUFFICIENT-DATA PATHS ABANDONED THE UI MID-RENDER (three defects).
+//     (a) STUCK PROGRESS LABELS. OBSERVED: long after S7F had completed with
+//     full results, S7D still read "Running: 2 / 3 batched calls done..." and
+//     S7E "Step 2/3: 1 / 2 batched calls done...", permanently.
+//     TRACED (not run - UI paths cannot be executed in the Node harness):
+//     every one of these panels updates its status inside a per-call bump()
+//     and only replaces it when the pending counter reaches ZERO. Both finish()
+//     functions DO set a final label on every path they reach, including the
+//     insufficient-data ones - so a frozen counter means one .evaluate()
+//     callback NEVER ARRIVED (quota refusal or hung request; this file has hit
+//     the account concurrency quota before). There is no code path that can
+//     clear it, and there is no setTimeout in the GEE sandbox to time it out.
+//     WHAT IS FIXED: the counter now NAMES the calls still outstanding; it
+//     carries, in the label itself, what a stalled counter means and that
+//     pressing RUN again is a clean retry; and a per-panel run sequence number
+//     stops a late callback from an abandoned run overwriting a newer run's
+//     label. Applied to S7C, S7D, S7E, S7F and S13 STEP 4.
+//     WHAT IS NOT FIXED, plainly: a callback that never fires still never
+//     fires. Without a timer that cannot be turned into an automatic failure.
+//     The S13 STEP 4 panel's claim that the counter means it "never looks
+//     frozen" was FALSE and is replaced with what the counter can actually
+//     promise - in the panel text and in the startup feature list.
+//     (b) AN EMPTY DENOMINATOR RENDERED AS A FRACTION. OBSERVED:
+//       S7D: NO SYNCHRONIZATION SIGNAL (0/7 on-reef rising) | AC1 rising at 0/0 nodes
+//     "0/0 nodes" is not a result: NO node had a computable AC1 in both
+//     windows, so the tally divided by nothing, and "tested 0 nodes" is
+//     indistinguishable on screen from "tested some and none rose" - opposite
+//     findings. New countOfTotal() renders a real fraction when the
+//     denominator is positive and an explicit sentence when it is zero.
+//     (c) A BONFERRONI CORRECTION OVER A FAMILY OF ZERO TESTS. OBSERVED:
+//       NOTE: 4 tests fired here; the Bonferroni bar is p<0.0125.
+//     printed while all four of Study AC1 / Study Var / Reference AC1 /
+//     Reference Var had come back NOT TESTABLE. Both numbers were HARDCODED,
+//     so neither could notice. The family is now the tests that actually
+//     returned a p-value, the bar is derived from that count, and when the
+//     count is zero the line says so instead of quoting a correction for tests
+//     that never ran. The same defect was found and fixed in S7D (its bar came
+//     from a fixed 17 = 8 pairs + 9 nodes regardless of how many were
+//     testable) and in S13 STEP 4 (with nPoweredWindows = 0 it printed
+//     "0 of those 6 windows are ... the CORRECTED bar below (0.05 / 0 POWERED
+//     windows = 0.0500)", an alpha that came from Math.max(1,0), not from
+//     anything measured).
+//     AUDIT OF EVERY OTHER INSUFFICIENT-DATA EARLY RETURN IN S7C/S7D/S7E/S7F/
+//     S13 - one more found: S13 STEP 5's csdSlideValidV was never cleared at
+//     run start and is written only far down the SUCCESS path, after the
+//     feats.length<4 early return. On a re-run that hit the insufficient-data
+//     path, the PREVIOUS run's full independent-window significance block
+//     stayed on screen underneath a fresh "INSUFFICIENT DATA" verdict, reading
+//     as current results for the new coordinates. Cleared at run start, and
+//     both early returns now say explicitly that the test did not run.
+//     The same class was introduced by S4's own pre-check gate (a refusal
+//     returns before the module clears its result panel) and is handled inside
+//     faiPrecheckThenRun rather than left for the next round to find.
+//
+//   S7 SWEEP FOR OTHER x/0 DISPLAY STRINGS AND UNCLEARED PROGRESS LABELS.
+//     Every "a of b" / "a/b" tally that renders a denominator was checked for
+//     reachability of b = 0. Already guarded and left alone: S7B patchiness,
+//     S13 ROBUSTNESS / AC1 TALLY / FLAGGED WINDOWS, classifyToolkitConfidence,
+//     S7D and S7F on-reef pair counts, S17 n-of-nominal. FIXED, all reachable:
+//       - S13 TOOLKIT SUMMARY header, "0/0 scored indicators agree"
+//       - S13 COMPARE verdict, "Supporting: 0/0 agree"
+//       - S13 STEP 4, "0 of 0 DISTINCT windows that can support inference"
+//       - S7B, "WARNING SIGN COUNT: FAI elevated 0/0 | NDCI 0/0 | NDVI 0/0",
+//         printed directly under a PATTERN line that correctly said NO DATA
+//       - S17b, "0 of 0 testable variables show a REAL significant trend"
+//       - S17 compound, "0/0 available variables emerged"
+//       - S13 STEP 2 console, "Raw valid months: 0 / 0" on an empty table
+//       - S7D, "0 of 0 on-reef pairs tested" and "0 of 0 nodes tested"
+//     Progress labels: S7C/S7D/S7E/S7F/S13-STEP-4 are the only set-but-never-
+//     cleared ones and are covered by S6(a). Every other in-flight label
+//     ("Step 1/3: Finding control site...", "Fetching ... OISST data",
+//     "Checking for manual control site override...") was checked and has a
+//     path that replaces it on both its success and its error branch.
+//
+//   RESIDUAL RISK - NEEDS A LIVE EARTH ENGINE SESSION.
+//     1. THE PRE-CHECK'S REAL EE COST IS UNMEASURED. aggregate_array over a
+//        point-filtered, date-filtered, property-filtered S2 collection is a
+//        metadata query by construction, but how long it takes and what it
+//        counts against the account's quota has NOT been observed. If it is
+//        slow at some site, narrow filterDate - do not remove the gate.
+//     2. THE PRE-CHECK'S TIGHTNESS IS INFERRED FROM THE CODE, NOT MEASURED.
+//        The claim "scene-months is an upper bound on valid months, expected
+//        to be tight" follows from mkMoFAIRange applying no per-pixel cloud
+//        mask. It has not been checked against a real run. It is used only to
+//        REFUSE, so a loose bound costs a wasted run, never a false refusal.
+//     3. ALL UI PATHS WERE TRACED, NOT EXECUTED. The S7C-S7F and S13 changes
+//        are inside .evaluate() callbacks and ui.Button onClick handlers that
+//        the Node harness cannot drive. The whole file was executed top to
+//        bottom under stubbed ee/ui/Map to catch ordering faults that
+//        `node --check` misses, and every pure function touched was unit-
+//        tested - but the rendered strings themselves were read, not run.
+//     4. THE FOUR onClick BODIES ARE NOW WRAPPED in a pre-check callback. The
+//        wrapping is mechanical and the file parses and executes, but a
+//        closure mistake inside a handler would only show at click time.
+//     5. THE S5 SCORE CHANGE IS REAL AND USER-VISIBLE. Caribbean-group sites
+//        move from a -6 field correction to -9 and from +12% claimed field
+//        accuracy to +0%. That is the intended, honest outcome, but any
+//        standing output recorded at those sites before v10.161 is not
+//        comparable with one recorded after it.
 //
 // v10.160 FIX 18: four blockers - TWO of them regressions this fix series
 //   introduced, and one of them a v10.159 "fix" that turned out to be completely
@@ -2831,6 +3139,24 @@
 // ============================================================
 // MODULE A - DATASETS (all with ocean mask)
 // ============================================================
+// v10.161 FIX 19 / S1 - THE VERSION MARKERS ARE NOW DERIVED, NOT TYPED.
+// A version marker has now been missed in THREE CONSECUTIVE ROUNDS (found at
+// v10.149 in round 3, "all five reconciled" in round 5, and the sidebar footer
+// still read v10.159 in the live v10.160 browser run). Patching the literals
+// has failed every time, so the LITERALS ARE GONE. TOOL_VERSION below is the
+// only place in this file where the RUNNING version is written down; every
+// self-identifying marker on screen - sidebar title, S13 section header, the
+// sidebar footer, the per-click console banner and the startup READY line -
+// is built by concatenating it. Bumping a version is now a one-line edit, and
+// a marker CANNOT fall behind because there is nothing left to fall behind.
+// SCOPE, stated so the next round does not "fix" the wrong thing: this covers
+// markers that assert "the tool you are running is version X". It deliberately
+// does NOT cover (a) changelog entries, which are prose about what some past
+// version changed and must keep their own version numbers, (b) provenance
+// annotations like "(v10.160, Monte Carlo)" or "S7D - ... (v10.106)", which
+// record WHEN a figure was measured or a module was introduced and are wrong
+// if they move, or (c) the file name, which is deliberately stale (see README).
+var TOOL_VERSION = 'v10.161';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -3144,6 +3470,174 @@ function mkMoFAIRange(startDateStr, nMonths) {
       {'NIR':meanImg.select('B8'),'RED':meanImg.select('B4'),'SWIR':meanImg.select('B11'),'step':fai_step}).rename('fai');
     return faiMonth.set('system:time_start',d.millis());
   }));
+}
+
+// ============================================================
+// v10.161 FIX 19 / S4 - FAI DATA-DENSITY PRE-CHECK.
+// THE PROBLEM, from a live browser run at Bocas del Toro (9.175, -81.981):
+//   Study data density: 11% (0/24 BEFORE, 4/12 AFTER valid months) - INSUFFICIENT
+//   Reference data density: 11% (0/24 BEFORE, 4/12 AFTER valid months) - INSUFFICIENT
+// ZERO valid Sentinel-2 months in the entire 24-month BEFORE window. The
+// refusal itself is correct and well explained - but it arrived only AFTER
+// S7D/S7E/S7F had fired their full Earth Engine call budget (3, 3 and 6 heavy
+// reduceRegions graphs over 36 monthly composites) and the user had waited out
+// the run. Nothing about that site could ever have produced an answer.
+//
+// THE PRE-CHECK: before committing the budget, ask ONE cheap question - which
+// calendar months in the requested windows have ANY Sentinel-2 scene covering
+// this point at all? That is a metadata/index query over the collection's
+// scene footprints and CLOUDY_PIXEL_PERCENTAGE property: one filterBounds +
+// filterDate + property filter, then aggregate_array('system:time_start'),
+// evaluated once. It reads no pixels, runs no reducer and touches no imagery.
+//
+// WHY A SCENE COUNT IS THE RIGHT PROXY, and exactly how tight it is:
+// mkMoFAIRange() builds each month from
+//   S2_SR_HARMONIZED.filterDate(month).filter(CLOUDY_PIXEL_PERCENTAGE<20).median()
+// with NO per-pixel cloud mask. So a month whose scene list (at this point) is
+// EMPTY can only produce a masked FAI - zero valid months, guaranteed - while a
+// month that HAS a qualifying scene will normally produce a number. The scene
+// count is therefore an UPPER BOUND on valid months that is expected to be
+// tight, and it can prove INSUFFICIENCY conclusively. It CANNOT prove
+// sufficiency: a scene can still be masked at the exact 150 m buffer (scene
+// nodata edge, or a band mask), so passing the pre-check is not a promise that
+// the run will succeed. The gate is written accordingly - it only ever refuses,
+// never guarantees.
+//
+// COST, stated honestly: this has NOT been measured against live Earth Engine
+// from this session (no EE access from the Node harness - see RESIDUAL RISK).
+// What can be said from the code is structural: one extra .evaluate() of a
+// metadata aggregation, against 3-6 .evaluate()s of reduceRegions over 36
+// monthly median composites at 20 m. It is one additional call, and the cheapest
+// kind this file makes. If it turns out to cost real time at some site, the
+// remedy is to narrow filterDate, not to remove the gate.
+//
+// FAIL-OPEN BY DESIGN: if the pre-check errors or returns nothing, the run
+// proceeds and says the pre-check did not run. A diagnostic must never be the
+// thing that blocks the analysis.
+var FAI_MIN_VALID_MONTHS = 4;   // the same <4-valid-months floor S7D/S7E/S7F already refuse on
+var FAI_CLOUD_PCT_MAX = 20;     // must match mkMoFAIRange()'s CLOUDY_PIXEL_PERCENTAGE filter
+
+// 'YYYY-MM-DD' + n months -> 'YYYY-MM-01'. Pure string/integer arithmetic, so
+// it cannot be knocked sideways by a local timezone the way Date parsing can.
+function faiAddMonthsStr(startDateStr, n){
+  var y=parseInt(String(startDateStr).substring(0,4),10);
+  var m=parseInt(String(startDateStr).substring(5,7),10)-1;
+  if(isNaN(y)||isNaN(m)) return null;
+  var tot=y*12+m+n, yy=Math.floor(tot/12), mm=tot-yy*12;
+  return yy+'-'+(mm+1<10?'0':'')+(mm+1)+'-01';
+}
+// The list of 'YYYY-MM' keys a window covers.
+function faiMonthKeys(startDateStr, nMonths){
+  var keys=[];
+  for(var i=0;i<nMonths;i++){
+    var s2=faiAddMonthsStr(startDateStr,i);
+    if(s2===null) return keys;
+    keys.push(s2.substring(0,7));
+  }
+  return keys;
+}
+// Pure, unit-testable half of the pre-check: given the raw scene timestamps
+// Earth Engine returned and the requested windows, how many months of each
+// window have at least one qualifying scene? Split out from the async wrapper
+// so the decision logic can be tested in Node without an EE session.
+function faiPrecheckSummary(tsArr, windows, refuseBelow, warnBelow){
+  var seen={}, j;
+  for(j=0;j<tsArr.length;j++){
+    var dObj=new Date(tsArr[j]);
+    var mo=dObj.getUTCMonth()+1;
+    var key=dObj.getUTCFullYear()+'-'+(mo<10?'0':'')+mo;
+    seen[key]=(seen[key]||0)+1;
+  }
+  var sums=[], anyRefuse=false, anyWarn=false, detail=[], w2, q;
+  for(w2=0; w2<windows.length; w2++){
+    var keys=faiMonthKeys(windows[w2].start, windows[w2].months), n=0;
+    for(q=0;q<keys.length;q++){ if(seen[keys[q]]) n++; }
+    sums.push({name:windows[w2].name, n:n, months:windows[w2].months});
+    detail.push(windows[w2].name+' '+n+' of '+windows[w2].months+' months');
+    if(n<refuseBelow) anyRefuse=true;
+    else if(n<warnBelow) anyWarn=true;
+  }
+  return {sums:sums, anyRefuse:anyRefuse, anyWarn:anyWarn, detailTxt:detail.join(' | ')};
+}
+// cfg: {lat, lon, moduleName, statusLbl, windows:[{name,start,months}],
+//       refuseBelow (default FAI_MIN_VALID_MONTHS), warnBelow (default same),
+//       cannotRunTxt}
+// Calls onPass(preInfo) if and only if the run should go ahead. preInfo.note is
+// a one-or-two-line string the caller should show with its results.
+function faiPrecheckThenRun(cfg, onPass){
+  var lbl=cfg.statusLbl, mod=cfg.moduleName||'S7', wins=cfg.windows||[];
+  var refuseBelow=(cfg.refuseBelow===undefined)?FAI_MIN_VALID_MONTHS:cfg.refuseBelow;
+  var warnBelow=(cfg.warnBelow===undefined)?FAI_MIN_VALID_MONTHS:cfg.warnBelow;
+  function proceed(info){ try{ onPass(info); }catch(eOn){ print('=== '+mod+' run error after pre-check === '+eOn); } }
+  var lo=null, hi=null, wi;
+  for(wi=0; wi<wins.length; wi++){
+    var a=faiAddMonthsStr(wins[wi].start,0), b=faiAddMonthsStr(wins[wi].start,wins[wi].months);
+    if(a===null||b===null){ proceed({skipped:true, note:'FAI PRE-CHECK skipped: could not parse a window start date.'}); return; }
+    if(lo===null||a<lo) lo=a;
+    if(hi===null||b>hi) hi=b;
+  }
+  if(lo===null){ proceed({skipped:true, note:'FAI PRE-CHECK skipped: no windows given.'}); return; }
+  var req;
+  try{
+    req = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filterBounds(ee.Geometry.Point([cfg.lon, cfg.lat]))
+      .filterDate(ee.Date(lo), ee.Date(hi))
+      .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', FAI_CLOUD_PCT_MAX))
+      .aggregate_array('system:time_start');
+  } catch(ePreBuild){
+    print('=== '+mod+' FAI pre-check could not be built === '+ePreBuild);
+    proceed({skipped:true, note:'FAI PRE-CHECK skipped (could not be built) - the full run proceeded without it.'});
+    return;
+  }
+  // The module's own `resultV.setValue('')` sits inside the body this gate can
+  // refuse to enter, so the gate clears it here. Without this a refusal would
+  // leave the PREVIOUS run's full result table on screen underneath it - the
+  // same stale-render class this fix is about.
+  if(cfg.resultLbl) cfg.resultLbl.setValue('');
+  if(lbl){
+    lbl.setValue(mod+' FAI PRE-CHECK: 1 cheap Earth Engine metadata call (Sentinel-2 scene index at this\n'+
+      'point, '+lo.substring(0,7)+' to '+hi.substring(0,7)+', cloud < '+FAI_CLOUD_PCT_MAX+'%) BEFORE spending the full call budget.\n'+
+      'If this site cannot clear '+refuseBelow+' valid months per window, you will be told now instead of\n'+
+      'after the wait.');
+    lbl.style().set('color','#334466'); lbl.style().set('backgroundColor','#eeeeee');
+    lbl.style().set('border','2px solid #aaaaaa'); lbl.style().set('whiteSpace','pre'); lbl.style().set('fontWeight','bold');
+  }
+  req.evaluate(function(tsArr, ePre){
+    if(ePre || !tsArr || typeof tsArr.length!=='number'){
+      print('=== '+mod+' FAI pre-check unavailable === '+(ePre||'no scene list returned'));
+      proceed({skipped:true, note:'FAI PRE-CHECK: did not run ('+(ePre?'Earth Engine error':'no scene list returned')+
+        ') - the full run went ahead without it. A refusal below, if any, is the post-hoc one.'});
+      return;
+    }
+    var summary=faiPrecheckSummary(tsArr, wins, refuseBelow, warnBelow);
+    var sums=summary.sums, anyRefuse=summary.anyRefuse, anyWarn=summary.anyWarn, detailTxt=summary.detailTxt;
+    if(anyRefuse){
+      var msg=mod+' CANNOT RUN AT THIS SITE/WINDOW - refused BEFORE spending the Earth Engine call budget.\n'+
+        'Sentinel-2 scene availability at '+cfg.lat.toFixed(4)+', '+cfg.lon.toFixed(4)+' (cloud < '+FAI_CLOUD_PCT_MAX+'%):\n'+
+        '  '+detailTxt+'\n'+
+        'The FAI statistics need at least '+refuseBelow+' valid months in EACH window. A month with no\n'+
+        'qualifying Sentinel-2 scene over this point cannot produce a valid FAI value, so the\n'+
+        'window(s) above cannot reach that floor however long the run takes. '+
+        (cfg.cannotRunTxt||('So '+mod+' cannot run here.'))+'\n'+
+        'WHAT TO CHANGE: move the window(s) to a period with scenes, or pick a less persistently\n'+
+        'cloudy site. This is a real property of the satellite record here, not a tool failure.\n'+
+        'NOTE ON THIS CHECK: it counts SCENES, which is an upper bound on valid months (mkMoFAIRange\n'+
+        'applies no per-pixel cloud mask, so it is normally a tight one). It can prove that a window\n'+
+        'is insufficient; it never promises that a passing window will succeed.';
+      if(lbl){
+        lbl.setValue(msg);
+        lbl.style().set('color','#cc0000'); lbl.style().set('backgroundColor','#ffd0d0');
+        lbl.style().set('border','2px solid #cc0000'); lbl.style().set('whiteSpace','pre'); lbl.style().set('fontWeight','bold');
+      }
+      print('=== '+mod+' FAI PRE-CHECK REFUSAL ==='); print(msg);
+      return;
+    }
+    proceed({skipped:false, refused:false, warn:anyWarn, sums:sums,
+      note:'FAI PRE-CHECK (1 metadata call, before the run): Sentinel-2 scene-months at this point, '+
+        'cloud < '+FAI_CLOUD_PCT_MAX+'% - '+detailTxt+'. Upper bound on valid months; the figures below are '+
+        'the real counts.'+(anyWarn?' MARGINAL: at least one window is close to the '+warnBelow+
+        '-valid-month floor, so expect NOT TESTABLE results.':'')});
+  });
 }
 
 function mkMoSSTRange(startDateStr, nMonths) {
@@ -3780,6 +4274,57 @@ function extractReduceRegionsValue(props, bandName) {
     if(typeof props[k]==='number'&&!isNaN(props[k])) return props[k];
   }
   return null;
+}
+// v10.161 FIX 19 / S6b + S7 - NO MORE "x / 0" FRACTIONS ON SCREEN.
+// OBSERVED IN A LIVE BROWSER RUN at Bocas del Toro: S7F printed
+//   "S7D: NO SYNCHRONIZATION SIGNAL (0/7 on-reef rising) | AC1 rising at 0/0 nodes"
+// "0/0 nodes" is not a result. It is the rendering of an empty denominator: at
+// a cloud-limited site NO node had two windows with a computable AC1, so the
+// tally divided by nothing. A reader cannot tell "tested 0 nodes" from "tested
+// some nodes and none rose" - and those are opposite findings, exactly the
+// distinction v10.114 and v10.156 BUG-05 already had to restore elsewhere in
+// this file. countOfTotal() renders a real fraction when the denominator is
+// positive and an explicit sentence when it is zero, so an untested tally can
+// never again look like a measured null.
+// v10.161 FIX 19 / S6a - A PROGRESS COUNTER THAT NEVER LOOKS FROZEN, AND
+// WHICH SAYS WHAT A FROZEN ONE MEANS.
+// OBSERVED IN A LIVE BROWSER RUN: long after S7F had completed with full
+// results, S7D still read "Running: 2 / 3 batched calls done..." and S7E
+// "Step 2/3: 1 / 2 batched calls done..." - permanently. TRACED (not run - the
+// UI paths cannot be executed in the Node harness): every one of these panels
+// updates its status label inside a per-call bump() and only replaces it when
+// the pending counter reaches ZERO. Both finish() functions do set a final
+// label on every path they reach, including the insufficient-data ones - so a
+// frozen counter means one .evaluate() callback NEVER ARRIVED (an Earth Engine
+// quota refusal or a hung request; this file has hit the account concurrency
+// quota before, and there is no setTimeout in the GEE sandbox to time it out).
+// There is therefore no code path that can clear the label, and the panel's own
+// promise - "a live counter below shows progress so it never looks frozen" -
+// is broken in exactly the case it was built for.
+// WHAT IS FIXED, given a timeout is not available:
+//   1. The counter now NAMES the calls it is still waiting on, so a stuck panel
+//      says WHICH call is missing instead of only how many are done.
+//   2. It carries, in the label itself, what a stalled counter means and what
+//      to do about it - so "frozen" is a diagnosis on screen, not a mystery.
+//   3. A per-panel run sequence number means a late callback from an abandoned
+//      run can no longer overwrite the label of a newer one. Pressing RUN again
+//      is now a clean reset, which is the recovery the text points the user at.
+// WHAT IS NOT FIXED, stated plainly: a callback that never fires still never
+// fires. Without a timer this cannot be turned into an automatic failure.
+var S7_STALL_HINT = 'If this line stops changing for several minutes, that call has not returned (Earth Engine\n'+
+  'quota or a hung request). Nothing is lost - press RUN again for a clean retry. The Console\n'+
+  'records each call\'s real outcome as it lands.';
+// Removes a finished call from the outstanding list and renders it.
+function s7Outstanding(list, key){
+  var i=list.indexOf(key);
+  if(i>=0) list.splice(i,1);
+  return list.length>0?('Still waiting on: '+list.join(', ')):'All calls returned - computing results...';
+}
+function countOfTotal(hits, total, unitPlural, emptyTxt){
+  if(total===null||total===undefined||isNaN(total)||total<=0){
+    return emptyTxt||('no '+unitPlural+' had enough valid data to test');
+  }
+  return hits+'/'+total+' '+unitPlural;
 }
 // Groups a raw reduceRegions()+flatten() evaluate() result into per-node
 // time series: {label: [{t, v}, ...]}, sorted by time.
@@ -5888,16 +6433,134 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   if(_has(nv)){if(nv>0.00015)s6=90; else if(nv>0.00010)s6=70; else if(nv>0.00005)s6=50; else if(nv>0.00002)s6=30; else s6=10;}
   s6=Math.max(0,Math.min(100,s6));
   var csat=Math.round(s1*0.15+s2*0.15+s3*0.15+s4*0.25+s5*0.20+s6*0.10);
+  // ============================================================
+  // v10.161 FIX 19 / S5 - AN EXPLICIT PLACEHOLDER WAS MOVING THE HEADLINE
+  // SCORE AND BUYING ACCURACY WITH IT.
+  // OBSERVED IN A LIVE BROWSER RUN at Bocas del Toro (real measurements,
+  // quoted as observed, not re-derived here):
+  //     F1 Urchin grazer:   0 (N=0.3/m2)
+  //     F3 Anem density:   -6 (aN=6/m2) [ESTIMATED]
+  //     F4 Metals:         +0 (Cd=0.006)
+  //     F5 Recruitment:     0 (recruit=2) [ESTIMATED]
+  //     Total correction:  -6 total
+  //     Satellite CCS: 61/100  ->  FUSED CCS: 55/100
+  //     Field gain: +12%  ->  Combined: 89% TOTAL
+  // The ONLY non-zero correction was F3 = -6, computed from anem_N = 6.0 -
+  // a number getFieldProfile() itself flags anem_N_estimated:true and whose
+  // own notes say "Densities are ESTIMATED PLACEHOLDERS". So a placeholder
+  // moved the headline 61 -> 55 and the reader was then told the answer was
+  // 12 percentage points MORE accurate because field data had been used.
+  // Two things were wrong and both are fixed here:
+  //   (1) ACCURACY. accuracy_field_gain was granted in full whenever the
+  //       region had a profile at all, with no reference to whether any
+  //       actual measurement contributed. A correction derived entirely
+  //       from a placeholder now earns NOTHING. The gain is apportioned by
+  //       the share of the correction's MAGNITUDE that came from
+  //       non-estimated fields (falling back to a count of present
+  //       non-estimated fields when every correction happens to be exactly
+  //       zero, so a genuinely measured all-zero profile is not punished).
+  //       The nominal gain is still returned as acc_field_nominal, so the
+  //       forfeited part is visible rather than quietly deleted.
+  //   (2) ATTRIBUTION. The correction itself is NOT removed - the task is
+  //       honest attribution, not deletion - but it is now split into
+  //       fc_measured and fc_estimated and both are carried to the UI, so
+  //       the reader can see which part of a 61 -> 55 move is measurement
+  //       and which part is placeholder.
+  // ALSO FIXED HERE (same class as the "x/0" sweep - a divide-by-nothing
+  // that silently produced NaN and was swallowed): every guard below tested
+  // `!==null`, which is TRUE for a MISSING key. The Bocas/Caribbean profile
+  // has recruit:2.0 and NO recruit_healthy key at all, so
+  // `fp.recruit_healthy!==null` passed, 2.0/undefined gave NaN, and the
+  // isNaN() line below turned it into a silent 0 - which is why the live run
+  // shows "F5 Recruitment: 0 (recruit=2) [ESTIMATED]" instead of taking the
+  // intended `recruit<=5.0` fallback branch. The guards now use _fhas(),
+  // which rejects undefined and NaN, so the fallback branch is reachable.
+  // MEASURED in Node against the shipped functions, region 'Bocas del Toro,
+  // Panama': F5 was 0 before and is -3.2 after; fcTotal -6 -> -9; a satellite
+  // composite of 61 therefore fuses to 52 rather than 55. Both the -6 and the
+  // -9 are almost entirely placeholder, which is now stated on screen.
+  // ============================================================
+  var _fhas=function(x){ return x!==null&&x!==undefined&&typeof x==='number'&&!isNaN(x); };
   var F1=0,F2=0,F3=0,F4=0,F5=0;
+  var _fEst={F1:false,F2:false,F3:false,F4:false,F5:false};
+  var _fPresent={F1:false,F2:false,F3:false,F4:false,F5:false};
   if(fp.hasField){
-    if(fp.urchin_N!==null&&fp.urchin_healthy!==null)F1=-(Math.min(1.0,fp.urchin_N/fp.urchin_healthy)*15);
-    if(fp.anem_N!==null)F3=-(Math.min(1.0,fp.anem_N/10.0)*10);
-    if(fp.Cd!==null&&fp.Pb!==null){var CdF=Math.max(0,Math.min(1,(fp.Cd-0.006)/(fp.Cd_poll-0.006))),PbF=Math.max(0,Math.min(1,(fp.Pb-0.5)/(fp.Pb_poll-0.5)));F4=Math.round(((CdF+PbF)/2)*15);}
-    if(fp.recruit!==null&&fp.recruit_healthy!==null)F5=-Math.round(Math.min(1.0,fp.recruit/fp.recruit_healthy)*8);
-    else if(fp.recruit!==null&&fp.recruit<=5.0)F5=-(Math.min(1.0,fp.recruit/5.0)*8);
+    if(_fhas(fp.urchin_N)&&_fhas(fp.urchin_healthy)&&fp.urchin_healthy>0){
+      F1=-(Math.min(1.0,fp.urchin_N/fp.urchin_healthy)*15);
+      _fPresent.F1=true; _fEst.F1=(fp.urchin_N_estimated===true);
+    }
+    if(_fhas(fp.anem_N)){
+      F3=-(Math.min(1.0,fp.anem_N/10.0)*10);
+      _fPresent.F3=true; _fEst.F3=(fp.anem_N_estimated===true);
+    }
+    if(_fhas(fp.Cd)&&_fhas(fp.Pb)&&_fhas(fp.Cd_poll)&&_fhas(fp.Pb_poll)&&fp.Cd_poll>0.006&&fp.Pb_poll>0.5){
+      var CdF=Math.max(0,Math.min(1,(fp.Cd-0.006)/(fp.Cd_poll-0.006))),PbF=Math.max(0,Math.min(1,(fp.Pb-0.5)/(fp.Pb_poll-0.5)));
+      F4=Math.round(((CdF+PbF)/2)*15);
+      _fPresent.F4=true; _fEst.F4=(fp.metals_estimated===true);
+    }
+    if(_fhas(fp.recruit)&&_fhas(fp.recruit_healthy)&&fp.recruit_healthy>0){
+      F5=-Math.round(Math.min(1.0,fp.recruit/fp.recruit_healthy)*8);
+      _fPresent.F5=true; _fEst.F5=(fp.recruit_estimated===true);
+    } else if(_fhas(fp.recruit)&&fp.recruit<=5.0){
+      F5=-(Math.min(1.0,fp.recruit/5.0)*8);
+      _fPresent.F5=true; _fEst.F5=(fp.recruit_estimated===true);
+    }
   }
   F1=isNaN(F1)?0:F1;F2=0;F3=isNaN(F3)?0:F3;F4=isNaN(F4)?0:F4;F5=isNaN(F5)?0:F5;
   var fcT=Math.round(F1+F2+F3+F4+F5);
+  // Split the correction into the part that came from real measurements and the
+  // part that came from fields the registry itself flags as estimated.
+  var _fVals={F1:F1,F2:F2,F3:F3,F4:F4,F5:F5};
+  var _fcMeasRaw=0,_fcEstRaw=0,_wMeas=0,_wEst=0,_nPresent=0,_nPresentEst=0,_estNames=[];
+  ['F1','F2','F3','F4','F5'].forEach(function(_k){
+    if(!_fPresent[_k]) return;
+    _nPresent++;
+    if(_fEst[_k]){ _nPresentEst++; _estNames.push(_k); _fcEstRaw+=_fVals[_k]; _wEst+=Math.abs(_fVals[_k]); }
+    else { _fcMeasRaw+=_fVals[_k]; _wMeas+=Math.abs(_fVals[_k]); }
+  });
+  // Not every field input is an F-term. The Red Sea profile's real, confirmed
+  // dhw_calibration (Peixoto 2025: DHW=22 -> 78% mortality) feeds s4d INSIDE the
+  // satellite composite, so it earns its accuracy gain even though it moves no
+  // F1..F5 correction. Counted as a present, non-estimated contribution with
+  // zero point-magnitude; without this, apportioning purely over F1..F5 would
+  // have silently zeroed a gain that is backed by a confirmed measurement.
+  // DISCLOSED LIMIT of the apportioning rule: because this contribution carries
+  // no point magnitude, a hypothetical region with BOTH a real dhw_calibration
+  // AND a placeholder F-term would apportion on the F-terms alone. No shipped
+  // region has that combination today.
+  var _dhwFieldUsable=(_fhas(fp.dhw_calibration)&&_has(dhwv));
+  if(_dhwFieldUsable){
+    _nPresent++;
+    if(fp.dhw_calibration_estimated===true){ _nPresentEst++; _estNames.push('DHW calibration'); }
+  }
+  // One decimal, not integer: F1 at Bocas is -0.3 and rounding it to an integer
+  // printed a real measurement as "0" next to a -9 placeholder.
+  var fcMeasured=Math.round(_fcMeasRaw*10)/10, fcEstimated=Math.round(_fcEstRaw*10)/10;
+  var _gainNominal=fp.accuracy_field_gain||0;
+  var _earnFrac;
+  if((_wMeas+_wEst)>0) _earnFrac=_wMeas/(_wMeas+_wEst);
+  else if(_nPresent>0) _earnFrac=(_nPresent-_nPresentEst)/_nPresent;
+  else _earnFrac=0;
+  var accFieldEarned=Math.round(_gainNominal*_earnFrac);
+  var _fieldAttribNote;
+  if(!fp.hasField){
+    _fieldAttribNote='no field data published for this region - no field correction and no field accuracy gain';
+  } else if(_nPresent===0){
+    _fieldAttribNote='this region has a field profile, but none of its values could be applied here, so no field '+
+      'correction was made and the nominal +'+_gainNominal+'% field accuracy gain is NOT earned';
+  } else if(_nPresentEst===0){
+    _fieldAttribNote='all '+_nPresent+' contributing field(s) are real measurements - full field accuracy gain earned';
+  } else if(_wMeas===0&&_wEst>0){
+    _fieldAttribNote='ENTIRELY PLACEHOLDER: the whole '+fcT+'-point field correction comes from ESTIMATED value(s) ('+
+      _estNames.join(', ')+'), so it earns NO accuracy credit. The nominal +'+_gainNominal+
+      '% field gain is forfeited in full. The correction is still applied to the score - it is the ACCURACY claim that was unearned.';
+  } else {
+    _fieldAttribNote='MOSTLY PLACEHOLDER: of the '+fcT+'-point field correction, '+fcMeasured+
+      ' point(s) come from real measurements and '+fcEstimated+' from ESTIMATED value(s) ('+_estNames.join(', ')+
+      '). Field accuracy gain is apportioned by correction magnitude: +'+accFieldEarned+'% earned of a nominal +'+
+      _gainNominal+'%. The correction is still applied in full - it is the ACCURACY claim that is scaled.';
+    if(_wMeas>_wEst) _fieldAttribNote='MIXED'+_fieldAttribNote.substring('MOSTLY PLACEHOLDER'.length);
+  }
   // v10.156 BUG-05: no satellite input at all -> no score. Field corrections
   // (F1..F5, fcTotal) are still real and are returned unchanged; everything
   // downstream of the satellite composite is null, and the accuracy figures
@@ -5910,7 +6573,9 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
     return {s1:null,s2:null,s3:null,s4:null,s5:null,s6:null,sat_ccs:null,ccs:null,
       B:null,mu:null,deltaU:null,meff:null,omega0:null,k:null,p5yr:null,ac1:null,tau:null,
       fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
-      acc_sat:0,acc_field:fp.accuracy_field_gain||0,acc_total:0,
+      acc_sat:0,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,
+      fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
+      fieldAttribNote:_fieldAttribNote,acc_total:0,
       insufficientData:true, lowConfidence:true, nInputs:nInputs, dataCompleteness:0,
       dataNote:noteTxt};
   };
@@ -5970,7 +6635,9 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var tau=(B>0&&!isNaN(B))?Math.round(10/B)/10:99;
   return {s1:s1,s2:s2,s3:s3,s4:s4,s5:s5,s6:s6,sat_ccs:csat,ccs:ccs,B:B,mu:mu,deltaU:dU,
     meff:me,omega0:w0,k:k,p5yr:p5,ac1:ac1,tau:tau,fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
-    acc_sat:77,acc_field:fp.accuracy_field_gain||0,acc_total:77+(fp.accuracy_field_gain||0),
+    acc_sat:77,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,acc_total:77+accFieldEarned,
+    fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
+    fieldAttribNote:_fieldAttribNote,
     // v10.156 BUG-05: reported on EVERY return so a partial-data score is
     // visibly qualified, not silently equated with a fully-measured one.
     insufficientData:false, lowConfidence:(dataCompleteness<50),
@@ -5991,7 +6658,7 @@ function legRow(hex,main,sub){
 }
 function legDiv(){return ui.Label('',{margin:'3px 0 1px 0',backgroundColor:'#cccccc',height:'1px',stretch:'horizontal'});}
 
-panel.add(lbl('STEMGeoHS Marine v10.160',12,'#ffffff','#1a4a2a',true));
+panel.add(lbl('STEMGeoHS Marine '+TOOL_VERSION,12,'#ffffff','#1a4a2a',true));
 var clickLbl = lbl('CLICK coastal reef/shallow water to analyze',10,'#ffffff','#1a5a2a',true);
 panel.add(clickLbl);
 
@@ -6627,9 +7294,9 @@ function friendlyEEError(errText) {
   return 'Raw error: '+raw;
 }
 
-// S13 - CSD EARLY WARNING TEST (v10.149)
+// S13 - CSD EARLY WARNING TEST
 // ============================================================
-panel.add(sHead('S13 - CSD EARLY WARNING TEST (v10.160)','#1a4a4a'));
+panel.add(sHead('S13 - CSD EARLY WARNING TEST ('+TOOL_VERSION+')','#1a4a4a'));
 panel.add(lbl('Tests whether a reef shows "critical slowing down" (CSD, Scheffer et al. 2009) — a statistical warning sign that can appear before ecological collapse. The classic Scheffer signature is BOTH indicators rising together: autocorrelation (AC1) AND variance.',7,'#226666'));
 panel.add(lbl('v10.90: AC1 is weighted as the PRIMARY indicator throughout, per Dakos et al. 2012 (Ecology 93:264-271), which found autocorrelation "relatively robust" while variance can rise OR fall near a real transition. A variance-only signal (AC1 not rising) is now explicitly flagged as weaker evidence than an AC1-confirmed one.',7,'#886600'));
 panel.add(lbl('v10.91: the reverse case - AC1 RISING while variance FALLS - is treated as a valid, still-meaningful signal, not a weak/contradicted one. Dakos et al. document this exact pattern (their Fig. 2c, Fig. 4): variance can decrease near a genuine transition while AC1 keeps rising regardless.',7,'#886600'));
@@ -6781,7 +7448,10 @@ var csdTestRunBtn = ui.Button({
         if(props.v!==null&&props.v!==undefined){print('  Month '+(mi+1)+' ('+dateStr+'): '+props.v.toFixed(2)+' deg C'); validCount++;}
         else{print('  Month '+(mi+1)+' ('+dateStr+'): NO DATA (null)');}
       }
-      print('Raw valid months: '+validCount+' / '+feats.length);
+      // v10.161 S7: printed "0 / 0" when the fetch returned an empty table.
+      print(feats.length===0?
+        'Raw valid months: none - the monthly fetch returned NO features at all (empty table, not zero valid months out of some total).':
+        ('Raw valid months: '+validCount+' / '+feats.length));
       rMMM_test.evaluate(function(mmmRes){
         var mmmTestVal=(mmmRes&&mmmRes.mmm!==null&&mmmRes.mmm!==undefined)?mmmRes.mmm:null;
         var trTest=analyzeThermalRecovery(feats,mmmTestVal);
@@ -7729,7 +8399,13 @@ function runControlCSD(bestCtrl, b, a) {
         // PRELIMINARY rather than a confident-sounding label.
         if(spatialPending) confidence='PRELIMINARY (spatial indicators still loading...)';
         else confidence=classifyToolkitConfidence(tally, csdPermPAC1, csdPermPVar, csdPermStatus).label;
-        var txt='TOOLKIT SUMMARY ('+tally.nAgree+'/'+tally.nAvail+' scored indicators agree - AC1 weighted as PRIMARY per Dakos et al. 2012, others are supporting evidence, not equal votes):\n'+
+        // v10.161 S7: was '('+nAgree+'/'+nAvail+' scored indicators agree...)', which
+        // renders "0/0 scored indicators agree" when nothing was computable - an
+        // empty denominator dressed up as a unanimous-looking tally.
+        var txt='TOOLKIT SUMMARY ('+(tally.nAvail>0?
+            tally.nAgree+'/'+tally.nAvail+' scored indicators agree'
+           :'NO indicator was computable at this site/window - nothing was scored, so there is no tally')+
+          ' - AC1 weighted as PRIMARY per Dakos et al. 2012, others are supporting evidence, not equal votes):\n'+
           tally.lines.join('\n')+'\n'+
           'Confidence: '+confidence+'\n'+
           'Data sufficiency: STUDY n='+(a.nMonths||'?')+'mo AFTER / '+(b.nMonths||'?')+'mo BEFORE'+
@@ -7931,8 +8607,11 @@ function runControlCSD(bestCtrl, b, a) {
               } else {
                 ac1PrimaryTxt=(fullTally.primaryAgrees?'RISING':'not rising');
               }
+              // v10.161 S7: "Supporting: 0/0 agree" was reachable whenever no
+              // supporting indicator was computable.
               csdCompareVerdictV.setValue(combinedTitle+'\nAC1 (primary): '+ac1PrimaryTxt+
-                ' | Supporting: '+fullTally.supportAgree+'/'+fullTally.supportAvail+' agree | '+regionalContextLine);
+                ' | Supporting: '+(fullTally.supportAvail>0?fullTally.supportAgree+'/'+fullTally.supportAvail+' agree'
+                                                           :'none computable')+' | '+regionalContextLine);
               csdCompareVerdictV.style().set('color',combinedCol);
               csdCompareVerdictV.style().set('backgroundColor',combinedBg);
               csdCompareVerdictV.style().set('border','2px solid '+combinedCol);
@@ -8028,7 +8707,7 @@ panel.add(lbl('v10.158: the 12 and 24-month rows are shown for diagnostics ONLY 
 // multiTotal, so the label and the progress counter cannot disagree.
 panel.add(lbl('This fires '+CSD_SWEET_SPOT_NCALLS+' Earth Engine calls in parallel (1 control-BEFORE + '+
   CSD_SWEET_SPOT_NWINDOWS+' study-AFTER + '+CSD_SWEET_SPOT_NWINDOWS+' control-AFTER + '+
-  CSD_SWEET_SPOT_NPERMFETCHES+' raw-series fetches for the real permutation-test p-values below) and can take 30-120 seconds - a live counter below shows progress so it never looks frozen.',7,'#886600'));
+  CSD_SWEET_SPOT_NPERMFETCHES+' raw-series fetches for the real permutation-test p-values below) and can take 30-120 seconds - a live counter below shows progress. v10.161 CORRECTION: this used to say the counter means the panel "never looks frozen". It can: the counter only advances when a call returns, so if Earth Engine never answers one of them it stops moving and there is no timer in this sandbox to notice. The counter now tells you that, and what to do (press RUN again) - it does not promise it cannot happen.',7,'#886600'));
 panel.add(lbl('AFTER start date (YYYY-MM-DD):',7,'#334466'));
 var csdAfterStartInput=ui.Textbox({
   placeholder:'AFTER start: e.g. 2023-06-01',
@@ -8137,8 +8816,14 @@ var csdMultiWindowBtn=ui.Button({
 
     function bumpProgress(){
       multiDone++;
+      // v10.161 S6a: same exposure as S7C-S7F - this counter is only ever
+      // replaced when multiDone reaches multiTotal, so one .evaluate() that
+      // never returns freezes it permanently, under a panel that promises it
+      // "never looks frozen". No timer exists in this sandbox, so the label now
+      // carries what a stalled counter means and how to recover.
       csdMultiStatusV.setValue('Step 2/3: Computing... ('+multiDone+' / '+multiTotal+' sub-tests done'+
-        (multiErrors>0?', '+multiErrors+' returned no data':'')+')');
+        (multiErrors>0?', '+multiErrors+' returned no data':'')+')'+
+        (multiDone<multiTotal?('\n'+S7_STALL_HINT):''));
       if(multiDone < multiTotal) return;
       finishAnalysis();
     }
@@ -8646,6 +9331,20 @@ var csdMultiWindowBtn=ui.Button({
           var nWindowsTested = windowLengths.length;
           var permLines=['=== REAL SIGNIFICANCE ACROSS ALL '+nWindowsTested+' WINDOWS (permutation test) ==='];
           permLines.push('Same engine as STEP 3 COMPARE, run at each window length (300 shuffles each,');
+          // v10.161 S6c (same class as S7F's hardcoded "4 tests / p<0.0125"): when
+          // nPoweredWindows is 0 this block used to read "0 of those 6 windows are
+          // ... testing 0 windows means SOME window can look significant by pure
+          // chance - the CORRECTED bar below (0.05 / 0 POWERED windows = 0.0500)",
+          // i.e. a multiple-comparisons correction over a family of zero tests,
+          // quoting an alpha that came from Math.max(1,0) rather than from
+          // anything measured. Stated plainly instead.
+          if(nPoweredWindows===0){
+            permLines.push('reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast). NONE of those '+nWindowsTested+' windows');
+            permLines.push('reaches the '+CSD_MIN_WINDOW_MONTHS+'-month floor ON ITS REAL SPAN as a distinct (non-duplicate) span, so');
+            permLines.push('NO window here can support inference and there is no family of tests to correct.');
+            permLines.push('No Bonferroni bar is quoted: correcting a family of zero tests is meaningless.');
+            permLines.push('Every row below is shown for transparency only and none of them is evidence.');
+          } else {
           permLines.push('reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast). '+nPoweredWindows+' of those '+nWindowsTested+' windows are');
           permLines.push('at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor ON THEIR REAL SPAN and are not a repeat of a shorter');
           permLines.push('row (v10.159 W-03), so they can support inference; testing '+nPoweredWindows+' windows means');
@@ -8654,6 +9353,7 @@ var csdMultiWindowBtn=ui.Button({
           permLines.push('exactly the family it counts (v10.158: it used to divide by all '+nWindowsTested+' while counting');
           permLines.push('only the powered ones). Sub-floor rows are shown for transparency and are');
           permLines.push('never counted as evidence, so they are not in the correction either.');
+          }
           permLines.push(repeatChar('\u2500',72));
           permLines.push('Window | Study AC1 p | Study Var p | Ctrl AC1 p | Ctrl Var p | Local signal?');
           permLines.push(repeatChar('\u2500',72));
@@ -8710,8 +9410,12 @@ var csdMultiWindowBtn=ui.Button({
                           (localSig?(minStudyP<bonferroniAlpha?'YES (survives correction)':'YES (uncorrected only)'):'no')));
           });
           permLines.push(repeatChar('\u2500',72));
-          permLines.push(uncorrectedLocalCount+' of '+nPoweredWindows+' DISTINCT windows that can support inference (>='+CSD_MIN_WINDOW_MONTHS+
-            ' actual valid months, duplicate spans removed) show a local signal at the uncorrected p<0.05 level.');
+          // v10.161 S6b: "0 of 0 DISTINCT windows" when nothing was powered.
+          permLines.push(nPoweredWindows===0?
+            ('NO window here is a DISTINCT span at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor, so no row above '+
+             'was counted as evidence and no local-signal tally is reported.'):
+            (uncorrectedLocalCount+' of '+nPoweredWindows+' DISTINCT windows that can support inference (>='+CSD_MIN_WINDOW_MONTHS+
+            ' actual valid months, duplicate spans removed) show a local signal at the uncorrected p<0.05 level.'));
           if(fssShortAfter){
             permLines.push('NOTE (v10.159 W-03, made effective in v10.160): the AFTER record is only '+fssAfterValidTotal+' valid months long, so the');
             permLines.push('longer rows above do not all test different amounts of data - rows marked DUPLICATE');
@@ -9105,6 +9809,15 @@ var csdSlideRunBtn=ui.Button({
     csdSlideVerdictV.style().set('color','#334466'); csdSlideVerdictV.style().set('backgroundColor','#eeeeee');
     csdSlideVerdictV.style().set('border','2px solid #aaaaaa'); csdSlideVerdictV.style().set('whiteSpace','pre');
     csdSlideResultV.setValue('');
+    // v10.161 S6a (S13 audit): csdSlideValidV was never cleared at run start and
+    // is only written far down the SUCCESS path, after the feats.length<4 early
+    // return. On a re-run that hit the insufficient-data path, the PREVIOUS run's
+    // full "REAL SIGNIFICANCE TEST (independent windows)" block stayed on screen
+    // underneath a fresh "INSUFFICIENT DATA" verdict, reading as current results
+    // for the new coordinates. Cleared here, and both early returns below now say
+    // explicitly that the test did not run.
+    csdSlideValidV.setValue('');
+    csdSlideValidV.style().set('color','#115566');
     var testPt=ee.Geometry.Point([lonIn,latIn]), testStudy=testPt.buffer(1000);
     var slideColl=mkMoSSTRange(startTxt,totalMonths);
     var rSlide=computeSlidingWindowCSD(slideColl,testStudy,'sst',4000,windowSize);
@@ -9113,6 +9826,8 @@ var csdSlideRunBtn=ui.Button({
         csdSlideVerdictV.setValue(friendlyEEError(err));
         csdSlideVerdictV.style().set('color','#cc0000'); csdSlideVerdictV.style().set('backgroundColor','#ffd0d0');
         csdSlideVerdictV.style().set('border','2px solid #cc0000');
+        csdSlideValidV.setValue('Independent-window significance test: NOT RUN - the sliding-window fetch errored, so there was no series to test.');   // v10.161 S6a
+        csdSlideValidV.style().set('color','#aa3300');
         print('=== S13 SLIDING WINDOW ERROR === '+err);
         return;
       }
@@ -9121,6 +9836,9 @@ var csdSlideRunBtn=ui.Button({
         if(feats.length<4){
           csdSlideVerdictV.setValue('INSUFFICIENT DATA - only '+feats.length+' sliding window position(s) computed.\nNeed at least 4. Try a longer total-months span or shorter window.');
           csdSlideVerdictV.style().set('color','#cc0000'); csdSlideVerdictV.style().set('backgroundColor','#ffd0d0');
+          csdSlideValidV.setValue('Independent-window significance test: NOT RUN - only '+feats.length+   // v10.161 S6a
+            ' sliding-window position(s) were computed, which is below the 4 this panel needs. Nothing above was tested.');
+          csdSlideValidV.style().set('color','#aa3300');
           return;
         }
         var ac1Series=[], varSeries=[], dateLabels=[];
@@ -9506,7 +10224,11 @@ var s7bScanBtn = ui.Button({
         rows.push('SPATIAL VARIABILITY: FAI range='+(faiRange!==null?faiRange.toFixed(3):'n/a')+
           ' | NDCI range='+(ndciRange!==null?ndciRange.toFixed(3):'n/a')+
           (faiRange!==null&&faiRange>0.05?' - LARGE spread, confirms the site is patchy (matches the kind of 1km discrepancy that motivated this tool).':''));
-        rows.push('WARNING SIGN COUNT: FAI elevated '+nElevatedFAI+'/'+nAvail+' | NDCI elevated '+nElevatedNDCI+'/'+nAvail+' | NDVI elevated '+nElevatedNDVI+'/'+nAvail);
+        // v10.161 S7: rendered "0/0 | 0/0 | 0/0" when no point returned data,
+        // directly under a PATTERN line that correctly said "NO DATA".
+        rows.push(nAvail===0?
+          'WARNING SIGN COUNT: none - NO point in the scan returned a usable reading, so nothing was counted (this is not "no warning signs found").':
+          ('WARNING SIGN COUNT: FAI elevated '+nElevatedFAI+'/'+nAvail+' | NDCI elevated '+nElevatedNDCI+'/'+nAvail+' | NDVI elevated '+nElevatedNDVI+'/'+nAvail));
         rows.push('PATTERN: '+patchiness);
         rows.push('Radius: '+radiusKm+'km | Each point sampled with a 300m buffer, max reducer (same methodology as the main S7 panel above)');
         s7bResultV.setValue(rows.join('\n'));
@@ -9586,6 +10308,7 @@ panel.add(s7cMonthsInput);
 var s7cStatusV = ui.Label('Fill in the fields above, then press RUN.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7cResultV = ui.Label('',{fontSize:'8px',color:'#3a2050',backgroundColor:'#f5eefa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
+var s7cRunSeq = 0;   // v10.161 S6a
 var s7cRunBtn = ui.Button({
   label:'RUN PROOF-OF-CONCEPT (3 nodes)',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#e8d9f5',color:'#4a1a6a',stretch:'horizontal',padding:'6px 4px',border:'2px solid #663388'},
@@ -9603,7 +10326,22 @@ var s7cRunBtn = ui.Button({
     if(isNaN(radiusKm)||radiusKm<0.3||radiusKm>3){s7cStatusV.setValue('Node spacing must be 0.3-3 km.'); s7cStatusV.style().set('color','#cc0000'); return;}
     var totalMonths=parseInt(monthsTxt,10);
     if(isNaN(totalMonths)||totalMonths<6||totalMonths>36){s7cStatusV.setValue('Months must be 6-36.'); s7cStatusV.style().set('color','#cc0000'); return;}
+    s7cRunSeq++; var s7cMyRun=s7cRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7C');
+
+    // v10.161 S4: S7C is DELIBERATELY the advisory case, not a hard gate. Its
+    // entire stated purpose is to measure whether Sentinel-2 FAI is dense enough
+    // here at all ("this checks whether monthly Sentinel-2 FAI data is even dense
+    // enough ... before committing to a full 9-node network"), so refusing it for
+    // being sparse would refuse the one module that exists to report sparseness.
+    // It therefore refuses ONLY when the window is completely empty - zero months
+    // with any qualifying scene, where its 6 EE calls can return nothing at all -
+    // and otherwise runs, with the scene-month count shown up front and a warning
+    // when the window is below the 4-valid-month floor the other modules use.
+    faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7C', statusLbl:s7cStatusV, resultLbl:s7cResultV,
+      windows:[{name:'WINDOW',start:startTxt,months:totalMonths}],
+      refuseBelow:1, warnBelow:FAI_MIN_VALID_MONTHS,
+      cannotRunTxt:'There is nothing here for S7C to measure - S7C-S7F cannot run here.'}, function(_pre){
 
     function destinationPoint(lat, lon, bearingDeg, distKm){
       var R=6371, brng=bearingDeg*Math.PI/180, lat1=lat*Math.PI/180, lon1=lon*Math.PI/180;
@@ -9629,15 +10367,22 @@ var s7cRunBtn = ui.Button({
     var rCorr_NE = computeZonalSyncCSD(faiColl, ptNBuf, ptEBuf, 'fai', 20);
 
     var s7cRes={}, s7cPending=6, s7cErrors=0;
+    var s7cWaiting=['Center AC1/var','North AC1/var','East AC1/var','Center-North corr','Center-East corr','North-East corr'];
+    var s7cCallName={acC:'Center AC1/var', acN:'North AC1/var', acE:'East AC1/var',
+                     coCN:'Center-North corr', coCE:'Center-East corr', coNE:'North-East corr'};
     function s7cBump(key,val,err){
+      if(s7cMyRun!==s7cRunSeq) return;   // v10.161 S6a
       s7cRes[key]=val;
       if(err) s7cErrors++;
       s7cPending--;
-      s7cStatusV.setValue('Running: '+(6-s7cPending)+' / 6 sub-tests done'+(s7cErrors>0?' ('+s7cErrors+' errored)':'')+'...');
+      var _waitC=s7Outstanding(s7cWaiting, s7cCallName[key]||key);
+      s7cStatusV.setValue('Running: '+(6-s7cPending)+' / 6 sub-tests done'+(s7cErrors>0?' ('+s7cErrors+' errored)':'')+'...\n'+_waitC+
+        (s7cPending>0?('\n'+S7_STALL_HINT):''));
       if(s7cPending>0) return;
       s7cFinish();
     }
     function s7cFinish(){
+      if(s7cMyRun!==s7cRunSeq) return;   // v10.161 S6a
       try {
         var acC=s7cRes.acC||{}, acN=s7cRes.acN||{}, acE=s7cRes.acE||{};
         var coCN=s7cRes.coCN||{}, coCE=s7cRes.coCE||{}, coNE=s7cRes.coNE||{};
@@ -9685,6 +10430,7 @@ var s7cRunBtn = ui.Button({
           lines.push('SERIES QUALITY (v10.159 W-02 - computed since v10.158, never shown until now):');
           _s7cDisc.forEach(function(d){ lines.push(d); });
         }
+        if(_pre && _pre.note) { lines.push(''); lines.push(_pre.note); }   // v10.161 S4
         s7cResultV.setValue(lines.join('\n'));
 
         var headline, hCol, hBg;
@@ -9721,6 +10467,7 @@ var s7cRunBtn = ui.Button({
     rCorr_CN.evaluate(function(v,e){ s7cBump('coCN', e?{}:v||{}, e); });
     rCorr_CE.evaluate(function(v,e){ s7cBump('coCE', e?{}:v||{}, e); });
     rCorr_NE.evaluate(function(v,e){ s7cBump('coNE', e?{}:v||{}, e); });
+    });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
 });
 panel.add(s7cRunBtn);
@@ -9792,6 +10539,7 @@ panel.add(s7dAfterMonthsInput);
 var s7dStatusV = ui.Label('Fill in the fields above, then press RUN. 3 batched calls, expect ~20-60 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7dResultV = ui.Label('',{fontSize:'8px',color:'#2a1040',backgroundColor:'#f2ecfa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
+var s7dRunSeq = 0;   // v10.161 S6a: a late callback from an abandoned run must not overwrite a newer run's label
 var s7dRunBtn = ui.Button({
   label:'RUN FULL 9-NODE NETWORK (3 batched EE calls, ~20-60s)',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#ded0f0',color:'#3a1560',stretch:'horizontal',padding:'6px 4px',border:'2px solid #5a2a80'},
@@ -9848,7 +10596,14 @@ var s7dRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7dStatusV.style().set('color','#cc0000'); return;
     }
+    s7dRunSeq++; var s7dMyRun=s7dRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7D');
+
+    // v10.161 S4: cheap FAI data-density gate BEFORE the 3 heavy batched calls.
+    faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7D', statusLbl:s7dStatusV, resultLbl:s7dResultV,
+      windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
+               {name:'AFTER', start:afterStartTxt, months:afterMonths}],
+      cannotRunTxt:'S7C-S7F cannot run here.'}, function(_pre){
 
     function destinationPoint(lat, lon, bearingDeg, distKm){
       var R=6371, brng=bearingDeg*Math.PI/180, lat1=lat*Math.PI/180, lon1=lon*Math.PI/180;
@@ -9909,15 +10664,22 @@ var s7dRunBtn = ui.Button({
     s7dResultV.setValue('');
 
     var s7dData={}, s7dPending=3, s7dErrors=0;
+    var s7dWaiting=['BEFORE series','AFTER series','NDVI check'];
+    var s7dCallName={before:'BEFORE series', after:'AFTER series', ndvi:'NDVI check'};
     function s7dBump(key,val,err){
+      if(s7dMyRun!==s7dRunSeq) return;   // v10.161 S6a: stale run, do not touch the label
       s7dData[key]=err?null:val;
       if(err) s7dErrors++;
       s7dPending--;
+      // v10.161 S6a: name the outstanding call(s) and say what a frozen counter means.
+      var _wait=s7Outstanding(s7dWaiting, s7dCallName[key]||key);
       s7dStatusV.setValue('Running: '+(3-s7dPending)+' / 3 batched calls done'+
-        (s7dErrors>0?' ('+s7dErrors+' errored)':'')+'...');
+        (s7dErrors>0?' ('+s7dErrors+' errored)':'')+'...\n'+_wait+
+        (s7dPending>0?('\n'+S7_STALL_HINT+' (search "S7D [" in the Console.)'):''));
       if(s7dPending===0) s7dFinish();
     }
     function s7dFinish(){
+      if(s7dMyRun!==s7dRunSeq) return;   // v10.161 S6a
       try {
         function fmtN(v,d){ return (v!==null&&v!==undefined&&!isNaN(v))?v.toFixed(d):'n/a'; }
 
@@ -9960,8 +10722,14 @@ var s7dRunBtn = ui.Button({
         var nOnReefRisingCorr=0, nOnReefTotal=0, nOffReef=0, nAc1Rising=0, nAc1Avail=0;
         var nCorrSig=0, nCorrTested=0, nAc1Sig=0, nAc1Tested=0;
         var s7dPerm={};
+        // v10.161 S6c: _nTests is how many tests were FIRED (8 pairs + 9 nodes).
+        // At a cloud-limited site most of them come back NOT TESTABLE, and a
+        // Bonferroni bar built from the fired count then corrects for a family
+        // that does not exist. _nPUsable below counts the tests that actually
+        // produced a p-value; the bar is derived from that, after the loop.
         var _nTests = Math.max(1, (nodes.length-1) + nodes.length);
-        var BONF = 0.05/_nTests;
+        var _nPUsable = 0;
+        var BONF;
         for(var idx=0;idx<nodes.length;idx++){
           var nd=nodes[idx];
           var stB=perNodeStats[nd.label].before, stA=perNodeStats[nd.label].after;
@@ -9982,7 +10750,7 @@ var s7dRunBtn = ui.Button({
           // v10.159 W-01 item 2: was a bare p-value. permP() prints NOT TESTABLE
           // (or NOT CALIBRATED) instead whenever permUsable() is false.
           var ac1PTxt = permP(ac1T);
-          if(permUsable(ac1T)){ nAc1Tested++; if(ac1T.pValue<0.05) nAc1Sig++; }
+          if(permUsable(ac1T)){ nAc1Tested++; _nPUsable++; if(ac1T.pValue<0.05) nAc1Sig++; }
 
           var dCorrTxt='-', corrPTxt='-';
           if(idx>0){
@@ -9994,6 +10762,7 @@ var s7dRunBtn = ui.Button({
                                                  afterByNode['Center'], afterByNode[nd.label], 500);
             s7dPerm[nd.label].corr = corrT;
             corrPTxt = permP(corrT);
+            if(permUsable(corrT)) _nPUsable++;
             if(onReef===true){
               nOnReefTotal++;
               if(permUsable(corrT)){
@@ -10040,19 +10809,37 @@ var s7dRunBtn = ui.Button({
         rows.push('S7D previously had NO significance test - its verdict came from fixed cutoffs');
         rows.push('(\u0394AC1>0.01, \u0394corr>0.10) measured firing on up to 80% of windows at a site');
         rows.push('where nothing happened. Those are replaced by real p-values above.');
-        rows.push('Coupling changes significant at p<0.05 : '+nCorrSig+' of '+nCorrTested+' on-reef pairs tested');
-        rows.push('AC1 changes significant at p<0.05      : '+nAc1Sig+' of '+nAc1Tested+' nodes tested');
-        rows.push('MULTIPLE COMPARISONS: '+_nTests+' tests fired at once (8 pairs + 9 nodes), so the');
-        rows.push('Bonferroni-corrected bar is p<'+BONF.toFixed(4)+'. At the uncorrected 0.05 level you would');
-        rows.push('expect roughly '+(0.05*_nTests).toFixed(1)+' hit(s) by chance alone across this many tests.');
+        // v10.161 S6b: both tallies used to render as "0 of 0" when nothing was
+        // testable. An empty denominator is not a null result.
+        rows.push('Coupling changes significant at p<0.05 : '+
+          countOfTotal(nCorrSig, nCorrTested, 'on-reef pairs tested',
+            'NO on-reef pair produced a p-value (not enough valid months) - nothing was tested, which is not the same as nothing being significant'));
+        rows.push('AC1 changes significant at p<0.05      : '+
+          countOfTotal(nAc1Sig, nAc1Tested, 'nodes tested',
+            'NO node produced a p-value (not enough valid months) - nothing was tested, which is not the same as nothing being significant'));
+        // v10.161 S6c: the bar is derived from the tests that ACTUALLY returned
+        // a p-value, not from the 17 that were fired. When none did, there is no
+        // multiple-comparisons problem to correct and saying there is one
+        // manufactures a family out of thin air.
+        BONF = 0.05/Math.max(1,_nPUsable);
         var _bonfHits=0;
-        nodes.forEach(function(nd){
-          var e=s7dPerm[nd.label];
-          if(e&&permUsable(e.corr)&&e.corr.pValue<BONF) _bonfHits++;
-          if(e&&permUsable(e.ac1)&&e.ac1.pValue<BONF) _bonfHits++;
-        });
-        rows.push('Tests surviving the corrected bar: '+_bonfHits+
-          (_bonfHits===0?'  <- nothing here is distinguishable from noise':''));
+        if(_nPUsable===0){
+          rows.push('MULTIPLE COMPARISONS: none. '+_nTests+' tests were fired (8 pairs + 9 nodes) but NOT ONE');
+          rows.push('returned a p-value at this site/window, so there is no family of results to correct.');
+          rows.push('No Bonferroni bar is quoted, because correcting a family of zero tests is meaningless.');
+        } else {
+          rows.push('MULTIPLE COMPARISONS: '+_nTests+' tests were fired (8 pairs + 9 nodes) and '+_nPUsable+' of them');
+          rows.push('returned a p-value, so the Bonferroni-corrected bar over the family that actually');
+          rows.push('exists is p<'+BONF.toFixed(4)+'. At the uncorrected 0.05 level you would expect roughly');
+          rows.push((0.05*_nPUsable).toFixed(1)+' hit(s) by chance alone across '+_nPUsable+' real tests.');
+          nodes.forEach(function(nd){
+            var e=s7dPerm[nd.label];
+            if(e&&permUsable(e.corr)&&e.corr.pValue<BONF) _bonfHits++;
+            if(e&&permUsable(e.ac1)&&e.ac1.pValue<BONF) _bonfHits++;
+          });
+          rows.push('Tests surviving the corrected bar: '+_bonfHits+
+            (_bonfHits===0?'  <- nothing here is distinguishable from noise':''));
+        }
         // v10.159 W-01 item 2 + W-02: the two columns above used to print a bare
         // p-value, and jsNodeStatsFixed()'s climatologySource / climatologyNote /
         // ac1PairsUsed / ac1PairsDropped / ac1MaxGapMonths were computed for every
@@ -10098,6 +10885,7 @@ var s7dRunBtn = ui.Button({
           ' (expect BEFORE='+(beforeMonths*9)+', AFTER='+(afterMonths*9)+', NDVI=9 if fully populated)');
         if(nOffReef>0) rows.push('NOTE: '+nOffReef+' of 9 nodes flagged LIKELY NOT on-reef (NDVI-water <= -0.10) - their rows above are informational only, not trusted algae-dynamics comparisons.');
         if(s7dErrors>0) rows.push('NOTE: '+s7dErrors+' of 3 batched calls returned no usable data. Check the Console for the exact error text (search for "S7D [" lines).');
+        if(_pre && _pre.note) rows.push(_pre.note);   // v10.161 S4
         s7dResultV.setValue(rows.join('\n'));
 
         var headline, hCol, hBg;
@@ -10110,22 +10898,26 @@ var s7dRunBtn = ui.Button({
           // no longer produces a signal headline.
           headline='HYPER-SYNCHRONIZATION SIGNAL: '+nOnReefRisingCorr+' of '+nOnReefTotal+
             ' on-reef pairs show a SIGNIFICANT rise in correlation with Center (p<0.05, permutation). '+
-            (_bonfHits>0?_bonfHits+' test(s) survive the Bonferroni bar p<'+BONF.toFixed(4)+'.'
-                        :'NONE survives the Bonferroni bar p<'+BONF.toFixed(4)+' - consistent with chance across '+_nTests+' tests.')+
-            ' AC1 significant at '+nAc1Sig+'/'+nAc1Tested+' nodes.';
+            (_nPUsable===0?'No Bonferroni bar applies - not one of the '+_nTests+' tests fired returned a p-value.'
+             :_bonfHits>0?_bonfHits+' test(s) survive the Bonferroni bar p<'+BONF.toFixed(4)+'.'
+                        :'NONE survives the Bonferroni bar p<'+BONF.toFixed(4)+' - consistent with chance across the '+_nPUsable+' tests that returned a p-value.')+
+            ' AC1 significant at '+countOfTotal(nAc1Sig,nAc1Tested,'nodes','no node returned an AC1 p-value')+'.';
           hCol=(_bonfHits>0)?'#880000':'#886600'; hBg=(_bonfHits>0)?'#ffd0d0':'#fff6cc';
         } else if(nOnReefRisingCorr>0){
           headline='PARTIAL SIGNAL: '+nOnReefRisingCorr+' of '+nOnReefTotal+
             ' on-reef pairs significant at p<0.05 - not a majority. '+
-            (_bonfHits>0?'':'None survives the corrected bar p<'+BONF.toFixed(4)+', so this is what '+
-             (0.05*_nTests).toFixed(1)+' expected chance hits across '+_nTests+' tests looks like. ')+
-            'AC1 significant at '+nAc1Sig+'/'+nAc1Tested+' nodes.';
+            (_nPUsable===0?'No Bonferroni bar applies - not one of the '+_nTests+' tests fired returned a p-value. '
+             :_bonfHits>0?'':'None survives the corrected bar p<'+BONF.toFixed(4)+', so this is what '+
+             (0.05*_nPUsable).toFixed(1)+' expected chance hits across '+_nPUsable+' real tests looks like. ')+
+            'AC1 significant at '+countOfTotal(nAc1Sig,nAc1Tested,'nodes','no node returned an AC1 p-value')+'.';
           hCol='#886600'; hBg='#fff6cc';
         } else {
           headline='NO SYNCHRONIZATION SIGNAL: 0 of '+nOnReefTotal+
             ' on-reef pairs show a significant rise in correlation with Center (permutation test, p>=0.05). '+
-            'AC1 significant at '+nAc1Sig+'/'+nAc1Tested+' nodes. This is now a real null result, '+
-            'not just a failure to cross an uncalibrated threshold.';
+            'AC1 significant at '+countOfTotal(nAc1Sig,nAc1Tested,'nodes','no node returned an AC1 p-value')+'. '+
+            (nCorrTested>0?'This is a real null result, not just a failure to cross an uncalibrated threshold.'
+                          :'CAVEAT: none of those on-reef pairs actually produced a p-value, so this is an '+
+                           'UNTESTED null, not a measured one.');
           hCol='#115511'; hBg='#d4f5df';
         }
         s7dStatusV.setValue(headline);
@@ -10167,6 +10959,7 @@ var s7dRunBtn = ui.Button({
     rBeforeSeries.evaluate(function(v,e){ s7dDiagnose('BEFORE series', v, e); s7dBump('before', v, e); });
     rAfterSeries.evaluate(function(v,e){ s7dDiagnose('AFTER series', v, e); s7dBump('after', v, e); });
     rNdviAll.evaluate(function(v,e){ s7dDiagnose('NDVI check', v, e); s7dBump('ndvi', v, e); });
+    });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
 });
 panel.add(s7dRunBtn);
@@ -10241,6 +11034,7 @@ panel.add(s7eAfterMonthsInput);
 var s7eStatusV = ui.Label('Fill in the fields above, then press RUN. 3 batched calls, expect ~30-90 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7eResultV = ui.Label('',{fontSize:'8px',color:'#5a1020',backgroundColor:'#faeef2',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
+var s7eRunSeq = 0;   // v10.161 S6a
 var s7eRunBtn = ui.Button({
   label:'RUN LOCAL vs REGIONAL CLASSIFICATION',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#f0d0d8',color:'#5a1020',stretch:'horizontal',padding:'6px 4px',border:'2px solid #883344'},
@@ -10294,7 +11088,18 @@ var s7eRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7eStatusV.style().set('color','#cc0000'); return;
     }
+    s7eRunSeq++; var s7eMyRun=s7eRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7E');
+
+    // v10.161 S4: cheap FAI data-density gate BEFORE the GEBCO reference search
+    // and the 2 heavy FAI fetches. Checked at the STUDY point only - the
+    // reference reef is not known yet at this stage, and a study site that
+    // cannot produce 4 valid months makes the whole comparison impossible
+    // regardless of what the reference turns out to be.
+    faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7E', statusLbl:s7eStatusV, resultLbl:s7eResultV,
+      windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
+               {name:'AFTER', start:afterStartTxt, months:afterMonths}],
+      cannotRunTxt:'S7C-S7F cannot run here.'}, function(_pre){
 
     function destinationPoint(lat, lon, bearingDeg, distKm){
       var R=6371, brng=bearingDeg*Math.PI/180, lat1=lat*Math.PI/180, lon1=lon*Math.PI/180;
@@ -10388,14 +11193,20 @@ var s7eRunBtn = ui.Button({
         var rAfter=extractMultiNodeSeries(faiCollAfter, pairFC, 'fai', 20);
 
         var s7ePending=2, s7eErrors=0, s7eData={};
+        var s7eWaiting=['BEFORE FAI series','AFTER FAI series'];
+        var s7eCallName={before:'BEFORE FAI series', after:'AFTER FAI series'};
         function s7eBump(key,v,e){
+          if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
           s7eData[key]=e?null:v;
           if(e) s7eErrors++;
           s7ePending--;
-          s7eStatusV.setValue('Step '+(3-s7ePending)+'/3: '+(2-s7ePending)+' / 2 batched calls done...');
+          var _wait=s7Outstanding(s7eWaiting, s7eCallName[key]||key);
+          s7eStatusV.setValue('Step '+(3-s7ePending)+'/3: '+(2-s7ePending)+' / 2 batched calls done...\n'+_wait+
+            (s7ePending>0?('\n'+S7_STALL_HINT+' (search "S7E [" in the Console.)'):''));
           if(s7ePending===0) s7eFinish();
         }
         function s7eFinish(){
+          if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
           try {
             var beforeByNode=groupSeriesByLabel(s7eData.before,'fai');
             var afterByNode=groupSeriesByLabel(s7eData.after,'fai');
@@ -10527,6 +11338,13 @@ var s7eRunBtn = ui.Button({
             if(excludedByHistoryCount>0) lines.push('NOTE: '+excludedByHistoryCount+' closer shallow-water candidate(s) were skipped because they coincide with a site already tested as a STUDY location this session (v10.116).');
             lines.push('Study site data density: '+Math.round(studyDataDensity*100)+'% ('+studyB.nValidMonths+'/'+beforeMonths+' BEFORE, '+
               studyA.nValidMonths+'/'+afterMonths+' AFTER valid months)'+(studyLowConfidence?' (LOW - likely cloud-limited, not a real null result)':''));
+            // v10.161 S4: same independence note as S7F - see the long comment there.
+            if(studyB.nValidMonths===refB.nValidMonths && studyA.nValidMonths===refA.nValidMonths){
+              lines.push('NOTE: study and reference report IDENTICAL valid-month counts. They ARE measured '+
+                'separately (two labelled regions, bucketed strictly by label - there is no path by which '+
+                'one can inherit the other). Sentinel-2 scene availability is a per-granule property and a '+
+                'granule is ~110km across, so two sites this close normally share the same scene list.');
+            }
             lines.push(repeatChar('\u2500',50));
             lines.push('STUDY  : \u0394AC1='+fmtN(dAC1_study,3)+' \u0394Var='+fmtN(dVar_study,2)+'x -> '+(studySignal?'SIGNAL':'no signal'));
             lines.push('REFERENCE: \u0394AC1='+fmtN(dAC1_ref,3)+' \u0394Var='+fmtN(dVar_ref,2)+'x -> '+(refSignal?'SIGNAL':'no signal'));
@@ -10577,6 +11395,7 @@ var s7eRunBtn = ui.Button({
               lines.push('SERIES QUALITY (v10.159 W-02 - these were computed and never shown before):');
               _s7eDisc.forEach(function(d){ lines.push(d); });
             }
+            if(_pre && _pre.note) lines.push('STUDY-SITE '+_pre.note);   // v10.161 S4
             s7eResultV.setValue(lines.join('\n'));
 
             s7eStatusV.setValue(verdict);
@@ -10619,6 +11438,7 @@ var s7eRunBtn = ui.Button({
         print('=== S7E CANDIDATE PROCESSING ERROR === '+errFinal);
       }
     });
+    });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
 });
 panel.add(s7eRunBtn);
@@ -10709,6 +11529,7 @@ panel.add(s7fAfterMonthsInput);
 var s7fStatusV = ui.Label('Fill in the fields above, then press RUN. 6 batched calls total, expect ~30-90 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7fResultV = ui.Label('',{fontSize:'8px',color:'#1a2a4a',backgroundColor:'#eef2fa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
+var s7fRunSeq = 0;   // v10.161 S6a
 var s7fRunBtn = ui.Button({
   label:'RUN ALL (S7D + S7E COMBINED)',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#cfe0f5',color:'#1a3a5a',stretch:'horizontal',padding:'6px 4px',border:'2px solid #1a3a5a'},
@@ -10765,7 +11586,14 @@ var s7fRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7fStatusV.style().set('color','#cc0000'); return;
     }
+    s7fRunSeq++; var s7fMyRun=s7fRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7F');
+
+    // v10.161 S4: cheap FAI data-density gate BEFORE the 6-call budget.
+    faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7F', statusLbl:s7fStatusV, resultLbl:s7fResultV,
+      windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
+               {name:'AFTER', start:afterStartTxt, months:afterMonths}],
+      cannotRunTxt:'S7C-S7F cannot run here.'}, function(_pre){
 
     function destinationPoint(lat, lon, bearingDeg, distKm){
       var R=6371, brng=bearingDeg*Math.PI/180, lat1=lat*Math.PI/180, lon1=lon*Math.PI/180;
@@ -10819,14 +11647,21 @@ var s7fRunBtn = ui.Button({
     s7fResultV.setValue('');
 
     var s7fData={}, s7fPending=4, s7fErrors=0;
+    var s7fWaiting=['S7D BEFORE series','S7D AFTER series','S7D NDVI check','reference-site GEBCO search'];
+    var s7fCallName={dBefore:'S7D BEFORE series', dAfter:'S7D AFTER series',
+                     dNdvi:'S7D NDVI check', candidates:'reference-site GEBCO search'};
     function s7fBump(key,v,e){
+      if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       s7fData[key]=e?null:v;
       if(e) s7fErrors++;
       s7fPending--;
-      s7fStatusV.setValue('Running: '+(4-s7fPending)+' / 4 first-stage calls done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...');
+      var _wait=s7Outstanding(s7fWaiting, s7fCallName[key]||key);
+      s7fStatusV.setValue('Running: '+(4-s7fPending)+' / 4 first-stage calls done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...\n'+_wait+
+        (s7fPending>0?('\n'+S7_STALL_HINT):''));
       if(s7fPending===0) s7fStage2();
     }
     function s7fStage2(){
+      if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       try {
         var candResult = s7fData.candidates;
         var feats = (candResult&&candResult.features)?candResult.features:[];
@@ -10863,10 +11698,15 @@ var s7fRunBtn = ui.Button({
         var rE_before = extractMultiNodeSeries(faiCollBefore, pairFCF, 'fai', 20);
         var rE_after = extractMultiNodeSeries(faiCollAfter, pairFCF, 'fai', 20);
         var s7fPending2=2;
+        var s7fWaiting2=['S7E study/reference BEFORE series','S7E study/reference AFTER series'];
+        var s7fCallName2={eBefore:'S7E study/reference BEFORE series', eAfter:'S7E study/reference AFTER series'};
         function s7fBump2(key,v,e){
+          if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
           s7fData[key]=e?null:v; if(e) s7fErrors++;
           s7fPending2--;
-          s7fStatusV.setValue('Running: second-stage '+(2-s7fPending2)+' / 2 calls done...');
+          var _wait2=s7Outstanding(s7fWaiting2, s7fCallName2[key]||key);
+          s7fStatusV.setValue('Running: second-stage '+(2-s7fPending2)+' / 2 calls done...\n'+_wait2+
+            (s7fPending2>0?('\n'+S7_STALL_HINT):''));
           if(s7fPending2===0) s7fFinishAll(excludedCount);
         }
         rE_before.evaluate(function(v,e){ s7fBump2('eBefore', v, e); });
@@ -10920,10 +11760,15 @@ var s7fRunBtn = ui.Button({
               disclosureLines:nodeStatsDisclosureLines(s7fDDisc)};
     }
     function s7fFinishD_only(){
+      if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       try {
         var dSum = buildS7DSummary();
         var lines=['=== COMBINED SUMMARY ==='];
-        lines.push(dSum.headline+' | AC1 rising at '+dSum.nAc1Rising+'/'+dSum.nAc1Avail+' nodes');
+        // v10.161 S6b: was 'AC1 rising at '+nAc1Rising+'/'+nAc1Avail+' nodes', which
+        // rendered as "0/0 nodes" at a cloud-limited site. See countOfTotal().
+        lines.push(dSum.headline+' | AC1 rising at '+
+          countOfTotal(dSum.nAc1Rising, dSum.nAc1Avail, 'nodes',
+            'AC1: no node had a computable \u0394AC1 in BOTH windows, so no node was tested'));
         lines.push('S7E: not run this time (no usable reference site found)');
         if(dSum.disclosureLines.length>0){
           lines.push('SERIES QUALITY (v10.159 W-02):');
@@ -10931,11 +11776,13 @@ var s7fRunBtn = ui.Button({
         }
         lines.push(repeatChar('\u2500',50));
         lines.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo | radius='+radiusKm+'km');
+        if(_pre && _pre.note) lines.push(_pre.note);   // v10.161 S4
         s7fResultV.setValue(lines.join('\n'));
         print('=== S7F COMBINED (S7D only) ==='); print(lines.join('\n'));
       } catch(eF){ print('=== S7F D-only finish error === '+eF); }
     }
     function s7fFinishAll(excludedCount){
+      if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       try {
         var dSum = buildS7DSummary();
         var eBeforeByNode = groupSeriesByLabel(s7fData.eBefore, 'fai');
@@ -11009,12 +11856,39 @@ var s7fRunBtn = ui.Button({
         var refDataDensityF = (refB.nValidMonths+refA.nValidMonths)/(beforeMonths+afterMonths);
 
         var lines=['=== COMBINED SUMMARY ==='];
-        lines.push(dSum.headline+' | AC1 rising at '+dSum.nAc1Rising+'/'+dSum.nAc1Avail+' nodes');
+        // v10.161 S6b: see countOfTotal() - this is the exact line that printed
+        // "AC1 rising at 0/0 nodes" in the live Bocas del Toro run.
+        lines.push(dSum.headline+' | AC1 rising at '+
+          countOfTotal(dSum.nAc1Rising, dSum.nAc1Avail, 'nodes',
+            'AC1: no node had a computable \u0394AC1 in BOTH windows, so no node was tested'));
         lines.push(eHeadline+' | Study \u0394AC1='+fmtNF(dAC1_study,3)+' | Reference \u0394AC1='+fmtNF(dAC1_ref,3));
         lines.push('Study data density: '+Math.round(studyDataDensityF*100)+'% ('+studyB.nValidMonths+'/'+beforeMonths+' BEFORE, '+
           studyA.nValidMonths+'/'+afterMonths+' AFTER valid months)'+(studyInsufficient?' - INSUFFICIENT in at least one period':''));
         lines.push('Reference data density: '+Math.round(refDataDensityF*100)+'% ('+refB.nValidMonths+'/'+beforeMonths+' BEFORE, '+
           refA.nValidMonths+'/'+afterMonths+' AFTER valid months)'+(refInsufficient?' - INSUFFICIENT in at least one period':''));
+        // v10.161 S4 (asked directly: can the reference density silently INHERIT
+        // the study's?). TRACED THROUGH THE CODE - IT CANNOT. Study and Reference
+        // are two distinct labelled features of ONE FeatureCollection; reduceRegions
+        // evaluates each separately and carries its own `label` through the flatten;
+        // groupSeriesByLabel() buckets strictly on that label, has no default bucket
+        // and no copy-from-sibling path, and a feature with no label is DROPPED, not
+        // merged. If the Reference series were missing entirely the lookup would give
+        // [] and 0 valid months - which would DIFFER from the study, not match it.
+        // So identical densities are a real, independent measurement at both sites.
+        // WHY THEY MATCH ANYWAY, at Bocas del Toro 20 km apart: mkMoFAIRange() applies
+        // NO per-pixel cloud mask, so a month is valid iff Sentinel-2 has a scene with
+        // CLOUDY_PIXEL_PERCENTAGE < 20 over the point. That is a per-granule property,
+        // and an S2 granule is ~110 km across - two sites 20 km apart normally sit in
+        // the same granule(s) and therefore share the SAME scene list, month for month.
+        // Identical counts are the expected result, not a copied number. Said on
+        // screen so the next reader does not have to re-derive it.
+        if(studyB.nValidMonths===refB.nValidMonths && studyA.nValidMonths===refA.nValidMonths){
+          lines.push('NOTE: study and reference report IDENTICAL valid-month counts. These ARE measured '+
+            'separately (two labelled regions, one reduceRegions each, bucketed strictly by label - no '+
+            'inheritance path exists). They match because Sentinel-2 scene availability is a per-granule '+
+            'property and a granule is ~110km across, so two sites this close normally share the same '+
+            'scene list month for month. Expected, not a copied number.');
+        }
         if(excludedCount>0) lines.push('NOTE: '+excludedCount+' closer reference candidate(s) excluded (already tested as a study site this session).');
         lines.push(repeatChar('\u2500',50));
         lines.push('Reference reef: '+s7fData.refSite.lat.toFixed(4)+', '+s7fData.refSite.lon.toFixed(4)+
@@ -11045,7 +11919,25 @@ var s7fRunBtn = ui.Button({
         lines.push('Direction-only read (old behaviour), study site: '+(studyDirOnly?'would have flagged':'would not have flagged')+
           ' | significance-gated: '+(studySignal?'flags':'does not flag'));
         lines.push('Calibrated cutoffs still shown for reference: \u0394AC1>'+_s7fAc1.toFixed(3)+', \u0394Var>'+_s7fVar.toFixed(2)+'x');
-        lines.push('NOTE: 4 tests fired here; the Bonferroni bar is p<0.0125.');
+        // v10.161 FIX 19 / S6c - THIS LINE CORRECTED FOR A FAMILY OF ZERO TESTS.
+        // OBSERVED IN A LIVE BROWSER RUN: "NOTE: 4 tests fired here; the
+        // Bonferroni bar is p<0.0125." printed verbatim while all four of
+        // Study AC1 / Study Var / Reference AC1 / Reference Var had come back
+        // NOT TESTABLE. Both numbers were hardcoded, so neither could notice.
+        // The family is now the tests that actually returned a p-value, the bar
+        // is derived from that count, and when the count is zero the line says
+        // so instead of quoting a correction for tests that never ran.
+        var _s7fPUsable=0;
+        [sAC1T,sVarT,rAC1T,rVarT].forEach(function(_t){ if(permUsable(_t)) _s7fPUsable++; });
+        if(_s7fPUsable===0){
+          lines.push('MULTIPLE COMPARISONS: none. 4 tests were fired here (study/reference x AC1/Var)');
+          lines.push('and NOT ONE returned a p-value, so there is no family of results to correct and');
+          lines.push('no Bonferroni bar is quoted. Nothing above was tested at this site/window.');
+        } else {
+          lines.push('MULTIPLE COMPARISONS: 4 tests were fired here and '+_s7fPUsable+' returned a p-value, so the');
+          lines.push('Bonferroni bar over the family that actually exists is p<'+(0.05/_s7fPUsable).toFixed(4)+'.');
+        }
+        if(_pre && _pre.note) lines.push(_pre.note);   // v10.161 S4
         s7fResultV.setValue(lines.join('\n'));
 
         var vCol = (dSum.headline.indexOf('HYPER')===0||eHeadline.indexOf('LOCAL ANOMALY')>=0)?'#880000':
@@ -11066,6 +11958,7 @@ var s7fRunBtn = ui.Button({
     rD_after.evaluate(function(v,e){ s7fBump('dAfter', v, e); });
     rD_ndvi.evaluate(function(v,e){ s7fBump('dNdvi', v, e); });
     rCandidatesF.evaluate(function(v,e){ s7fBump('candidates', v, e); });
+    });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
 });
 panel.add(s7fRunBtn);
@@ -11408,7 +12301,10 @@ var toeMkBtn=ui.Button({
         }
       });
       lines.push(repeatChar('\u2500',50));
-      lines.push(nSig+' of '+nTotal+' testable variables show a REAL statistically significant trend (p<0.05).');
+      // v10.161 S7: "0 of 0 testable variables" when nothing was testable.
+      lines.push(nTotal===0?
+        'NO variable had enough valid annual points at this pixel to run Mann-Kendall, so nothing was tested (this is not "no trends found").':
+        (nSig+' of '+nTotal+' testable variables show a REAL statistically significant trend (p<0.05).'));
       toeMkVerdictV.setValue(nTotal===0?'No variable had enough annual data to test.':
         nSig+'/'+nTotal+' variables REAL significant trend (p<0.05)'+(nSig>=2?' - compare vs S17\'s SNR-based count above':''));
       toeMkVerdictV.style().set('color',nSig>=2?'#880000':nSig>=1?'#886600':'#115511');
@@ -11557,9 +12453,29 @@ panel.add(legRow('#aaaaff','-0.05 to -0.01/yr','Slight cooling'));
 panel.add(legRow('#dddddd','-0.01 to +0.01/yr','STABLE / near-zero trend'));
 panel.add(legRow('#ffaaaa','+0.01 to +0.05/yr','Warming - basin shallowing (CSD signal)'));
 panel.add(legRow('#ff0000','> +0.05/yr','RAPID warming - bowl nearly flat'));
-panel.add(legDiv()); panel.add(sHead('5. S2 - Chlorophyll-a mg/m3','#005a32'));
-panel.add(legRow('#084594','< 0.1','Oligotrophic')); panel.add(legRow('#6baed6','0.5-1.0','Moderate'));
-panel.add(legRow('#74c476','1.0-2.0','Good')); panel.add(legRow('#006837','> 5.0','Bloom'));
+// v10.161 FIX 19 / S2 - THE v10.158 CHLOROPHYLL INVERSION NEVER REACHED THIS
+// LEGEND. v10.158 W-08 reversed the s2 direction in computeScore() (higher
+// chlorophyll = higher reef stress) and v10.158/v10.159 reworded the sidebar
+// readout to match, but this map legend still carried the OLD, pre-inversion
+// direction. OBSERVED IN A LIVE BROWSER RUN at Bocas del Toro: 1.024 mg/m3 was
+// labelled "[enriched]" (a stressor) in the sidebar and "Good" on this legend,
+// on the same screen. The bands here are now EXACTLY the six s2 bins in
+// computeScore(), including the 0.45 mg/m3 GBR annual-mean water-quality
+// guideline (De'ath & Fabricius 2010) that the readout uses, with the s2
+// sub-score each bin produces printed alongside so the legend and the score
+// cannot drift apart again without the numbers visibly disagreeing.
+// The OLD legend was also incomplete, not merely misdirected: it listed four
+// bands (<0.1 / 0.5-1.0 / 1.0-2.0 / >5.0) with two gaps (0.1-0.5, 2.0-5.0) and
+// a top band at >5.0 that no scoring rule has ever used.
+panel.add(legDiv()); panel.add(sHead('5. S2 - Chlorophyll-a mg/m3 (HIGHER = MORE STRESS)','#005a32'));
+panel.add(lbl('Reef direction, not aquaculture direction: oligotrophy is the natural reef state and nutrient enrichment is a documented reef stressor. (S8 aquaculture scores chlorophyll the OTHER way round - there it is food for a seaweed crop.)',7,'#886600'));
+panel.add(legRow('#084594','< 0.1','Oligotrophic - reference reef state (s2=5)'));
+panel.add(legRow('#4292c6','0.1-0.2','Very low (s2=15)'));
+panel.add(legRow('#9ecae1','0.2-0.45','Below the 0.45 GBR guideline (s2=35)'));
+panel.add(legRow('#fed976','0.45-1.0','ABOVE the 0.45 GBR annual-mean guideline (s2=60)'));
+panel.add(legRow('#fd8d3c','1.0-2.0','Enriched coastal water (s2=80)'));
+panel.add(legRow('#bd0026','> 2.0','Bloom - light attenuation + post-bloom hypoxia risk (s2=95)'));
+panel.add(lbl('Map layer is a CONTINUOUS 0-2.0 mg/m3 stretch over the same blue-to-red ramp, so swatch colours are indicative of direction, not of the exact bin edges above. DISCLOSED LIMIT: satellite chlorophyll is unreliable in optically complex nearshore water (CDOM/sediment inflate it) - which is where reefs sit. That is why chlorophyll carries 15% of the composite and turbidity is scored separately.',7,'#886600'));
 panel.add(legDiv()); panel.add(sHead('6. S3 - Depth m (GEBCO, v10.68)','#003366'));
 panel.add(lbl('Range: -200m to +100m | Deeper than -200m all shows as dark navy',7,'#336633'));
 panel.add(legRow('#023858','< -2000m','Very deep ocean (dark navy)'));
@@ -11578,7 +12494,7 @@ panel.add(legRow('#ff00ff','Magenta dot','Recorded volcanic event'));
 panel.add(legDiv()); panel.add(sHead('Score color dot','#4a0000'));
 panel.add(legRow('#00cc44','Green','0-29: DEEP BASIN')); panel.add(legRow('#ffcc00','Yellow','30-54: WARNING'));
 panel.add(legRow('#ff6600','Orange','55-74: HIGH RISK')); panel.add(legRow('#ff0000','Red','75-100: CRITICAL'));
-panel.add(lbl('Scroll up for measurements | v10.159 + GEM',8,'#555555'));
+panel.add(lbl('Scroll up for measurements | '+TOOL_VERSION+' + GEM',8,'#555555'));
 ui.root.insert(0,panel);
 var floatP=ui.Panel({style:{position:'top-center',padding:'6px 14px',backgroundColor:'#001a00',border:'2px solid #00cc44',shown:false}});
 var fN=lbl('',13,'#00cc44','',true), fS=lbl('',12,'#ffffff','',true), fB=lbl('',10,'#aaffaa','',false), fC=lbl('',9,'#888888','',false);
@@ -11624,7 +12540,13 @@ function loadLayers(study,region,cols,lat) {
       {min:0.1,max:12,palette:['#ffffd9','#fdae61','#f46d43','#a50026'],opacity:0.85},'S4 - DHW heat stress (orange where > 0)');
   }
   // lat>55: DHW layer simply not added — metric not applicable at high latitudes
-  Map.addLayer(chla.clip(study),{min:0.01,max:5.0,palette:['#084594','#2171b5','#6baed6','#74c476','#31a354','#006837'],opacity:0.8},'S2 - Chl-a mg/m3');
+  // v10.161 S2: the old ramp ran blue -> GREEN -> dark green over 0.01-5.0, so
+  // the most stressed water on the map was painted in the colour this tool uses
+  // for "safe" everywhere else (see the score-dot legend: green = DEEP BASIN).
+  // Same six-stop ramp as the legend above, blue (oligotrophic) -> red (bloom),
+  // stretched 0-2.0 so the 0.45 guideline and the 1.0/2.0 bin edges fall inside
+  // the ramp instead of being squeezed into its first fifth.
+  Map.addLayer(chla.clip(study),{min:0.0,max:2.0,palette:['#084594','#4292c6','#9ecae1','#fed976','#fd8d3c','#bd0026'],opacity:0.8},'S2 - Chl-a mg/m3 (higher = more reef stress)');
   // v10.66 FIX: switched to GEBCO depth layer to match sidebar depth value
   // Depth range: -200m to +100m covers ecologically relevant zones
   // Everything deeper than -200m shows as dark navy (fine for reef ecology tool)
@@ -11798,7 +12720,7 @@ function analyzeLocation(lat, lon) {
 
   function clip(col){ return col.map(function(img){ return img.clip(study); }); }
 
-  print(''); print('STEMGeoHS Marine v10.160 -- '+region);
+  print(''); print('STEMGeoHS Marine '+TOOL_VERSION+' -- '+region);
   print('=== MODELS ===');
   print('1. Waddington double-well: U(q;mu) = 0.25*q^4 - 0.5*mu*q^2');
   print('2. Langevin SDE: dx = -dU/dx*dt + sigma*dW (PNAS 2025)');
@@ -11806,7 +12728,10 @@ function analyzeLocation(lat, lon) {
   print('4. Lagrangian L = T - V (Pham & Musielak 2022)');
   print('5. Kramers escape: k = omega0 * exp(-dU/sigma^2)');
   print('6. Cancer score: CCS = SUM(w_i*S_i) - REVERT (Shin 2025)');
-  if(fp.hasField){print('FIELD: '+fp.species+' | Gain: +'+fp.accuracy_field_gain+'%');}
+  // v10.161 S5: this printed the NOMINAL gain as if it were earned. The earned
+  // figure depends on which fields actually contributed and is printed with the
+  // FUSED RESULT block below (FIELD ATTRIBUTION); here it is labelled nominal.
+  if(fp.hasField){print('FIELD: '+fp.species+' | Nominal gain if fully measured: +'+fp.accuracy_field_gain+'% (see FIELD ATTRIBUTION below for what was actually earned)');}
   else{print('STATUS: SATELLITE DATA ONLY | '+fp.notes);}
   // Charts printed inside _onAllDone() only when valid ocean data confirmed
 
@@ -12098,7 +13023,12 @@ function analyzeLocation(lat, lon) {
     fc3V.setValue(fp.anem_N!==null?Math.round(sc.F3)+' (aN='+fp.anem_N+'/m2)'+(fp.anem_N_estimated?' [ESTIMATED]':''):'n/a - no data this region');
     fc4V.setValue(fp.Cd!==null?'+'+sc.F4+' (Cd='+fp.Cd+')':'n/a - no data this region');
     fc5V.setValue(fp.recruit!==null?Math.round(sc.F5)+' (recruit='+fp.recruit+')'+(fp.recruit_estimated?' [ESTIMATED]':''):'n/a - no data this region');
-    fcTV.setValue((sc.fcTotal>0?'+':'')+sc.fcTotal+' total');
+    // v10.161 S5: the total alone hid that -6 of -6 came from a placeholder.
+    fcTV.setValue((sc.fcTotal>0?'+':'')+sc.fcTotal+' total'+
+      ((sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0)?
+        ('  [measured '+(sc.fc_measured>0?'+':'')+sc.fc_measured+
+         ' | ESTIMATED/placeholder '+(sc.fc_estimated>0?'+':'')+sc.fc_estimated+']'):''));
+    fcTV.style().set('color',(sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0&&sc.fc_estimated!==0)?'#aa6600':'#111111');
     fc1V.style().set('color',fp.urchin_N!==null?'#115511':'#888888');
     fc3V.style().set('color',fp.anem_N_estimated?'#aa6600':fp.anem_N!==null?'#115511':'#888888');
     fc4V.style().set('color',fp.Cd!==null?'#553300':'#888888');
@@ -12108,7 +13038,13 @@ function analyzeLocation(lat, lon) {
     // insufficient data" when nothing was measured, instead of rendering a
     // full, confident physics readout derived from hardcoded defaults.
     satCcsV.setValue(scInsuf?'n/a - INSUFFICIENT DATA':scI(sc.sat_ccs,'/100'));
-    fusCcsV.setValue(scInsuf?'n/a - INSUFFICIENT DATA':scI(sc.ccs,'/100 FUSED'));
+    // v10.161 S5: mark the fused score when part of the satellite->fused move
+    // was produced by an estimated placeholder rather than a measurement.
+    fusCcsV.setValue(scInsuf?'n/a - INSUFFICIENT DATA':
+      (scI(sc.ccs,'/100 FUSED')+
+       ((!scInsuf&&sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0&&sc.fc_estimated!==0)?
+         (' \u26A0 '+(sc.fc_estimated>0?'+':'')+sc.fc_estimated+' of the '+
+          (sc.fcTotal>0?'+':'')+sc.fcTotal+'-point field move is a PLACEHOLDER, not a measurement'):'')));
     fusCcsV.style().set('color',cols.text);
     bowlV.setValue(scHas(sc.B)?(sc.B.toFixed(2)+(sc.B>0.7?' deep-safe':sc.B>0.5?' moderate':sc.B>0.3?' shallow':' near-flat!')):'n/a - not measured');
     omega0V.setValue(scN(sc.omega0,4)); tauV.setValue(scN(sc.tau,1,'x')); ac1V.setValue(scN(sc.ac1,3));
@@ -12141,9 +13077,15 @@ function analyzeLocation(lat, lon) {
       bowlVsS20eV.style().set('color','#888888');
     }
     accSV.setValue(sc.acc_sat+'%');
-    accFV.setValue('+'+sc.acc_field+'%'+(fp.hasField?' ('+fp.species.split('(')[0].trim()+')':' (none)'));
+    // v10.161 S5: the nominal gain was granted whenever a region had a profile,
+    // regardless of whether any real measurement contributed to the correction.
+    accFV.setValue('+'+sc.acc_field+'%'+
+      ((sc.acc_field_nominal!==undefined&&sc.acc_field_nominal>sc.acc_field)?
+        (' of a nominal +'+sc.acc_field_nominal+'% - '+(sc.acc_field_nominal-sc.acc_field)+'% FORFEITED (placeholder-derived)'):'')+
+      (fp.hasField?' ('+fp.species.split('(')[0].trim()+')':' (none)'));
     accTV.setValue(sc.acc_total+'% TOTAL');
-    accFV.style().set('color',fp.hasField?'#115511':'#888888');
+    accFV.style().set('color',(sc.acc_field_nominal!==undefined&&sc.acc_field_nominal>sc.acc_field)?'#aa6600':
+      (fp.hasField?'#115511':'#888888'));
     accTV.style().set('color',sc.acc_total>90?'#0a5c1e':sc.acc_total>85?'#664400':'#880000');
 
     // v10.156 BUG-05: the big headline score, the bar and the interpretation
@@ -12344,7 +13286,22 @@ function analyzeLocation(lat, lon) {
       eciSLR05V.setValue(eci_slr05.toFixed(3)+' ECI');
       eciSLR10V.setValue(eci_slr10.toFixed(3)+' ECI'+(eci_slr10>1.2?' CRITICAL':eci_slr10>1.0?' EXTREME':''));
       eciSLR10V.style().set('color',eci_slr10>1.0?'#aa3300':'#226644');
-      var bScore=sc.B, eciNorm=eci_current/1.414, bEci=1.0-eciNorm;
+      // v10.161 FIX 19 / S3 - TWO DIFFERENT NUMBERS WERE BOTH CALLED "ECI" IN
+      // THE SAME PANEL. OBSERVED IN A LIVE BROWSER RUN: the row above printed
+      // "Energy risk (current): 0.159 low risk" while the comparison row two
+      // lines below said "physical wave-exposure (ECI=0.89)". Traced: 0.159 IS
+      // the ECI (eci_current = 1/sqrt(depth), capped at 1.414 - a ~39.5 m
+      // seafloor gives 0.159). 0.89 was 1 - ECI/1.414, a DIFFERENT quantity
+      // invented purely so the comparison would be on B's 0-1 scale, where
+      // higher = safer. It was never the ECI and must not be labelled as one.
+      // It is now named for what it is - a shelter index - and the comparison
+      // line prints the ECI the row above actually displays, so the two rows
+      // can no longer disagree about the value of the same named quantity.
+      // shelterIdx is what gets compared with B: both run 0-1 with higher =
+      // less exposed / more resilient, so comparing them is at least
+      // dimensionally sane. The comparison is still NOT a validation - see the
+      // v10.145 note below, which is unchanged and still correct.
+      var bScore=sc.B, eciNorm=eci_current/1.414, shelterIdx=1.0-eciNorm;
       var bScoreOk=(bScore!==null&&bScore!==undefined&&!isNaN(bScore)); // v10.156 BUG-05
       // v10.145 FIX: investigated this "agreement" check directly - it
       // was comparing a PURE physical wave-energy metric (depth only)
@@ -12354,11 +13311,14 @@ function analyzeLocation(lat, lon) {
       // calculation, since there's no real reason a narrow physics proxy
       // should track a broad ecological score. Relabeled to reflect
       // this honestly instead of implying a validation failure.
-      var closeMatch=bScoreOk&&Math.abs(bScore-bEci)<0.2;
+      var closeMatch=bScoreOk&&Math.abs(bScore-shelterIdx)<0.2;
+      var _eciTxt='ECI='+eci_current.toFixed(3)+' (same value as the Energy risk row above)';
+      var _shelterTxt='shelter index = 1 - ECI/1.414 = '+shelterIdx.toFixed(2)+', rescaled so higher = less exposed, like B';
       var agreement=!bScoreOk?
-        ('Bowl depth B not computed at this point (insufficient satellite data) - nothing to compare the physical wave-exposure index (ECI='+bEci.toFixed(2)+') against.'):
-        closeMatch?'Similar values (within 0.2) - coincidental, not a validation':
-        'DIFFERENT, as expected - physical wave-exposure (ECI='+bEci.toFixed(2)+') and broad ecological risk (B='+bScore.toFixed(2)+') measure different things, not the same quantity twice';
+        ('Bowl depth B not computed at this point (insufficient satellite data) - nothing to compare the physical wave-exposure index against. '+_eciTxt+'; '+_shelterTxt+'.'):
+        closeMatch?('Similar values (within 0.2) - coincidental, not a validation. '+_eciTxt+'; '+_shelterTxt+'; B='+bScore.toFixed(2)+'.'):
+        ('DIFFERENT, as expected - physical wave-exposure and broad ecological risk measure different things, not the same quantity twice. '+
+         _eciTxt+'; '+_shelterTxt+'; B='+bScore.toFixed(2)+'.');
       eciValidationV.setValue(agreement);
     } else {
       eciCurrentV.setValue(gebcoDepthM===null?'n/a':'land/dry area - ECI not applicable');
@@ -12614,8 +13574,11 @@ function analyzeLocation(lat, lon) {
         (toePhAvailable===false && toeDoAvailable===false) ? ' (pH excluded - see row below; DO excluded - dataset unavailable)' :
         toeDoAvailable===false ? ' (DO excluded - dataset unavailable, see row below)' :
         toePhAvailable===false ? ' (pH excluded - see row below)' : '';
-      toeCompoundV.setValue(nEmerged+'/'+nTotal+' available variables emerged (v10.157: SNR >= 2.0 AND the MEASURED-r slope t-test significant at the pixel\'s REAL valid-year df)'+pendingNote+
-        (nTotal===0?'':nEmerged>=4?' | COMPOUND CID DETECTED':nEmerged>=2?' | MULTIPLE CIDs':nEmerged===1?' | SINGLE CID detected':' | No emergence yet'));
+      // v10.161 S7: "0/0 available variables emerged" when no variable resolved.
+      toeCompoundV.setValue(nTotal===0?
+        ('no variable returned a usable ToE result at this pixel - nothing was assessed for emergence'+pendingNote):
+        (nEmerged+'/'+nTotal+' available variables emerged (v10.157: SNR >= 2.0 AND the MEASURED-r slope t-test significant at the pixel\'s REAL valid-year df)'+pendingNote+
+        (nEmerged>=4?' | COMPOUND CID DETECTED':nEmerged>=2?' | MULTIPLE CIDs':nEmerged===1?' | SINGLE CID detected':' | No emergence yet')));
       toeCompoundV.style().set('color',nEmerged>=4?'#880000':nEmerged>=2?'#aa3300':nEmerged>=1?'#664400':'#115511');
     }
 
@@ -12768,8 +13731,18 @@ function analyzeLocation(lat, lon) {
     print('MMM local: '+fmt(mmmv,1)+' | DHW: '+fmt(dhwv,2)+' deg C-wks | Trend: '+fmt(tv,4)+' deg C/yr');
     print('Chl-a: '+fmt(cv,3)+' mg/m3 | Turbidity: '+(turv!==null?fmt(turv,3)+' NDTI':'n/a')+' | NO2: '+fmt(nv,8)+' | Depth: '+fmtDepth(bv,0)+' m (GEBCO)');   // v10.158 W-05
     print('=== FUSED RESULT ===');
-    print('Satellite CCS: '+(scHas(sc.sat_ccs)?sc.sat_ccs+'/100':'n/a - INSUFFICIENT DATA')+' | Field correction: '+(sc.fcTotal>0?'+':'')+sc.fcTotal);
+    print('Satellite CCS: '+(scHas(sc.sat_ccs)?sc.sat_ccs+'/100':'n/a - INSUFFICIENT DATA')+' | Field correction: '+(sc.fcTotal>0?'+':'')+sc.fcTotal+
+      ((sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0)?
+        ('  (measured '+(sc.fc_measured>0?'+':'')+sc.fc_measured+', ESTIMATED/placeholder '+(sc.fc_estimated>0?'+':'')+sc.fc_estimated+')'):''));
     print('FUSED CCS: '+(scHas(sc.ccs)?sc.ccs+'/100':'n/a - INSUFFICIENT DATA')+' ('+sc.acc_total+'%) | B='+scN(sc.B,4)+' | Status: '+cols.lbl);
+    // v10.161 S5: say, every time, which part of the satellite -> fused move is
+    // measurement and which part is an ESTIMATED PLACEHOLDER, and how much of
+    // the nominal field accuracy gain that forfeits.
+    print('FIELD ATTRIBUTION (v10.161): '+sc.fieldAttribNote);
+    if(sc.acc_field_nominal!==undefined&&sc.acc_field_nominal>sc.acc_field){
+      print('  Field accuracy gain: +'+sc.acc_field+'% earned of a nominal +'+sc.acc_field_nominal+
+        '% ('+(sc.acc_field_nominal-sc.acc_field)+'% forfeited). A correction derived from a placeholder does not make the answer more accurate.');
+    }
     print('DATA COMPLETENESS (v10.156): '+sc.dataNote);
 
     // v10.156 BUG-05: the component chart plots the six sub-scores; with no
@@ -12838,7 +13811,138 @@ function analyzeLocation(lat, lon) {
 Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
-print('STEMGeoHS Marine v10.160 -- READY');
+print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.161 FIX 19: 7 defects from a REAL Earth Engine browser run at Bocas del');
+print('  Toro, Panama (9.175, -81.981). These are OBSERVED behaviours from live');
+print('  satellite data, not simulated ones - the on-screen output is quoted verbatim');
+print('  where it is the evidence. Every other figure was re-derived this session in a');
+print('  Node harness against the pure-JS functions extracted from this file and states');
+print('  its design. Earth Engine itself was NOT run - see RESIDUAL RISK at the end.');
+print('');
+print('  S1 VERSION MARKERS - MECHANISM FIXED, NOT LITERALS. OBSERVED: footer read');
+print('    "| v10.159 + GEM" while the title read "v10.160", same panel, same screen.');
+print('    THIRD consecutive round with a stale marker. The literals are gone: one');
+print('    var TOOL_VERSION near the top of MODULE A, and all SIX self-identifying');
+print('    markers (sidebar title, S13 header, footer, click banner, this READY line,');
+print('    file header comment) are concatenated from it. VERIFIED: exactly one');
+print('    hardcoded self-identifying version literal remains - the constant.');
+print('    NOT touched: well over 200 other v10.1xx literals (228 when this was');
+print('    written) are changelog text or provenance');
+print('    ("(v10.160, Monte Carlo)", "S7D ... (v10.106)") and are WRONG if they move.');
+print('');
+print('  S2 THE CHLOROPHYLL INVERSION NEVER REACHED THE MAP LEGEND. OBSERVED: the');
+print('    sidebar said "1.024 mg/m3 (ocean) [enriched]" while the legend on the same');
+print('    screen said 1.0-2.0 = "Good". v10.158 W-08 reversed s2/s5 and reworded the');
+print('    readout; the legend kept the OLD direction. Legend now lists exactly the six');
+print('    s2 bins with their sub-scores, split at the 0.45 mg/m3 GBR guideline.');
+print('    RE-DERIVED: s2 = 5/5/15/35/35/60/80/80/95/95 at chl = 0/0.05/0.15/0.3/0.44/');
+print('    0.46/1.024/1.5/2.5/6.0 - monotone, stepping at the guideline.');
+print('    The MAP PALETTE was also wrong (blue->GREEN over 0.01-5.0, painting enriched');
+print('    water in this tool\'s "safe" colour); now a blue->red ramp over 0-2.0.');
+print('    Grepped: the only remaining "chlorophyll is good" text is S8 aquaculture,');
+print('    where that direction is correct and is deliberately left alone.');
+print('');
+print('  S3 ECI WAS TWO NUMBERS IN ONE PANEL. OBSERVED: "Energy risk (current): 0.159"');
+print('    four lines above "physical wave-exposure (ECI=0.89)". 0.159 IS the ECI');
+print('    (1/sqrt(depth), ~39.5 m); 0.89 was 1 - ECI/1.414, a different quantity built');
+print('    to sit on B\'s scale. Renamed to a shelter index, and the comparison line now');
+print('    prints the ECI itself, tagged as the same value the row above shows.');
+print('');
+print('  S4 THE FAI MODULES SPENT THE WHOLE BUDGET BEFORE REFUSING. OBSERVED:');
+print('    "Study data density: 11% (0/24 BEFORE, 4/12 AFTER valid months) -');
+print('    INSUFFICIENT" - zero valid months in the entire 24-month BEFORE window,');
+print('    reported only after S7D/S7E/S7F had fired 3/3/6 heavy calls.');
+print('    NEW faiPrecheckThenRun(): ONE .evaluate() of aggregate_array of');
+print('    system:time_start over S2_SR_HARMONIZED filtered by point, date and');
+print('    CLOUDY_PIXEL_PERCENTAGE - a metadata query that reads no pixels. Months are');
+print('    bucketed client-side and checked against the 4-valid-months floor.');
+print('    Scene-months is an UPPER BOUND on valid months (mkMoFAIRange applies no');
+print('    per-pixel cloud mask), so the gate can prove insufficiency but never');
+print('    promises success - it refuses only. S7D/S7E/S7F refuse below 4 per window;');
+print('    S7C is advisory (its job IS measuring density) and refuses only an empty');
+print('    window. Fail-open if the pre-check errors.');
+print('    UNIT-TESTED on faiPrecheckSummary(): the live-run shape gives BEFORE 0 of 24');
+print('    | AFTER 4 of 12 and refuses; 4 in AFTER passes, 3 refuses; 5 scenes in one');
+print('    month count as ONE month; 2023-12-31T23:30Z buckets to 2023-12.');
+print('    COST: NOT measured against live EE - see RESIDUAL RISK.');
+print('    ASKED: can the reference density INHERIT the study\'s? TRACED - it cannot.');
+print('    Two labelled features, one reduceRegions each, bucketed strictly by label,');
+print('    no default bucket and no copy path; a missing series gives 0, which would');
+print('    DIFFER from the study, not match it. They match because scene availability');
+print('    is a per-granule property and an S2 granule is ~110km across. Said on screen.');
+print('');
+print('  S5 A PLACEHOLDER MOVED THE HEADLINE AND BOUGHT ACCURACY. OBSERVED: the only');
+print('    non-zero correction was F3 = -6 from anem_N = 6.0, flagged');
+print('    anem_N_estimated:true and described in its own notes as an ESTIMATED');
+print('    PLACEHOLDER - and it moved Satellite CCS 61 -> FUSED 55 while earning');
+print('    "Field gain: +12% -> Combined: 89% TOTAL".');
+print('    ROUTE TAKEN: the CORRECTION is kept at full strength (deleting it would hide');
+print('    a real modelling choice); the ACCURACY CLAIM is what gets scaled, because');
+print('    accuracy is what a placeholder cannot honestly buy. Gain is apportioned by');
+print('    the share of correction MAGNITUDE from non-estimated fields; nominal and');
+print('    earned are both reported so the forfeited part is visible. The fused score,');
+print('    the total-correction row and the console block all carry the split.');
+print('    ALSO: every field guard tested !== null, which is TRUE for a MISSING KEY.');
+print('    The Caribbean profile has recruit:2.0 and no recruit_healthy, so 2.0/');
+print('    undefined gave NaN and was swallowed to 0 - which is exactly the "F5');
+print('    Recruitment: 0 (recruit=2)" in the live run. Guards now reject undefined.');
+print('    MEASURED IN NODE, Bocas profile, same satellite inputs throughout:');
+print('      before  F1 -0.3  F3 -6  F4 0  F5  0    fcTotal -6  acc_field 12  total 89');
+print('      after   F1 -0.3  F3 -6  F4 0  F5 -3.2  fcTotal -9  acc_field  0  total 77');
+print('    So a satellite composite of 61 now fuses to 52, not 55. THIS CHANGES THE');
+print('    HEADLINE SCORE at Caribbean/Florida/Gulf/Atlantic-USA sites.');
+print('    Regression-checked: GBR keeps +7%, Mediterranean +10%, Red Sea +8% (its');
+print('    dhw_calibration feeds s4d inside the composite and is counted explicitly),');
+print('    hasField:false regions stay +0%.');
+print('');
+print('  S6 INSUFFICIENT-DATA PATHS ABANDONED THE UI MID-RENDER.');
+print('    (a) OBSERVED: after S7F finished with full results, S7D still read');
+print('    "Running: 2 / 3 batched calls done..." and S7E "Step 2/3: 1 / 2 batched');
+print('    calls done...", permanently. TRACED: the status is only replaced when the');
+print('    pending counter hits zero, and both finish() functions DO set a label on');
+print('    every path they reach - so a frozen counter means a callback never arrived,');
+print('    and no path exists that can clear it. There is no setTimeout in this');
+print('    sandbox. FIXED as far as that allows: the counter names the outstanding');
+print('    call(s), says what a stall means and that RUN again is a clean retry, and a');
+print('    run sequence number stops a late callback clobbering a newer run. NOT fixed:');
+print('    a callback that never fires still never fires. The S13 STEP 4 claim that the');
+print('    counter "never looks frozen" was false and is replaced.');
+print('    (b) OBSERVED: "AC1 rising at 0/0 nodes". An empty denominator rendered as a');
+print('    fraction - "tested 0 nodes" is not "tested some and none rose". New');
+print('    countOfTotal() prints a sentence instead when the denominator is zero.');
+print('    (c) OBSERVED: "NOTE: 4 tests fired here; the Bonferroni bar is p<0.0125"');
+print('    while all four tests returned NOT TESTABLE. Both numbers were hardcoded. The');
+print('    family is now the tests that returned a p-value; with none, the line says so.');
+print('    Same defect found and fixed in S7D (fixed 17-test bar) and S13 STEP 4');
+print('    (0 POWERED windows still quoted a bar of 0.0500 from Math.max(1,0)).');
+print('    AUDIT of every other insufficient-data early return in S7C/S7D/S7E/S7F/S13');
+print('    found one more: S13 STEP 5 left the PREVIOUS run\'s independent-window');
+print('    significance block on screen under a fresh INSUFFICIENT DATA verdict.');
+print('');
+print('  S7 SWEEP. Other reachable x/0 displays fixed: S13 TOOLKIT SUMMARY "0/0 scored');
+print('    indicators agree", S13 COMPARE "Supporting: 0/0 agree", S13 STEP 4 "0 of 0');
+print('    DISTINCT windows", S7B "FAI elevated 0/0 | NDCI 0/0 | NDVI 0/0" (printed');
+print('    under a PATTERN line that correctly said NO DATA), S17b "0 of 0 testable');
+print('    variables", S17 compound "0/0 available variables emerged", S13 STEP 2');
+print('    console "Raw valid months: 0 / 0". Already-guarded tallies left alone.');
+print('');
+print('  RESIDUAL RISK - NEEDS A LIVE EE SESSION:');
+print('    1. The pre-check\'s real EE cost and quota impact are UNMEASURED. It is a');
+print('       metadata query by construction; that is an argument, not an observation.');
+print('    2. Its tightness (scene-months vs valid months) is inferred from the code,');
+print('       not measured. It is used only to REFUSE, so a loose bound costs a wasted');
+print('       run, never a false refusal.');
+print('    3. All UI paths were TRACED, not executed - the harness cannot drive');
+print('       .evaluate() callbacks or onClick handlers. The whole file was executed');
+print('       top-to-bottom under stubbed ee/ui/Map and every pure function touched was');
+print('       unit-tested, but the rendered strings were read, not run.');
+print('    4. Four onClick bodies are now wrapped in a pre-check callback. Mechanical,');
+print('       and the file parses and executes, but a closure fault would show only at');
+print('       click time.');
+print('    5. The S5 score change is real and user-visible: any standing output from a');
+print('       Caribbean-group site recorded before v10.161 is not comparable with one');
+print('       recorded after it.');
 print('');
 print('v10.160 FIX 18: 4 blockers - TWO of them regressions THIS fix series');
 print('  introduced, and one of them a v10.159 "fix" that was completely INERT -');
@@ -14163,7 +15267,9 @@ print('  none found elsewhere, so this was the only crash site.');
 print('');
 print('v10.82 NEW: FIND SWEET SPOT (S13 STEP 4) rebuilt');
 print('  - Control site "before" state now REAL (1 shared control-BEFORE test), not a fake 1.0 baseline');
-print('  - Live progress counter while '+CSD_SWEET_SPOT_NCALLS+' parallel EE calls run - never looks frozen');
+print('  - Live progress counter while '+CSD_SWEET_SPOT_NCALLS+' parallel EE calls run (v10.161: it can still');
+print('    stall if a call never returns - it now says so and names the recovery, rather than');
+print('    claiming it "never looks frozen")');
 print('  - New LOCAL vs REGIONAL vs Scheffer-2009-validation breakdown for the winning window');
 print('  - try/catch around final analysis - shows a red error box instead of silently stalling');
 print('');
