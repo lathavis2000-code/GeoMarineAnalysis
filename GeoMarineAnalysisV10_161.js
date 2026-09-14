@@ -8,6 +8,294 @@
 // below keep their own version numbers: they are history, not identity.
 //
 //
+// v10.162 FIX 20: six defects, all diagnosed from the SAME live Earth Engine
+//   browser run at Bocas del Toro, Panama (9.175, -81.981) that produced the
+//   v10.161 round. The on-screen output is quoted verbatim where it is the
+//   evidence.
+//
+//   CHANGELOG HONESTY, the standing rule: every numeric claim below either
+//   (a) is quoted AS OBSERVED from that browser session and labelled so, or
+//   (b) was re-derived THIS session in a Node harness that EXECUTES THIS WHOLE
+//   FILE against stubbed ee/ui/Map and calls the shipped functions, and states
+//   the design that produced it. Nothing is asserted from memory and no
+//   precision is invented around the live figures. Earth Engine itself was NOT
+//   run - see RESIDUAL RISK at the end of this entry.
+//
+//   S1 BLOCKER - S7E AND S7F NEVER COMPLETED, BECAUSE THE BEFORE FETCH FAILED.
+//     OBSERVED, S7D's own diagnostic:
+//       Raw features returned: BEFORE=0 | AFTER=108 | NDVI=9
+//          (expect BEFORE=216, AFTER=108, NDVI=9 if fully populated)
+//       NOTE: 1 of 3 batched calls returned no usable data.
+//     AFTER (12 months x 9 nodes) returned. BEFORE (24 x 9) returned nothing.
+//     S7D rendered on half its data; S7E and S7F sat on "Still waiting on:
+//     BEFORE FAI series" / "Still waiting on: S7D BEFORE series" forever,
+//     because both AWAIT that call and this sandbox has no timer.
+//     FIXED STRUCTURALLY: the separate BEFORE fetch is GONE. Each site now
+//     fetches ONE series spanning BEFORE-start .. AFTER-end (including the gap)
+//     and slices the two windows out of it CLIENT-SIDE BY REAL TIMESTAMP - the
+//     same fetch-once-and-slice pattern S13 STEP 4 has used since v10.123, with
+//     the one difference that STEP 4's windows share a start date and can slice
+//     by array position while these cannot.
+//     EE CALL COUNTS: S7D 3 -> 2, S7E 3 -> 2, S7F 6 -> 4. Every on-screen
+//     string quoting the old counts was updated (button labels, status lines,
+//     progress counters, method lines, scope notes).
+//     REFUSES INSTEAD OF HANGING: if the combined series does not cover both
+//     windows, each module refuses with the existing insufficient-data wording.
+//     If the two windows are further apart than beforeMonths+afterMonths+24, it
+//     refuses BEFORE spending any call, because past that the combined fetch
+//     costs more than the call it saves.
+//     VERIFIED IN NODE, by executing this file under stubbed ee/ui/Map and
+//     driving the real button handlers with synthetic Earth Engine payloads:
+//       - S7D happy path consumes 3 .evaluate() calls (1 FAI pre-check + 2
+//         module calls); S7E 3 (pre-check + GEBCO + combined); S7F 5 (pre-check
+//         + 3 first-stage + 1 second-stage). Under v10.161 the same drive-through
+//         consumed 4 / 4 / 7.
+//       - Feeding the SHIPPED v10.161 an empty BEFORE and a full AFTER
+//         reproduces the live line verbatim: "Raw features returned: BEFORE=0 |
+//         AFTER=108 | NDVI=9 (expect BEFORE=216, AFTER=108, NDVI=9 ...)" and it
+//         renders the table anyway. v10.162 on the same input refuses.
+//       - Combined-returns-nothing, combined-covers-AFTER-only, and
+//         windows-too-far-apart all end in a refusal, never in "Still waiting".
+//       - The timestamp slice was unit-tested: from a 42-month combined grid it
+//         recovers exactly 24 BEFORE months (2021-06..2023-05) and 12 AFTER
+//         months (2023-11..2024-10) with no overlap; it still does so when the
+//         input is reversed and a third of it deleted, where an array-position
+//         slice gives the wrong months; and it handles a day-of-month mismatch
+//         between the two window starts, and the two windows typed the wrong
+//         way round.
+//     NOT FIXED, stated plainly: the combined graph is HEAVIER than either
+//     window alone. If the live BEFORE failure was graph weight, this fetch can
+//     fail too - but it then fails as ONE visible refusal instead of an
+//     invisible half-run that hangs two other panels.
+//
+//   S2 BLOCKER - S17 AND S17b DISAGREED ABOUT n, ON ONE CLICK, BOTH WAYS.
+//     OBSERVED, one click, salinity:
+//       S17 :  not yet  SNR=1.96  n=32 of 32 nominal yr (df=30)  RISING  [MEASURED r=+0.564]
+//       S17b:  tau=-0.333, p=0.3813 -> FALLING  not significant  [n=7 annual points]
+//     and at an earlier click a few hundred metres away, S17 n=12 of 32 against
+//     S17b n=7. Over-counting is ANTI-CONSERVATIVE: n drives Sxx=n(n^2-1)/12,
+//     SStot=n*sd^2 and df=n-2, which is the defect TOE-01 exists to prevent.
+//     CAUSE DETERMINED, not assumed. Ruled OUT by reading the code: (a) count
+//     counting IMAGES - every annual image is filter(year).select(band).mean()
+//     with 't' added as a separate band, so a masked year is masked in the value
+//     band and ImageCollection.reduce(count) counts unmasked values per pixel;
+//     (c) different collections or date ranges - S17b is handed the very same
+//     _ann*Coll objects S17 reduces. The REAL cause is the SAMPLING FOOTPRINT,
+//     different in both dimensions: S17 reduced a BARE POINT at toeScale=27750 m
+//     for EVERY variable, while S17b sampled a 4 km BUFFER at 4000 m (25000 m
+//     for pH). HYCOM salinity is ~9 km and CMEMS ocean colour is 4 km, so at
+//     27750 m Earth Engine serves a pyramid overview and reducing the COUNT
+//     image with mean() there returns the ~28 km block's MEAN valid-year count -
+//     fractional, then rounded by Math.floor(x+0.5) into something that looks
+//     like an honest integer. At a coastal pixel more masked than the water
+//     around it, that average is biased UP. Hypothesis (b) - the MK path
+//     dropping nulls more strictly - is real but secondary: the two sets
+//     coincide once both read the same pixel.
+//     FIXED: ONE shared footprint, the CONSERVATIVE one of the two already in
+//     use - bare point (S17's geometry, and S18's since v10.147) at the FINER
+//     scale (S17b's), per variable: TOE_SAMPLE_SCALE = 4000 m for
+//     SST/Chl/Salinity/NO2 and 25000 m for pH/DO. Both panels now reduce the
+//     identical pixel of the identical collection, so the count reducer and the
+//     Mann-Kendall value list see the same years BY CONSTRUCTION. All four of a
+//     variable's reductions (linearFit, stdDev, count, correlation) moved
+//     together, so calcToE()'s standing assumption - that they skip the same
+//     masked pixels - still holds. ZERO extra Earth Engine calls: the count
+//     already travels inside the dictionary S17 evaluates, and S17b still fires
+//     5 fetches.
+//     ALSO FIXED, found while tracing this: calcToE() treated "the count key is
+//     present and EXPLICITLY NULL" the same as "no count key exists", and both
+//     fell into the nominal-fallback - the most flattering branch there is.
+//     Earth Engine returns null, not 0, for a reduceRegion over a region with no
+//     valid pixel, so a fully-masked pixel was handed n=nominal and df=n-2.
+//     VERIFIED IN NODE by driving the real map-click handler: on a dictionary
+//     whose count key is explicitly null, SHIPPED v10.161 rendered
+//     "SAL: EMERGED SNR=3.20 ... RISING n=32 of 32 nominal yr" - an EMERGED
+//     verdict for a pixel with no data at all. v10.162 renders "n=0 of 32
+//     nominal yr" and cannot emerge. An UNRECOGNISED key still falls back to
+//     nominal with its existing upper-bound warning, which is what that branch
+//     was written for.
+//     RECONCILIATION ON SCREEN: S17 publishes its per-variable result for the
+//     clicked point and S17b compares against it per variable. Where the two n's
+//     still differ - which needs an extra EE call to resolve, so it is not
+//     resolved - S17b names both, uses the SMALLER (an over-counted n inflates
+//     Sxx and df) and says why. VERIFIED IN NODE on both live cases: the n=32/7
+//     case renders "[DISAGREES WITH S17: S17 n=32, here n=7 -> the SMALLER (7)
+//     is the one to trust]", the n=12/7 case the same with 12, and when the two
+//     agree it renders "[S17 agrees: n=7]".
+//     THE HARDCODED-SOUNDING NOTE IS GONE: S17b's "only N years had real, valid
+//     HYCOM data at this exact point" was salinity-specific and could contradict
+//     S17 on the same click. It is now variable-agnostic, reports what BOTH
+//     panels measured, and names the disagreement when there is one.
+//     DIRECTION: with the footprints unified, S17 RISING vs S17b FALLING is no
+//     longer two datasets - it is an ordinary-least-squares slope and a
+//     rank-based trend disagreeing on the SAME sample. S17b now says so and
+//     calls the direction UNESTABLISHED for that variable, in the detail text
+//     and in its headline.
+//     WHAT THIS COSTS: S17's slope/noise/correlation now describe THIS PIXEL
+//     rather than a ~28 km block, so SNR and the measured r WILL move at any
+//     site where the two differ - which is every site where this bug was
+//     visible. That is the intent, and it cannot be verified without a live
+//     Earth Engine session.
+//
+//   S3 THE BONFERRONI CLAIM RESTED ON PERMUTATION NOISE.
+//     OBSERVED: a FIND SWEET SPOT run reported "Study AC1 p=0.023" for the
+//     48-month row against a corrected bar of 0.0250 and concluded "At least one
+//     window survives the STRICTER Bonferroni-corrected bar - this is real
+//     evidence". At 300 shuffles p=0.023 IS 7/300, and the grid step is 0.0033.
+//     OBSERVED independently, in an earlier run: three DUPLICATE rows -
+//     identical data, identical statistics (-0.70x, +0.214, -1.03x, +0.34x on
+//     all three) - returned control-variance p-values of 0.003 / 0.010 / 0.030.
+//     FIXED: 10000 shuffles on any row that can be COUNTED; 300 kept on the
+//     sub-floor and DUPLICATE rows, which are excluded from every tally, the
+//     best-window pick and the Bonferroni divisor, so no claim rests on them.
+//     WHY 10000, RE-DERIVED THIS SESSION against the shipped
+//     permutationTestDeltaFixed (BEFORE 36 valid months, AFTER 48 - the heaviest
+//     row this panel builds):
+//         B       SE at p=0.025   SE at p=0.00833   wall clock per test
+//        300        0.00901         0.00525            20 ms
+//       2000        0.00349         0.00203            49 ms
+//      10000        0.00156         0.00091           187 ms
+//      20000        0.00110         0.00064           337 ms
+//     The corrected bar is 0.05/k for k powered windows: 0.0500 at k=1 down to
+//     0.00833 at k=6. 10000 puts the Monte Carlo SE at the k=2 bar (0.0250 - the
+//     live case) at 0.0016, about 1/16 of the bar and 5.8x tighter than 300.
+//     COST: at most 6 windows x 4 tests, and only countable rows pay, so the
+//     realistic addition is 8-16 tests x 187 ms = 1.5-3.0 s, 4.5 s worst case -
+//     against this panel's 8 Earth Engine calls (20-60 s). No EE work is added
+//     at all; the shuffles are client-side JS on series already fetched.
+//     SEED-TO-SEED SPREAD, measured on ONE fixed dataset over 12 independent
+//     repeats of the same test: at B=300 the p-values spanned 0.6033-0.7000
+//     (spread 0.0967); at B=10000, 0.6493-0.6653 (spread 0.0160).
+//     THE PANEL NOW STATES THE SHUFFLE COUNT PER ROW, in its own table column.
+//     AND IT NO LONGER ASSERTS WHAT IT CANNOT: a "survives the corrected bar"
+//     claim is checked against its own Monte Carlo SE, and if p is within 2 SE
+//     of the bar the panel prints TOO CLOSE TO CALL with the numbers instead.
+//     RE-DERIVED: at the live 48-month figures (p=0.023, bar 0.0250, B=10000)
+//     SE=0.0015 and p+2SE=0.0260, which is ABOVE the bar - so that exact row
+//     would now be reported as too close to call, not as a survivor. It would
+//     take B=100000 for p=0.023 to clear 0.0250 by 2 SE. Raising B further is
+//     possible but the honest reading is that the window sits AT the bar.
+//
+//   S4 THE STEP 3 HEADLINE CONTRADICTED ITSELF.
+//     OBSERVED, three lines in this order on one panel:
+//       STATISTICALLY SIGNIFICANT LOCAL CSD SIGNAL (AC1-confirmed, p=0.028)
+//       STRONG SIGNAL, LIKELY REGIONAL (AC1-confirmed, but matches control site too)
+//       Regional context: VERDICTS DISAGREE ... Treat NEITHER as confirmed
+//     v10.151 FIX 6 made the disagreement VISIBLE; it did not stop the most
+//     prominent banner asserting one side of it.
+//     ROOT CAUSE: the permutation test behind that banner runs on the STUDY SITE
+//     ONLY. It never looks at the control, so LOCAL - which means "different
+//     from the control" - was never something it could establish.
+//     FIXED: the banner states what IS established (the permutation p-value on
+//     the study site's dAC1) first, and what is NOT (local vs regional) second,
+//     in that order; when the two classifiers disagree it says so instead of
+//     picking a side. The banner is now a function and both async paths redraw
+//     it, so whichever lands second updates the other.
+//     MAGNITUDE: the numbers behind "matches control site too" were study
+//     dAC1=+0.512 against control dAC1=+0.134 - about 3.8x. "Matches" is a
+//     magnitude claim and nothing in the code checked a magnitude. A pure,
+//     unit-tested classifyRegionalAC1() now compares them and the headline
+//     carries the two real numbers. RE-DERIVED: on the live pair it returns
+//     "amplified", ratio 3.82x; on the Nuuk pair the old wording was written for
+//     (+0.234 / +0.242) it returns "comparable", 0.97x.
+//     THE DECISION RULE IS DELIBERATELY NOT CHANGED, and the reason is measured
+//     rather than asserted: on PAIRED NULL data (both sites the same AR(1)
+//     process, each site's dAC1 the difference of two independent lag-1 AC1
+//     estimates from the shipped jsLag1AC1, 20000 draws per cell) a ratio of
+//     2x or more occurs 14.5% of the time at n=24 phi=0.2, 16.0% at n=36
+//     phi=0.2, 13.9% at n=48 phi=0.5 and 13.4% at n=60 phi=0.5 - about 1 run in
+//     7, on pure noise. A magnitude gap is not a significance test, so it
+//     changes the WORDING and gates no verdict, and that 13.4-16.0% figure is
+//     printed on screen next to it.
+//
+//   S5 A SIGNIFICANT CONTROL-SITE CHANGE WAS GOING UNREPORTED.
+//     OBSERVED, across several windows:
+//       36mo      | Study Var p=0.647 | Ctrl Var p=0.000
+//       48mo(40)  | Study Var p=0.553 | Ctrl Var p=0.000
+//       60mo(40)  | Study Var p=0.603 | Ctrl Var p=0.007
+//     "Local signal? no" was CORRECT - local means the study site DIVERGING from
+//     the control - but the panel then ended "No window shows a real local
+//     signal" and never said the CONTROL was changing significantly. That is a
+//     regional finding this tool is positioned to make: the control is the
+//     baseline the study site is measured against, and a baseline that is itself
+//     moving is a result, not a null.
+//     FIXED: significant control-site hits on either statistic, in either
+//     direction, are collected on the countable rows and reported in a REGIONAL
+//     FINDING block with the statistic, the direction, the p-value, the shuffle
+//     count, the delta, and whether the study site is significant on that
+//     statistic too. It states what it is NOT (a local warning) and that it
+//     weakens any local claim made against a moving baseline, and repeats the
+//     10 km / 80 km buffer caveat. Hits that appear only on UNDERPOWERED or
+//     DUPLICATE rows are excluded, exactly as the study-site tallies exclude
+//     them, and said so.
+//     VERIFIED IN NODE by driving the real FIND SWEET SPOT handler with a
+//     synthetic control-variance surge: the table reproduces the reported shape
+//     (Study Var not significant at 36/48/54/60mo while Ctrl Var p<=0.001) and
+//     the new block lists all five control hits. The SHIPPED v10.161, on the
+//     identical input, ends at "No window shows a real local signal, corrected
+//     or uncorrected." and says nothing about the control.
+//
+//   S6 THE VARIANCE-ARTIFACT RULE LEAKED.
+//     OBSERVED in S7C:
+//       Center: AC1=-0.146 Var=4.14x  (1st-half=0.0000, 2nd-half=0.0000)  [NOT flagged]
+//       North:  AC1=0.009  Var=12.08x (1st-half=0.0000, 2nd-half=0.0000)  LIKELY ARTIFACT
+//     Same 0.0000 first half, one flagged and one not, because the rule was
+//     varFirst < 0.001 AND |ratio| > 5. The AND made the magnitude threshold
+//     decide something it cannot know: varTrendRatio = secondHalfVar /
+//     max(firstHalfVar, 1e-6), so once the first half is at the 1e-6 floor the
+//     denominator is a CONSTANT and the ratio's size says nothing about whether
+//     the ratio is trustworthy.
+//     FIXED: a near-zero denominator disqualifies on its own. The magnitude
+//     argument is still accepted (every call site passes it) but no longer
+//     gates the flag. S7C and S7D each had their OWN private copy of the rule
+//     with the same leak; both now call the single shared isVarRatioArtifact().
+//     RE-RAN THE FALSE-POSITIVE SWEEP against the shipped jsNodeStatsFixed:
+//     genuine AR(1) surges, BEFORE phi=0.2 vs AFTER phi=0.9, per-reading noise
+//     SD 1.0, 500 draws per cell: 0/500 flagged at 24 months and 0/500 at 36,
+//     BEFORE and AFTER the change (min first-half variance 0.202 and 0.234, two
+//     orders of magnitude above the 0.001 bar). A flat phi=0.2->0.2 control at
+//     36 months: 0/500 both. Synthetic rows at the live numbers: Center
+//     (varFirst 4e-5, 4.14x) goes unflagged -> FLAGGED; North (2e-5, 12.08x)
+//     stays flagged. Genuine surges on a real first half (varFirst 1.0/0.4/
+//     0.0012 at 12x/40x/50x) stay unflagged in both versions.
+//     ONE HONEST CAVEAT, found by the same sweep: the 0.001 bar is ABSOLUTE and
+//     therefore scale-dependent. On a series whose real variance is near it -
+//     noise SD 0.05, stationary variance ~2.6e-3 - flags rise from 4/500 to
+//     12/500. That is the pre-existing threshold, not the AND removal, and
+//     CSD_VAR_ARTIFACT_VARFIRST is unchanged; it is recorded here rather than
+//     silently absorbed.
+//
+//   RESIDUAL RISK, v10.162.
+//     EARTH ENGINE WAS NOT RUN. Everything above was verified by executing this
+//     entire file in Node against stubbed ee/ui/Map and driving the real button
+//     and click handlers with synthetic payloads, which exercises every
+//     client-side path - the callback graph, the slicing, the refusals, the
+//     rendered strings - but NOT what Earth Engine actually returns.
+//     SPECIFICALLY UNVERIFIABLE WITHOUT A LIVE SESSION:
+//       - S1: whether the combined fetch SUCCEEDS. The slicing, the call counts
+//         and the refusal paths are proven in Node; whether a 42-month combined
+//         Sentinel-2 graph returns where a 24-month one did not is a question
+//         only Earth Engine can answer, and the combined graph is the heavier
+//         of the two. The hang is removed either way.
+//       - S2: whether reducing at 4000/25000 m instead of 27750 m returns what
+//         it should, and whether the two panels' n's then actually agree in the
+//         field. The reasoning is that they must, because they reduce the same
+//         pixel of the same collection - but pyramid behaviour at a point is not
+//         something this harness can reproduce. S17's SNR and measured r will
+//         move at coastal sites, by an amount no one can state until it is run.
+//       - S2 again: the exact key name the count and correlation reducers use is
+//         still read defensively client-side (toeNum), unchanged since v10.157,
+//         because it cannot be confirmed without a session.
+//       - S5: the regional block's wording is exercised on synthetic data; the
+//         real control-site p-values will differ.
+//     NOT FIXED, DELIBERATELY: the two STEP 3 classifiers are still two
+//     classifiers with different inputs (a study-only permutation test and a
+//     variance-based study-vs-control rule). v10.162 stops the banner asserting
+//     one over the other and makes the magnitudes visible; it does not merge
+//     them into a single local-vs-regional significance test, which would be a
+//     new statistical design rather than a fix, and one that could not be
+//     calibrated without a live session.
+//
 // v10.161 FIX 19: seven defects found in a REAL Earth Engine browser run at
 //   Bocas del Toro, Panama (9.175, -81.981). Unlike previous rounds these are
 //   OBSERVED BEHAVIOURS from live satellite data, not simulated ones. The
@@ -28,7 +316,7 @@
 //     version marker has been missed (found at v10.149 in round 3; round 5
 //     claimed "all five reconciled"; wrong again one version later).
 //     Patching literals has now failed three times, so the literals are gone.
-//     var TOOL_VERSION = 'v10.161' near the top of MODULE A is the ONLY place
+//     var TOOL_VERSION near the top of MODULE A is the ONLY place
 //     the running version is written down. All SIX self-identifying markers -
 //     sidebar title, S13 section header, sidebar footer, per-click console
 //     banner, startup READY line, and the file header comment (which now
@@ -3156,7 +3444,7 @@
 // annotations like "(v10.160, Monte Carlo)" or "S7D - ... (v10.106)", which
 // record WHEN a figure was measured or a module was introduced and are wrong
 // if they move, or (c) the file name, which is deliberately stale (see README).
-var TOOL_VERSION = 'v10.161';
+var TOOL_VERSION = 'v10.162';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -3536,6 +3824,159 @@ function faiMonthKeys(startDateStr, nMonths){
   }
   return keys;
 }
+// ============================================================
+// v10.162 S1 - ONE COMBINED BEFORE..AFTER FETCH PER SITE, SLICED CLIENT-SIDE.
+// THE BLOCKER, from a live browser run at Bocas del Toro (9.175, -81.981) -
+// S7D's own diagnostic line, verbatim:
+//   Raw features returned: BEFORE=0 | AFTER=108 | NDVI=9
+//      (expect BEFORE=216, AFTER=108, NDVI=9 if fully populated)
+//   NOTE: 1 of 3 batched calls returned no usable data.
+// AFTER (12 months x 9 nodes = 108) came back. BEFORE (24 months x 9 nodes =
+// 216) returned ZERO features. S7D rendered anyway, on half its data. S7E and
+// S7F never rendered at all: both AWAIT their BEFORE fetch, so their progress
+// labels sat on "Still waiting on: BEFORE FAI series" / "Still waiting on: S7D
+// BEFORE series" indefinitely. There is no timer in this sandbox, so a callback
+// that never fires can never be turned into a failure.
+//
+// THE FIX IS STRUCTURAL, not a retry: there is no longer a separate BEFORE
+// fetch to fail. Each site now fetches ONE series spanning the union of the two
+// windows (BEFORE start through AFTER end, INCLUDING any gap between them), and
+// the BEFORE and AFTER halves are sliced out of it CLIENT-SIDE, by real
+// timestamp. Two consequences that matter:
+//   1. The per-module series-fetch count HALVES (S7D 3 -> 2 calls, S7E 3 -> 2,
+//      S7F 6 -> 4).
+//   2. The partial-arrival deadlock is GONE by construction. One series either
+//      arrives or does not; there is no state in which one window is populated
+//      and a module is still waiting on the other.
+// This is exactly the pattern S13 STEP 4 has used since v10.123 - fetch each
+// site's raw series ONCE over the longest span needed and slice the shorter
+// windows out of it - with one deliberate difference: STEP 4 can slice by array
+// position (slice(0,w)) because all its windows share ONE start date, whereas
+// here the two windows have DIFFERENT starts and an arbitrary gap, so the slice
+// must be by real timestamp. It is.
+//
+// HONEST ABOUT WHAT THIS DOES NOT FIX: the combined graph is HEAVIER than
+// either window alone (it spans both windows plus the gap). If the live BEFORE
+// failure was caused purely by graph weight, this could fail too - but it now
+// fails as a single visible refusal instead of an invisible half-run that hangs
+// two other panels. That is why the span is capped (S7_COMBINED_MAX_GAP_MONTHS)
+// and why each module refuses up front when the union is too wide.
+// Cannot be verified without a live Earth Engine session; traced, not run.
+
+// Cap on the EXTRA imagery the combined fetch buys compared with the two
+// separate fetches it replaces. The two separate fetches covered
+// beforeMonths+afterMonths composites; the combined one covers the union, so the
+// overhead is exactly the GAP between the windows. A relative cap says the real
+// thing directly - "never spend more than 24 months of extra imagery to save a
+// call" - where an absolute month cap would silently punish long windows and
+// wave through a long gap on short ones. At the shipped 24+12 defaults with the
+// example dates the span is 42 against a budget of 60; at the maximum 36+36 the
+// budget is 96, which allows any gap up to two years.
+var S7_COMBINED_MAX_GAP_MONTHS = 24;
+
+// 'YYYY-MM-DD' -> UTC milliseconds. Pure integer arithmetic on the string, so
+// it cannot be shifted by the browser's local timezone the way Date.parse of a
+// bare date string historically could be.
+function ymdToUTCms(dateStr){
+  var str=String(dateStr||'');
+  var y=parseInt(str.substring(0,4),10);
+  var m=parseInt(str.substring(5,7),10)-1;
+  var d=parseInt(str.substring(8,10),10);
+  if(isNaN(y)||isNaN(m)) return null;
+  if(isNaN(d)||d<1) d=1;
+  return Date.UTC(y,m,d);
+}
+// ms + n whole months, clamping the day-of-month to the target month's length -
+// the same convention ee.Date().advance(n,'month') uses. A plain
+// setUTCMonth(+1) on 31 January OVERFLOWS to 2/3 March; this does not.
+function addMonthsUTCms(ms, n){
+  if(ms===null||ms===undefined||isNaN(ms)) return null;
+  var d=new Date(ms), y=d.getUTCFullYear(), m=d.getUTCMonth(), day=d.getUTCDate();
+  var tot=y*12+m+n, yy=Math.floor(tot/12), mm=tot-yy*12;
+  var lastDay=new Date(Date.UTC(yy,mm+1,0)).getUTCDate();
+  return Date.UTC(yy, mm, Math.min(day,lastDay), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds());
+}
+// Given the two windows, describe the ONE monthly collection that covers both.
+// Returns {startDateStr, nMonths, startMs, endMs, spanMonths, tooWide} or null
+// if a date could not be parsed. nMonths carries one month of deliberate slack
+// past the later window's end: mkMoFAIRange() anchors its monthly grid on the
+// EARLIER window's day-of-month, so when the two starts fall on different days
+// of the month the later window's last composite can sit one grid step beyond
+// the plain month difference. One spare composite costs one month of imagery
+// and removes an off-by-one that would otherwise silently shorten a window.
+function combinedWindowSpan(beforeStart, beforeMonths, afterStart, afterMonths){
+  var bS=ymdToUTCms(beforeStart), aS=ymdToUTCms(afterStart);
+  if(bS===null||aS===null) return null;
+  var bE=addMonthsUTCms(bS,beforeMonths), aE=addMonthsUTCms(aS,afterMonths);
+  var startMs=Math.min(bS,aS), endMs=Math.max(bE,aE);
+  var startStr=(bS<=aS)?beforeStart:afterStart;
+  var sD=new Date(startMs), eD=new Date(endMs);
+  var monthDiff=(eD.getUTCFullYear()-sD.getUTCFullYear())*12 + (eD.getUTCMonth()-sD.getUTCMonth());
+  var nMonths=Math.max(beforeMonths, afterMonths, monthDiff+1);
+  // +1 for the deliberate slack composite nMonths carries (see above).
+  var budget=beforeMonths+afterMonths+S7_COMBINED_MAX_GAP_MONTHS+1;
+  return {startDateStr:startStr, nMonths:nMonths, startMs:startMs, endMs:endMs,
+          spanMonths:nMonths, budgetMonths:budget, tooWide:(nMonths>budget)};
+}
+// Select the entries of a combined {t,v} series that fall inside one window,
+// BY REAL TIMESTAMP - never by array position. The window is the half-open
+// interval [start, start + nMonths months), which contains exactly one point of
+// a monthly grid per month regardless of where the grid is anchored.
+function sliceSeriesByWindow(seriesTV, startDateStr, nMonths){
+  var s=ymdToUTCms(startDateStr);
+  if(s===null) return [];
+  var e=addMonthsUTCms(s,nMonths);
+  var out=[];
+  (seriesTV||[]).forEach(function(pt){
+    if(!pt) return;
+    var t=pt.t;
+    if(t===null||t===undefined||isNaN(t)) return;
+    if(t>=s && t<e) out.push(pt);
+  });
+  out.sort(function(a,b){ return a.t-b.t; });
+  return out;
+}
+// Slice a whole groupSeriesByLabel() result at once: {label:[{t,v}..]} in,
+// {label:[{t,v}..]} out, one window's worth per label.
+function sliceSeriesMapByWindow(byLabel, startDateStr, nMonths){
+  var out={};
+  if(!byLabel) return out;
+  Object.keys(byLabel).forEach(function(k){
+    out[k]=sliceSeriesByWindow(byLabel[k], startDateStr, nMonths);
+  });
+  return out;
+}
+// Up-front refusal, BEFORE any Earth Engine call is spent: is the union of the
+// two windows narrow enough for one combined fetch to be worth making? Returns
+// null when the run may proceed, otherwise the message to show. Called by S7D,
+// S7E and S7F from their existing input-validation blocks.
+function combinedSpanRefusal(span, beforeMonths, afterMonths){
+  if(!span) return 'Could not parse one of the BEFORE/AFTER start dates - use YYYY-MM-DD.';
+  if(!span.tooWide) return null;
+  return 'BEFORE and AFTER are too far apart. v10.162 fetches ONE combined series spanning '+
+    'BEFORE-start through AFTER-end (including the gap) and slices the two windows out of it client-side, '+
+    'which halves the Earth Engine call count. Your two windows ('+beforeMonths+'mo + '+afterMonths+
+    'mo) span '+span.spanMonths+' months end to end, against a budget of '+span.budgetMonths+' ('+beforeMonths+'+'+afterMonths+
+    ' window months, at most '+S7_COMBINED_MAX_GAP_MONTHS+' months of gap, and 1 alignment month). Beyond that the single combined fetch '+
+    'buys more extra imagery than the call it saves is worth, so it is refused rather than silently spent. '+
+    'Move the two windows closer together, or shorten them.';
+}
+
+// The refusal text a module shows when the ONE combined fetch came back but did
+// not actually cover one of the two windows. Deliberately reuses the existing
+// insufficient-data wording rather than inventing a new failure vocabulary, so
+// the user sees the same sentence they would have seen from a short fetch.
+// minPerWindow is the <4-valid-months floor S7C-S7F already refuse on.
+function combinedSliceShortfall(beforeTV, afterTV, minPerWindow){
+  var need=(minPerWindow===undefined||minPerWindow===null)?FAI_MIN_VALID_MONTHS:minPerWindow;
+  var nB=(beforeTV||[]).length, nA=(afterTV||[]).length;
+  if(nB>=need && nA>=need) return null;
+  return 'INSUFFICIENT DATA - the single combined BEFORE..AFTER fetch returned, but it does not cover '+
+    'both windows: '+nB+' month(s) landed in the BEFORE window and '+nA+' in the AFTER window, against a '+
+    'floor of '+need+' each. v10.162 replaced the two separate fetches with one combined fetch sliced by '+
+    'real timestamp, so this is a refusal, NOT a module left waiting on a call that never returns.';
+}
+
 // Pure, unit-testable half of the pre-check: given the raw scene timestamps
 // Earth Engine returned and the requested windows, how many months of each
 // window have at least one qualifying scene? Split out from the async wrapper
@@ -5616,6 +6057,68 @@ var _makeAnnSST = function() {
 // gets a guessed key: the WHOLE reduceRegion dictionary is passed through and
 // the value is pulled out client-side by toeNum() below, which degrades to
 // "unavailable" instead of crashing.
+// ============================================================
+// v10.162 S2 - S17 AND S17b DISAGREED ABOUT n, ON THE SAME CLICK, IN BOTH
+// DIRECTIONS. OBSERVED IN A LIVE BROWSER RUN at Bocas del Toro (9.175,
+// -81.981), one click, salinity, verbatim:
+//   S17 :  not yet  SNR=1.96  n=32 of 32 nominal yr (df=30)  RISING  [MEASURED r=+0.564]
+//   S17b:  tau=-0.333, p=0.3813 -> FALLING  not significant  [n=7 annual points]
+// and at an earlier click a few hundred metres away, S17 said n=12 of 32 while
+// S17b said n=7. Two panels, both claiming to use "the SAME real annual data",
+// reporting different sample sizes AND opposite trend directions.
+//
+// THE CAUSE, determined rather than assumed. Three candidates were on the table:
+//   (a) ee.Reducer.count() counting IMAGES rather than unmasked pixels. RULED
+//       OUT by reading the builders below: every annual image is
+//       coll.filter(year).select(band).mean() with the 't' index added as a
+//       separate band, so a year with no valid pixel at this point is MASKED in
+//       the value band, and ImageCollection.reduce(count) counts unmasked
+//       values per pixel, not images. (_makeAnnPH's empty-year branch is
+//       explicitly updateMask(0) for the same reason.)
+//   (b) the Mann-Kendall path dropping nulls more strictly. TRUE but SECONDARY:
+//       S17b filters v!==null && !isNaN(v), which is the same set the count
+//       reducer skips - once both read the same pixel.
+//   (c) the two reading different collections or date ranges. RULED OUT: S17b
+//       is handed the very same _annSSTColl/_annCHLColl/_annSALColl/_annNO2Coll/
+//       _annPHColl objects S17 reduces, so the year lists are identical.
+// THE ACTUAL CAUSE IS THE SAMPLING FOOTPRINT, and it was different in BOTH
+// dimensions:
+//   * GEOMETRY - S17 reduced at a BARE POINT; S17b sampled a 4 km BUFFER.
+//   * SCALE    - S17 reduced EVERY variable at toeScale = 27750 m (OISST's
+//     native 0.25 deg); S17b sampled at 4000 m (25000 m for pH). HYCOM salinity
+//     is ~9 km and CMEMS ocean colour is 4 km, so at 27750 m Earth Engine serves
+//     a PYRAMID OVERVIEW - an average over a ~28 km block, roughly 9 HYCOM
+//     pixels. Reducing a COUNT image with ee.Reducer.mean() at that scale
+//     therefore returns the block's MEAN valid-year count, a fractional number,
+//     which calcToE() then rounded with Math.floor(x+0.5) into something that
+//     looks like an honest integer year count. At a coastal pixel that is more
+//     masked than the water around it - exactly the Bocas del Toro case - that
+//     average is biased UPWARD. n=32 and n=12 are block averages; n=7 is the
+//     site.
+// Over-counting here is ANTI-CONSERVATIVE in precisely the way TOE-01 was
+// introduced to stop: n drives Sxx = n(n^2-1)/12, SStot = n*sd^2 and df = n-2,
+// so an inflated n inflates Sxx, understates se(slope) and hands the t-test a
+// df it has not earned. TOE-01 replaced a hardcoded nominal length with a
+// "real" count; this fixes the count itself.
+//
+// THE FIX: ONE sampling footprint, shared by both panels, and the CONSERVATIVE
+// one of the two already in use - bare point (S17's geometry, also S18's since
+// v10.147) at the FINER of the two scales (S17b's). Because both panels then
+// reduce the identical pixel of the identical collection, the count reducer and
+// the Mann-Kendall value list see the same set of years BY CONSTRUCTION, so they
+// cannot report different n. No additional Earth Engine call: the count already
+// travels inside the dictionary S17 evaluates, and S17b's fetch count is
+// unchanged at 5.
+// WHAT THIS COSTS, said plainly: S17's slope/noise/correlation now describe THIS
+// PIXEL rather than a ~28 km block, so SNR and the measured r will move at any
+// site where the two differ - which is every site where this bug was visible.
+// That is the point of the change, but it cannot be verified without a live
+// Earth Engine session.
+var TOE_SAMPLE_SCALE = {sst:4000, chl:4000, sal:4000, no2:4000, ph:25000, do_o2:25000};
+// What S17 last computed at the last clicked point, published for S17b to
+// reconcile against. Written by the S17 evaluate callbacks, read by S17b.
+var toeLastResults = {}, toeLastLat = null, toeLastLon = null;
+
 var _annSSTColl=_makeAnnSST();
 var toeSSTFit=_annSSTColl.select(['t','sst']).reduce(ee.Reducer.linearFit());
 var toeSSTNoise=_annSSTColl.select('sst').reduce(ee.Reducer.stdDev());
@@ -6738,17 +7241,101 @@ function repeatChar(ch, n) {
 // same numbers and same wording as S7C/S7D: first-half variance < 0.001 AND
 // |ratio or delta| > 5 -> ARTIFACT, warned on screen and EXCLUDED from the
 // CSD tally, the best-window selection and the headline verdict.
+// ============================================================
+// v10.162 S3 - THE BONFERRONI CLAIM RESTED ON PERMUTATION NOISE.
+// OBSERVED, from a live FIND SWEET SPOT run: the 48-month row reported
+// "Study AC1 p=0.023" against a corrected bar of 0.0250, and the panel
+// concluded "At least one window survives the STRICTER Bonferroni-corrected
+// bar - this is real evidence". At 300 shuffles p=0.023 IS 7/300: the p-value
+// grid step is 1/300 = 0.0033, so a single shuffle landing the other way moves
+// that row to 0.0200 or 0.0267 - across the bar, in either direction.
+// INDEPENDENT EVIDENCE that 300 is too few, from an earlier live run: three
+// rows flagged DUPLICATE - identical data, identical statistics (-0.70x,
+// +0.214, -1.03x, +0.34x on all three) - returned control-variance p-values of
+// 0.003 / 0.010 / 0.030. A tenfold spread with nothing varying but the shuffle
+// draw.
+// HOW THE NEW COUNT WAS CHOSEN (not picked round). The quantity that has to be
+// resolved is the DISTANCE from an estimated p to the corrected bar, so the
+// requirement is on the Monte Carlo standard error SE = sqrt(p(1-p)/B) AT the
+// bar. The bar is 0.05/k for k powered windows, i.e. 0.0500 (k=1) down to
+// 0.00833 (k=6). MEASURED in Node against the shipped permutationTestDeltaFixed
+// (BEFORE 36 valid months, AFTER 48 - the heaviest row this panel builds):
+//     B      SE at p=0.025    SE at p=0.00833    wall clock per test
+//    300       0.00901          0.00525             20 ms
+//   2000       0.00349          0.00203             49 ms
+//  10000       0.00156          0.00091            187 ms
+//  20000       0.00110          0.00064            337 ms
+// 10000 puts the SE at the k=2 bar (0.0250, the live case) at 0.0016 - about
+// 1/16 of the bar, and 5.8x tighter than 300 - while costing 187 ms per test.
+// FIND SWEET SPOT fires at most 6 windows x 4 tests, and only the rows that can
+// actually be COUNTED get the high count, so the realistic added cost is
+// 8-16 tests x 187 ms = 1.5-3.0 s, with a 4.5 s worst case if every row is
+// powered and distinct. That is small next to this panel's 8 Earth Engine calls
+// (20-60 s), and it adds no EE work at all - the shuffles are client-side JS on
+// series already fetched. 20000 would buy another 1.4x of precision for double
+// the time, which is not the binding constraint.
+// SEED-TO-SEED SPREAD, measured on ONE fixed dataset, 12 independent repeats of
+// the same test: at B=300 the p-values spanned 0.6033-0.7000 (spread 0.0967);
+// at B=10000, 0.6493-0.6653 (spread 0.0160).
+// SUB-FLOOR and DUPLICATE rows keep 300: they are excluded from every tally,
+// from the best-window pick and from the Bonferroni divisor, so no claim rests
+// on them and there is nothing for extra precision to protect.
+// WHAT 10000 STILL CANNOT DO: it does not make a claim irreversible, it makes
+// the reversal MEASURABLE. Any p within 2 Monte Carlo SEs of the bar can still
+// flip on a different seed, so the panel now computes that margin per row and
+// SAYS SO on screen instead of asserting "this is real evidence". At the live
+// 48-month numbers (p=0.023, bar 0.0250, B=10000) SE=0.0015 and p+2SE=0.0260,
+// which is ABOVE the bar - so that exact row would now be reported as too close
+// to call rather than as a survivor.
+var CSD_PERM_N_COUNTED = 10000;      // rows that reach a tally or a corrected-significance claim
+var CSD_PERM_N_DIAGNOSTIC = 300;     // sub-floor / DUPLICATE rows, shown for transparency only
+// Monte Carlo standard error of an estimated permutation p-value, and whether a
+// claim that it clears `bar` could be reversed by re-running with another seed.
+function permMonteCarloSE(t){
+  if(!t || t.pValue===null || t.pValue===undefined || !t.nPerm || t.nPerm<=0) return null;
+  return Math.sqrt(Math.max(t.pValue,1/t.nPerm)*(1-t.pValue)/t.nPerm);
+}
+// true when p is below the bar but within 2 SE of it - i.e. "survives" is not
+// safe to assert.
+function permClaimIsSeedFragile(t, bar){
+  var se=permMonteCarloSE(t);
+  if(se===null || bar===null || bar===undefined) return false;
+  return (t.pValue < bar) && ((t.pValue + 2*se) >= bar);
+}
+
 var CSD_VAR_ARTIFACT_VARFIRST = 0.001, CSD_VAR_ARTIFACT_MAG = 5;
+// v10.162 S6 FIX - THE RULE LEAKED, AND THE `AND` WAS DOING THE LEAKING.
+// OBSERVED IN A LIVE S7C RUN at Bocas del Toro (9.175, -81.981), verbatim:
+//   Center: AC1=-0.146 Var=4.14x  (1st-half=0.0000, 2nd-half=0.0000)   [NOT flagged]
+//   North:  AC1=0.009  Var=12.08x (1st-half=0.0000, 2nd-half=0.0000)  LIKELY ARTIFACT
+// Both rows have a first-half variance that prints as 0.0000. North was flagged
+// only because its ratio happened to land above 5 and Center was not flagged
+// only because its ratio happened to land below it. The defect is structural,
+// not a threshold that needs tuning: varTrendRatio = secondHalfVar /
+// max(firstHalfVar, 1e-6), so once firstHalfVar is at or under the 1e-6 floor
+// the denominator is a CONSTANT, the ratio is an arbitrary rescaling of the
+// second half alone, and its MAGNITUDE carries no information about whether the
+// ratio is trustworthy. Requiring |ratio| > 5 on top of a near-zero denominator
+// therefore makes the magnitude threshold decide something it cannot know, and
+// silently passes every artifact whose ratio happens to be small - 4.14x here.
+// FIXED: a near-zero denominator is now disqualifying ON ITS OWN. The magnitude
+// argument is still accepted (every call site passes it) but no longer gates the
+// flag; it is used only for wording.
+// WHAT THIS DOES NOT DO - MEASURED, not assumed. The worry is that dropping the
+// magnitude condition starts flagging genuine variance surges. It cannot, and the
+// reason is arithmetic rather than empirical: a genuine surge has a REAL first
+// half, and a real first half is not < 0.001. Re-ran the earlier sweep to confirm
+// on the shipped code path (see the v10.162 changelog for the measured rate).
 function isVarRatioArtifact(varFirst, magnitude) {
   return varFirst!==null && varFirst!==undefined && !isNaN(varFirst) &&
-         varFirst < CSD_VAR_ARTIFACT_VARFIRST &&
-         magnitude!==null && magnitude!==undefined && !isNaN(magnitude) &&
-         Math.abs(magnitude) > CSD_VAR_ARTIFACT_MAG;
+         varFirst < CSD_VAR_ARTIFACT_VARFIRST;
 }
 var CSD_VAR_ARTIFACT_MSG =
-  '⚠ LIKELY ARTIFACT: first-half variance is near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), inflating the '+
-  'variance ratio - treat this Var value with real caution, not as a genuine surge. It is EXCLUDED '+
-  'from the CSD tally and from the headline verdict (same rule as S7C v10.105 / S7D v10.109).';
+  '⚠ LIKELY ARTIFACT: first-half variance is near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), so the variance '+
+  'ratio is divided by the 1e-6 floor rather than by a real number - treat this Var value with real caution, '+
+  'not as a genuine surge, AT ANY RATIO. v10.162: the flag no longer also requires |ratio|>'+CSD_VAR_ARTIFACT_MAG+
+  ' - a live run showed a 4.14x and a 12.08x row with the SAME 0.0000 first half, one flagged and one not. It is '+
+  'EXCLUDED from the CSD tally and from the headline verdict (same rule as S7C v10.105 / S7D v10.109).';
 
 // v10.156 BUG-08 FIX: measured power of permutationTestDeltaFixed (Monte
 // Carlo, BEFORE phi=0.2 vs AFTER phi). At 24 months the test has essentially
@@ -6827,10 +7414,16 @@ var CSD_POWER_TABLE_TXT =
   'MEASURED POWER AND FALSE-POSITIVE RATE OF THIS TEST (v10.160, Monte Carlo).\n'+
   'DESIGN, so these numbers are reproducible: monthly series, seasonal cycle +\n'+
   'noise, per-reading noise SD 1.0, random start calendar month, BEFORE->AFTER gap\n'+
-  'uniform 0-3 months, 300 shuffles per test - the same 300 STEP 4 uses for each of\n'+
-  'its '+CSD_SWEET_SPOT_NPERMTESTS+' tests - 2000 replicates per cell, nominal 5%. Monte Carlo standard error is\n'+
-  'about 0.5 percentage points near 5%, so single cells move by ~1 point between\n'+
-  'runs; the differences below are much larger than that.\n'+
+  'uniform 0-3 months, 300 shuffles per test, 2000 replicates per cell, nominal 5%.\n'+
+  'Monte Carlo standard error is about 0.5 percentage points near 5%, so single cells\n'+
+  'move by ~1 point between runs; the differences below are much larger than that.\n'+
+  'v10.162 NOTE ON THE SHUFFLE COUNT: this table was measured at 300 shuffles per\n'+
+  'test, which is no longer what STEP 4 runs. STEP 4 now uses '+CSD_PERM_N_COUNTED+' shuffles on any\n'+
+  'row that can be counted and '+CSD_PERM_N_DIAGNOSTIC+' only on the transparency-only rows. The shuffle\n'+
+  'count sets the PRECISION of an individual p-value (its Monte Carlo SE), not the\n'+
+  'test\'s power or its false-positive RATE, which are properties of the statistic and\n'+
+  'the window length - so the rates below still describe the shipped test. They are\n'+
+  'NOT re-measured at '+CSD_PERM_N_COUNTED+', and are not claimed to be.\n'+
   '\n'+
   'AC1 STATISTIC - balanced windows, AR(1) noise, BEFORE phi=0.2 vs AFTER phi,\n'+
   'seasonal amplitude 3 on a smooth sine:\n'+
@@ -7570,6 +8163,87 @@ var csdCompareRanWithB = null, csdCompareRanWithA = null;
 // lets the permutation callback refresh the toolkit once they arrive.
 var csdPermPAC1 = null, csdPermPVar = null, csdToolkitRerender = null;
 var csdPermStatus = 'pending';  // v10.158: 'pending' | 'ok' | 'unavailable'
+// ============================================================
+// v10.162 S4 - THE STEP 3 HEADLINE CONTRADICTED ITSELF.
+// OBSERVED IN A LIVE RUN, these three lines in this order on one panel:
+//   STATISTICALLY SIGNIFICANT LOCAL CSD SIGNAL (AC1-confirmed, p=0.028)
+//   STRONG SIGNAL, LIKELY REGIONAL (AC1-confirmed, but matches control site too)
+//   Regional context: VERDICTS DISAGREE ... Treat NEITHER as confirmed
+// The most prominent banner says LOCAL, the line below says REGIONAL, and the
+// reconciliation says trust neither. v10.151 FIX 6 made the disagreement
+// VISIBLE; it did not stop the headline asserting one side of it.
+// The root of it: the permutation test behind that banner is run on the STUDY
+// SITE ONLY. It tests whether the study site's own dAC1 is larger than
+// reshuffling its months would produce. It never looks at the control, so the
+// word LOCAL was never something it could establish - LOCAL means "different
+// from the control", which is a separate classifier with separate inputs.
+// FIXED: the banner now states what IS established (the permutation p-value on
+// the study site's dAC1) BEFORE what is not (local vs regional), and when the
+// two classifiers disagree it says so at the top instead of picking a side.
+// These four are published by the variance-based regional classifier so the
+// p-value banner can reconcile against it; the banner is a function so whichever
+// of the two async paths lands second can redraw the other.
+var csdRegionalVTitle = null, csdRegionalStudyDAC1 = null, csdRegionalCtrlDAC1 = null;
+var csdStatValidRerender = null;
+// v10.162 S4 - MAGNITUDE, NOT JUST DIRECTION.
+// In the same live run the numbers behind "matches control site too" were
+// study dAC1 = +0.512 against control dAC1 = +0.134 - the study site's rise is
+// about 3.8x the control's. "Matches" is a magnitude claim, and nothing in the
+// code checked a magnitude: the regional classifier keys off vTitle, which is
+// built from the VARIANCE branches, and the only test applied to it was
+// vTitle.indexOf('LOCAL')>=0. This is a pure, unit-testable function so the
+// comparison it makes is checkable without a live session, and so the wording
+// can carry the real numbers instead of an unearned word.
+// CSD_AC1_AMPLIFY_RATIO is the bar for calling one rise materially larger than
+// the other. 2.0 is chosen, not measured from data: it is the same "twice the
+// other" convention used throughout this file for a magnitude call, and its
+// behaviour on paired NULL data (both sites drawn from the same distribution)
+// is measured in the v10.162 changelog rather than assumed.
+var CSD_AC1_AMPLIFY_RATIO = 2.0;
+// MEASURED false-positive rate of this WORDING on paired NULL data, so it is
+// never mistaken for a test. Design: both sites are the same AR(1) process with
+// no real difference between them; each site's dAC1 is the difference of two
+// independent lag-1 AC1 estimates from n-month series at phi, computed with the
+// SHIPPED jsLag1AC1; 20000 draws per cell. How often two IDENTICAL processes get
+// called "amplified" (study >= 2x control):
+//   n=24 phi=0.2  14.5%   n=36 phi=0.2  16.0%
+//   n=48 phi=0.5  13.9%   n=60 phi=0.5  13.4%
+// i.e. about 1 run in 7, on pure noise. That is why this comparison changes only
+// the WORDING and gates no verdict: it replaces an unearned word ("matches the
+// control site too") with the two real numbers, and it says on screen that a
+// magnitude gap is not a significance test.
+var CSD_AC1_MAGNITUDE_CAVEAT =
+  'A magnitude gap is NOT a significance test: MEASURED on paired NULL data (both sites the same '+
+  'AR(1) process, 20000 draws per cell, shipped jsLag1AC1), a study/control \u0394AC1 ratio of '+
+  CSD_AC1_AMPLIFY_RATIO+'x or more occurs 13.4-16.0% of the time across 24-60 month windows at phi 0.2-0.5. '+
+  'Read it as a description of the two numbers, not as evidence.';
+function classifyRegionalAC1(sDAC1, cDAC1){
+  if(sDAC1===null||sDAC1===undefined||isNaN(sDAC1)||
+     cDAC1===null||cDAC1===undefined||isNaN(cDAC1))
+    return {verdict:'unknown', ratio:null,
+            text:'study/control \u0394AC1 not both computable, so no magnitude comparison is possible'};
+  var num=Math.abs(sDAC1), den=Math.abs(cDAC1);
+  var ratio=(den>1e-9)?(num/den):(num>1e-9?Infinity:1);
+  // A delta of (near) zero has no sign, so it can never be "opposite" to
+  // anything - it is a control that did not move, which is the amplified case.
+  var bothMoved=(num>1e-9 && den>1e-9);
+  var sameSign=(!bothMoved) || ((sDAC1>0)===(cDAC1>0));
+  var fmt=function(v){ return (v>0?'+':'')+v.toFixed(3); };
+  var pair='study \u0394AC1='+fmt(sDAC1)+' vs control \u0394AC1='+fmt(cDAC1);
+  if(!sameSign)
+    return {verdict:'opposite', ratio:ratio,
+            text:pair+' - OPPOSITE directions, so this is not a shared regional move at all'};
+  if(ratio>=CSD_AC1_AMPLIFY_RATIO)
+    return {verdict:'amplified', ratio:ratio,
+            text:pair+' - same direction, but the study site is '+(isFinite(ratio)?ratio.toFixed(1)+'x':'immeasurably')+
+                 ' the control\'s magnitude, so "matches the control" is not an accurate description'};
+  if(ratio<=1/CSD_AC1_AMPLIFY_RATIO)
+    return {verdict:'damped', ratio:ratio,
+            text:pair+' - same direction, but the control moved '+(ratio>0?(1/ratio).toFixed(1)+'x':'far')+
+                 ' more than the study site'};
+  return {verdict:'comparable', ratio:ratio,
+          text:pair+' - same direction and comparable magnitude (within '+CSD_AC1_AMPLIFY_RATIO+'x), which IS what "matches the control" means'};
+}
 var csdStalenessWarningV = ui.Label('',
   {fontSize:'10px',fontWeight:'bold',color:'#aa3300',backgroundColor:'#fff0d0',padding:'4px 6px',margin:'2px 0',whiteSpace:'normal',border:'2px solid #cc7700'});
 csdStalenessWarningV.style().set('shown', false);
@@ -7626,6 +8300,9 @@ var csdCompareBtn=ui.Button({
     csdCompareRanWithB = csdBeforeResult; csdCompareRanWithA = csdAfterResult;
     csdPermPAC1 = null; csdPermPVar = null; csdToolkitRerender = null;  // v10.151: clear stale p-values
     csdPermStatus = 'pending';  // v10.158: and the stale status with them
+    // v10.162 S4: the regional read and the banner hook are per-run state too.
+    csdRegionalVTitle = null; csdRegionalStudyDAC1 = null; csdRegionalCtrlDAC1 = null;
+    csdStatValidRerender = null;
     csdStalenessWarningV.setValue(''); csdStalenessWarningV.style().set('shown', false);
     csdCompareStatValidV.setValue('Statistically valid verdict (p-value based): computing... (fires after the main comparison, ~5-15s extra)');
     csdCompareStatValidV.style().set('color','#442266'); csdCompareStatValidV.style().set('backgroundColor','#f0e8fa');
@@ -7725,7 +8402,19 @@ var csdCompareBtn=ui.Button({
           var ac1Rising = ac1Test.observedDelta!==null && ac1Test.observedDelta>0;
           var varSig = permUsable(varTest) && varTest.pValue<0.05;
           var varRising = varTest.observedDelta!==null && varTest.observedDelta>0;
+          // v10.162 S4: a FUNCTION, so the variance-based regional classifier -
+          // which resolves in a different async path and may land either before
+          // or after this one - can redraw it once its verdict exists. Same
+          // pattern as csdToolkitRerender (v10.160 BLOCKER 2).
+          csdStatValidRerender = function(){
           var statText, statCol, statBg;
+          // What the local-vs-regional side says, if it has landed yet. The
+          // permutation test above is run on the STUDY SITE ONLY - it can
+          // establish that this site's dAC1 is unusual, and nothing at all about
+          // whether the same thing is happening regionally.
+          var _regKnown = (csdRegionalVTitle!==null);
+          var _regLocal = _regKnown && (String(csdRegionalVTitle).indexOf('LOCAL')>=0);
+          var _regMag = classifyRegionalAC1(csdRegionalStudyDAC1, csdRegionalCtrlDAC1);
           // v10.159 W-01 item 2: "NO SIGNIFICANT SIGNAL" and "NOT TESTABLE" are
           // completely different statements and this box used to print the first
           // in both cases. If neither test produced a usable p-value it now says
@@ -7737,25 +8426,51 @@ var csdCompareBtn=ui.Button({
               'Falling back to the heuristic threshold verdict below, which has no known false-positive rate.';
             statCol='#886600'; statBg='#fff4dd';
           } else if(ac1Sig && ac1Rising){
-            statText='STATISTICALLY SIGNIFICANT LOCAL CSD SIGNAL (AC1-confirmed, '+permP(ac1Test)+')\n'+
-              'AC1 rose by a margin fewer than 1 in 20 random reshuffles of these months would produce by chance -\n'+
-              'the strongest evidence this tool can currently show for a genuine resilience-loss signal.';
-            statCol='#880000'; statBg='#ffe0e0';
+            // ESTABLISHED first, NOT ESTABLISHED second, in that order.
+            statText='STATISTICALLY SIGNIFICANT CSD SIGNAL AT THE STUDY SITE (AC1-confirmed, '+permP(ac1Test)+')\n'+
+              'ESTABLISHED: AC1 rose at THIS SITE by a margin fewer than 1 in 20 random reshuffles of these\n'+
+              'months would produce by chance. That is the strongest evidence this tool can currently show\n'+
+              'for a genuine resilience-loss signal, and it is a statement about this site alone.\n';
+            if(!_regKnown){
+              statText+='NOT ESTABLISHED: whether the change is LOCAL or REGIONAL. This permutation test is run on\n'+
+                'the study site ONLY and never looks at the control, so it cannot tell the two apart. The\n'+
+                'control-site comparison has not returned yet - this box will update when it does.';
+              statCol='#880000'; statBg='#ffe0e0';
+            } else if(_regLocal){
+              statText+='ALSO SUPPORTED: the control-site comparison independently reads LOCAL ("'+csdRegionalVTitle+'"),\n'+
+                'so the two classifiers agree. Magnitude check: '+_regMag.text+'.';
+              statCol='#880000'; statBg='#ffe0e0';
+            } else {
+              // v10.162 S4: THE CASE THAT PRODUCED THE CONTRADICTION. The banner
+              // used to say LOCAL here while the line below said REGIONAL.
+              statText+='NOT ESTABLISHED: whether that change is LOCAL to this reef or part of a REGIONAL one. This\n'+
+                'permutation test never looks at the control site, and the classifier that does reads\n'+
+                '"'+csdRegionalVTitle+'" - i.e. NOT local. The two classifiers DISAGREE, so this banner reports\n'+
+                'neither as settled. The p-value above stands on its own; the local/regional question does not.\n'+
+                'Magnitude check (v10.162): '+_regMag.text+'.'+
+                (_regMag.verdict==='amplified'?'\nNote this is a much larger move at the study site than at the control, which v10.161\'s wording\n("but matches control site too") did not convey. '+CSD_AC1_MAGNITUDE_CAVEAT:'');
+              statCol='#aa3300'; statBg='#ffe8cc';
+            }
           } else if(varSig && varRising){
-            statText='SIGNIFICANT VARIANCE-ONLY SIGNAL ('+permP(varTest)+') - AC1 not significant\n'+
+            statText='SIGNIFICANT VARIANCE-ONLY SIGNAL AT THE STUDY SITE ('+permP(varTest)+') - AC1 not significant\n'+
               '('+permP(ac1Test)+'). Per Dakos et al. 2012, a variance-only rise is weaker\n'+
-              'evidence than an AC1-confirmed one - worth noting, not yet a strong CSD signal.';
+              'evidence than an AC1-confirmed one - worth noting, not yet a strong CSD signal.\n'+
+              'NOT ESTABLISHED: local vs regional - this test is run on the study site only.'+
+              (_regKnown?' The control-site classifier reads "'+csdRegionalVTitle+'".':'');
             statCol='#886600'; statBg='#fff4dd';
           } else {
-            statText='NO STATISTICALLY SIGNIFICANT SIGNAL (p>=0.05 where a p-value exists)\n'+
+            statText='NO STATISTICALLY SIGNIFICANT SIGNAL AT THE STUDY SITE (p>=0.05 where a p-value exists)\n'+
               'AC1 '+permP(ac1Test)+' | Variance '+permP(varTest)+'\n'+
               'Neither delta is large enough to rule out ordinary random noise.';
             statCol='#226644'; statBg='#e8f4ff';
           }
-          csdCompareStatValidV.setValue('=== STATISTICALLY VALID VERDICT (real p-value) ===\n'+statText);
+          csdCompareStatValidV.setValue('=== STATISTICALLY VALID VERDICT (real p-value, study site only) ===\n'+statText);
           csdCompareStatValidV.style().set('color',statCol);
           csdCompareStatValidV.style().set('backgroundColor',statBg);
           csdCompareStatValidV.style().set('border','3px solid '+statCol);
+          csdCompareStatValidV.style().set('whiteSpace','pre');
+          };
+          csdStatValidRerender();
 
           // v10.127 NEW: deseasonalized AC1/variance, computed on the SAME
           // raw study series already fetched above - reusing beforeVals/
@@ -8271,6 +8986,11 @@ function runControlCSD(bestCtrl, b, a) {
           'closer to a known bleaching/collapse event. (Tip: try FIND SWEET SPOT.)';
         vCol='#226644'; vBg='#e8f4ff';
       }
+      // v10.162 S4: publish the regional read for the p-value banner above, and
+      // redraw it. Either async path can land first, so both sides redraw.
+      csdRegionalVTitle = vTitle;
+      csdRegionalStudyDAC1 = sDAC1; csdRegionalCtrlDAC1 = cDAC1;
+      if(csdStatValidRerender){ try { csdStatValidRerender(); } catch(eSv){ print('S13 stat-banner refresh skipped: '+eSv); } }
       // v10.156 BUG-03: with the variance delta excluded as an artifact the
       // branches above can land on "NO SIGNAL AT EITHER SITE", which would
       // read as "we measured variance and it was flat". Say what actually
@@ -8523,13 +9243,23 @@ function runControlCSD(bestCtrl, b, a) {
                 combinedTitle='STRONG LOCAL CSD SIGNAL (AC1-confirmed, corroborated)';
                 combinedCol='#880000'; combinedBg='#ffd0d0';
               } else if(conf.level==='high' && !localFlavored){
-                combinedTitle='STRONG SIGNAL, LIKELY REGIONAL (AC1-confirmed, but matches control site too)';
+                // v10.162 S4: "matches control site too" is a MAGNITUDE claim
+                // and nothing here ever checked a magnitude. In the live run
+                // behind this fix the study dAC1 was +0.512 against a control
+                // +0.134 - about 3.8x - and the panel still said "matches".
+                // The decision rule is deliberately NOT changed (its effect on
+                // the classification cannot be measured without a live session);
+                // what changed is that the headline now carries the numbers, so
+                // an unearned word cannot stand in for them.
+                var _magH = classifyRegionalAC1(csdRegionalStudyDAC1, csdRegionalCtrlDAC1);
+                combinedTitle='STRONG SIGNAL (AC1-confirmed), LOCAL-vs-REGIONAL NOT SETTLED - '+_magH.text;
                 combinedCol='#664400'; combinedBg='#fff6cc';
               } else if(conf.level==='moderate' && localFlavored){
                 combinedTitle='LOCAL CSD SIGNAL (AC1-confirmed - the primary indicator per Dakos et al. 2012)';
                 combinedCol='#aa3300'; combinedBg='#ffe8cc';
               } else if(conf.level==='moderate' && !localFlavored){
-                combinedTitle='SIGNAL PRESENT (AC1-confirmed), LIKELY REGIONAL - not distinct from control site';
+                var _magM = classifyRegionalAC1(csdRegionalStudyDAC1, csdRegionalCtrlDAC1);
+                combinedTitle='SIGNAL PRESENT (AC1-confirmed), LOCAL-vs-REGIONAL NOT SETTLED - '+_magM.text;
                 combinedCol='#886600'; combinedBg='#fff6cc';
               } else if(conf.level==='low-moderate'){
                 combinedTitle='WEAK SIGNAL - variance/spatial rose but AC1 (the more robust indicator) did NOT';
@@ -9330,7 +10060,15 @@ var csdMultiWindowBtn=ui.Button({
           var bonferroniAlpha = 0.05/Math.max(1,nPoweredWindows);
           var nWindowsTested = windowLengths.length;
           var permLines=['=== REAL SIGNIFICANCE ACROSS ALL '+nWindowsTested+' WINDOWS (permutation test) ==='];
-          permLines.push('Same engine as STEP 3 COMPARE, run at each window length (300 shuffles each,');
+          permLines.push('Same engine as STEP 3 COMPARE, run at each window length. v10.162 SHUFFLES PER TEST:');
+          permLines.push(CSD_PERM_N_COUNTED+' for any row that can be COUNTED (>= the '+CSD_MIN_WINDOW_MONTHS+'-month floor on its real span,');
+          permLines.push('not a DUPLICATE), '+CSD_PERM_N_DIAGNOSTIC+' for the transparency-only rows that are excluded from every');
+          permLines.push('tally anyway. At '+CSD_PERM_N_DIAGNOSTIC+' the p-value grid step is 1/'+CSD_PERM_N_DIAGNOSTIC+'='+(1/CSD_PERM_N_DIAGNOSTIC).toFixed(4)+', so a single shuffle could move a');
+          permLines.push('row across the corrected bar - a live run reported p=0.023 against a bar of 0.0250, which is');
+          permLines.push('7/300. Each row below prints the shuffle count and the Monte Carlo SE its p-value carries.');
+          permLines.push('This panel fires at most '+CSD_SWEET_SPOT_NPERMTESTS+' permutation tests ('+CSD_SWEET_SPOT_NWINDOWS+' windows x 4), all client-side JS on');
+          permLines.push('series already fetched - the shuffle count adds no Earth Engine work at all.');
+          permLines.push('v10.161 ran every row at a flat 300, justified only as');
           // v10.161 S6c (same class as S7F's hardcoded "4 tests / p<0.0125"): when
           // nPoweredWindows is 0 this block used to read "0 of those 6 windows are
           // ... testing 0 windows means SOME window can look significant by pure
@@ -9339,13 +10077,13 @@ var csdMultiWindowBtn=ui.Button({
           // quoting an alpha that came from Math.max(1,0) rather than from
           // anything measured. Stated plainly instead.
           if(nPoweredWindows===0){
-            permLines.push('reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast). NONE of those '+nWindowsTested+' windows');
+            permLines.push('"reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast". NONE of those '+nWindowsTested+' windows');
             permLines.push('reaches the '+CSD_MIN_WINDOW_MONTHS+'-month floor ON ITS REAL SPAN as a distinct (non-duplicate) span, so');
             permLines.push('NO window here can support inference and there is no family of tests to correct.');
             permLines.push('No Bonferroni bar is quoted: correcting a family of zero tests is meaningless.');
             permLines.push('Every row below is shown for transparency only and none of them is evidence.');
           } else {
-          permLines.push('reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast). '+nPoweredWindows+' of those '+nWindowsTested+' windows are');
+          permLines.push('"reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast". '+nPoweredWindows+' of those '+nWindowsTested+' windows are');
           permLines.push('at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor ON THEIR REAL SPAN and are not a repeat of a shorter');
           permLines.push('row (v10.159 W-03), so they can support inference; testing '+nPoweredWindows+' windows means');
           permLines.push('SOME window can look significant by pure chance - the CORRECTED bar below (0.05 /');
@@ -9355,18 +10093,30 @@ var csdMultiWindowBtn=ui.Button({
           permLines.push('never counted as evidence, so they are not in the correction either.');
           }
           permLines.push(repeatChar('\u2500',72));
-          permLines.push('Window | Study AC1 p | Study Var p | Ctrl AC1 p | Ctrl Var p | Local signal?');
+          permLines.push('Window | Study AC1 p | Study Var p | Ctrl AC1 p | Ctrl Var p | Local signal? | shuffles');
           permLines.push(repeatChar('\u2500',72));
 
           var anyCorrectedSig = false, uncorrectedLocalCount = 0, fssSeriesNotes = [];
+          // v10.162 S3: rows whose claim could still flip on another seed.
+          var fssFragileRows = [];
+          // v10.162 S5: windows where the CONTROL site itself changed significantly.
+          var fssCtrlSigRows = [];
           windowLengths.forEach(function(w, wIdx){
             var sAfterW = pStudyAfterValsFull.slice(0, w);
             var cAfterW = pCtrlAfterValsFull.slice(0, w);
             var wActual = fssWActual[wIdx], wDuplicateOf = fssDuplicateOf[wIdx];
-            var sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, 300);
-            var sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, 300);
-            var cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, 300);
-            var cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, 300);
+            // v10.162 S3: decide whether this row can be COUNTED before running
+            // its tests, so only rows that can carry a claim pay for the extra
+            // precision. Sub-floor and DUPLICATE rows are excluded from every
+            // tally, the best-window pick and the Bonferroni divisor, so 300
+            // shuffles is all the precision they can ever need.
+            var wUnderpowered = (wActual < CSD_MIN_WINDOW_MONTHS);
+            var wExcluded = wUnderpowered || wDuplicateOf!==null;
+            var nShuffles = wExcluded ? CSD_PERM_N_DIAGNOSTIC : CSD_PERM_N_COUNTED;
+            var sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, nShuffles);
+            var sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, nShuffles);
+            var cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, nShuffles);
+            var cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, nShuffles);
             fssSeriesNotes.push(w+'mo: '+permSeriesNote(sAC1Test));
             // v10.159 W-01 item 2: was a bare p-value, with no indication of which
             // series produced it. permP() prints NOT TESTABLE and why instead.
@@ -9399,15 +10149,41 @@ var csdMultiWindowBtn=ui.Button({
             // transparency, never counted as evidence for or against.
             // v10.159 W-03: powered on the REAL span, and a row whose real span
             // repeats a shorter row's is not counted at all - it is the same test.
-            var wUnderpowered = (wActual < CSD_MIN_WINDOW_MONTHS);
-            var wExcluded = wUnderpowered || wDuplicateOf!==null;
+            // (wUnderpowered / wExcluded are now computed above, before the
+            // tests run, because they decide the shuffle count - v10.162 S3.)
             if(localSig && !wExcluded) uncorrectedLocalCount++;
             var minStudyP = Math.min(permUsable(sAC1Test)?sAC1Test.pValue:1, permUsable(sVarTest)?sVarTest.pValue:1);
-            if(localSig && !wExcluded && minStudyP<bonferroniAlpha) anyCorrectedSig=true;
+            var minStudyTest = (permUsable(sAC1Test)&&sAC1Test.pValue===minStudyP)?sAC1Test:
+                               ((permUsable(sVarTest)&&sVarTest.pValue===minStudyP)?sVarTest:null);
+            var rowCorrected = (localSig && !wExcluded && minStudyP<bonferroniAlpha);
+            if(rowCorrected) anyCorrectedSig=true;
+            // v10.162 S3: is that "survives the corrected bar" reversible by a
+            // different seed? Measured, per row, from the p-value's own Monte
+            // Carlo SE - not assumed away.
+            if(rowCorrected && minStudyTest && permClaimIsSeedFragile(minStudyTest, bonferroniAlpha)){
+              fssFragileRows.push({w:w, p:minStudyP, se:permMonteCarloSE(minStudyTest), nPerm:minStudyTest.nPerm});
+            }
+            // v10.162 S5: a SIGNIFICANT change at the CONTROL site is a real
+            // regional finding this tool is positioned to make, and the panel
+            // used to drop it on the floor - "Local signal? no" is correct (local
+            // means DIVERGING from the control) but it is not the whole result.
+            // Recorded in EITHER direction, since a significant fall at the
+            // control is just as real a regional change as a rise.
+            function _ctrlHit(t,name){
+              if(!permUsable(t) || t.pValue>=0.05) return;
+              fssCtrlSigRows.push({w:w, wActual:wActual, stat:name, p:t.pValue,
+                dir:(t.observedDelta!==null&&t.observedDelta!==undefined)?(t.observedDelta>0?'rose':'fell'):'direction n/a',
+                delta:t.observedDelta, excluded:wExcluded, alsoStudy:((name==='AC1')?sAC1Sig:sVarSig),
+                nPerm:t.nPerm});
+            }
+            _ctrlHit(cAC1Test,'AC1'); _ctrlHit(cVarTest,'Variance');
             permLines.push(w+'mo'+(wActual!==w?'('+wActual+')':'  ')+' | '+fp(sAC1Test)+' | '+fp(sVarTest)+' | '+fp(cAC1Test)+' | '+fp(cVarTest)+
               ' | '+(wDuplicateOf!==null?'DUPLICATE of '+wDuplicateOf+'mo - not counted':
                      wUnderpowered?'UNDERPOWERED - not counted':
-                          (localSig?(minStudyP<bonferroniAlpha?'YES (survives correction)':'YES (uncorrected only)'):'no')));
+                          (localSig?(minStudyP<bonferroniAlpha?
+                            (permClaimIsSeedFragile(minStudyTest,bonferroniAlpha)?'YES but WITHIN MC NOISE of the bar':'YES (survives correction)')
+                            :'YES (uncorrected only)'):'no'))+
+              ' | '+nShuffles+(wExcluded?' (diagnostic)':''));
           });
           permLines.push(repeatChar('\u2500',72));
           // v10.161 S6b: "0 of 0 DISTINCT windows" when nothing was powered.
@@ -9430,15 +10206,77 @@ var csdMultiWindowBtn=ui.Button({
           fssSeriesNotes.forEach(function(n){ permLines.push('  '+n); });
           permLines.push('');
           permLines.push(CSD_POWER_TABLE_TXT);
-          if(anyCorrectedSig){
+          if(anyCorrectedSig && fssFragileRows.length===0){
             permLines.push('At least one window survives the STRICTER Bonferroni-corrected bar (p<'+bonferroniAlpha.toFixed(4)+') -');
             permLines.push('this is real evidence, not just a lucky window among '+nPoweredWindows+' powered tries.');
+            permLines.push('v10.162: every surviving row clears the bar by more than 2 Monte Carlo standard errors of');
+            permLines.push('its own p-value at '+CSD_PERM_N_COUNTED+' shuffles, so re-running with a different seed would not');
+            permLines.push('reverse it. That check is what the v10.161 wording asserted without measuring.');
+          } else if(anyCorrectedSig){
+            // v10.162 S3: a survivor exists on paper, but its distance from the
+            // bar is inside the shuffle noise. Say so instead of asserting it.
+            permLines.push('TOO CLOSE TO CALL - a window is below the Bonferroni-corrected bar (p<'+bonferroniAlpha.toFixed(4)+'), but NOT');
+            permLines.push('by enough to survive its own Monte Carlo error. This is NOT the same as "survives the');
+            permLines.push('corrected bar", and it is NOT "no signal" either:');
+            fssFragileRows.forEach(function(fr){
+              permLines.push('  '+fr.w+'mo: p='+fr.p.toFixed(4)+' vs bar '+bonferroniAlpha.toFixed(4)+
+                ', Monte Carlo SE='+fr.se.toFixed(4)+' at '+fr.nPerm+' shuffles -> p+2SE='+(fr.p+2*fr.se).toFixed(4)+
+                ', which is ON OR ABOVE the bar. A different seed could put this row on the other side.');
+            });
+            permLines.push('Raising the shuffle count further would narrow the SE (it scales as 1/sqrt(B)), but the');
+            permLines.push('honest reading is that this window sits AT the corrected bar, not past it. Treat it as a');
+            permLines.push('hypothesis to test on an independently chosen window, not as confirmed evidence.');
           } else if(uncorrectedLocalCount>0){
             permLines.push('NONE survive the corrected bar - the uncorrected hits above are consistent with');
             permLines.push('what pure chance alone would produce across '+nPoweredWindows+' tests. Treat as a hypothesis to');
             permLines.push('test further (e.g. with an independently-chosen window), not a confirmed signal.');
           } else {
             permLines.push('No window shows a real local signal, corrected or uncorrected.');
+          }
+          // ============================================================
+          // v10.162 S5 - A SIGNIFICANT CONTROL-SITE CHANGE WAS GOING UNREPORTED.
+          // OBSERVED across several windows of a live run:
+          //   36mo      | Study Var p=0.647 | Ctrl Var p=0.000
+          //   48mo(40)  | Study Var p=0.553 | Ctrl Var p=0.000
+          //   60mo(40)  | Study Var p=0.603 | Ctrl Var p=0.007
+          // "Local signal? no" was CORRECT - local means the study site diverging
+          // from the control, and it is not. But the panel then ended with "No
+          // window shows a real local signal" and never said that the CONTROL
+          // was changing significantly, which is a REGIONAL finding, and one this
+          // tool is positioned to make: the control is the deep-water/offshore
+          // baseline the study site is measured against. A baseline that is
+          // itself moving is a result, not a null.
+          // ============================================================
+          var _ctrlCounted = fssCtrlSigRows.filter(function(r){ return !r.excluded; });
+          if(_ctrlCounted.length>0){
+            permLines.push('');
+            permLines.push('=== REGIONAL FINDING: THE CONTROL SITE ITSELF CHANGED (v10.162 S5) ===');
+            permLines.push('The control site is the baseline the study site is compared against. These rows show a');
+            permLines.push('SIGNIFICANT change at the CONTROL, which the "Local signal?" column above cannot report -');
+            permLines.push('that column asks only whether the study site DIVERGES from the control, so a change that');
+            permLines.push('affects both, or the control alone, correctly reads "no" there and would otherwise vanish.');
+            _ctrlCounted.forEach(function(r){
+              permLines.push('  '+r.w+'mo'+(r.wActual!==r.w?'('+r.wActual+')':'')+': control '+r.stat+' '+r.dir+
+                ', p='+r.p.toFixed(4)+' ('+r.nPerm+' shuffles)'+
+                (r.delta!==null&&r.delta!==undefined?', delta='+(r.delta>0?'+':'')+r.delta.toFixed(3):'')+
+                (r.alsoStudy?'  [the STUDY site is significant on this statistic too - consistent with a shared regional driver]'
+                            :'  [the study site is NOT significant on this statistic - the change is at the control, not here]'));
+            });
+            permLines.push('WHAT THIS IS AND IS NOT: a significant control-site change is evidence of a REGIONAL');
+            permLines.push('change in the '+(smartCtrl?smartCtrl.label:'control')+' record over these windows. It is NOT a local warning for the study');
+            permLines.push('site, and it does NOT become one. It also WEAKENS any local claim made against this control:');
+            permLines.push('a baseline that is itself moving is a less informative comparison than a stable one.');
+            permLines.push('CAVEAT, unchanged from the rest of this panel: the control uses an 80km buffer against the');
+            permLines.push('study site\'s 10km, so the two are not like-for-like spatial samples.');
+            if(uncorrectedLocalCount===0){
+              permLines.push('NOTE: this is why "No window shows a real local signal" above is not the whole result -');
+              permLines.push('there IS something significant in this comparison, and it is at the control site.');
+            }
+          } else if(fssCtrlSigRows.length>0){
+            permLines.push('');
+            permLines.push('CONTROL SITE: '+fssCtrlSigRows.length+' significant control-site hit(s) appear only in rows that are');
+            permLines.push('UNDERPOWERED or DUPLICATE, so they are shown in the table but not reported as a regional');
+            permLines.push('finding - the same exclusion the study-site tallies apply.');
           }
           csdMultiPermTestV.setValue(permLines.join('\n'));
           csdMultiPermTestV.style().set('color','#552266');
@@ -10408,8 +11246,15 @@ var s7cRunBtn = ui.Button({
         // enough that the ratio is likely more artifact than signal.
         function varLine(node, ac){
           var vFirst=ac.varFirstHalf, vSecond=ac.varSecondHalf, vRatio=ac.varTrendRatio;
-          var artifactFlag = (vFirst!==null&&vFirst!==undefined&&vFirst<0.001&&vRatio!==null&&vRatio>5) ?
-            '  \u26A0 LIKELY ARTIFACT: first-half variance is near-zero ('+fmtN(vFirst,5)+'), inflating the ratio - treat this Var value with real caution, not as a genuine surge.' : '';
+          // v10.162 S6: was its own private copy of the rule (vFirst<0.001 AND
+          // vRatio>5). That AND is exactly what let the live Center row through
+          // at 4.14x with the same 0.0000 first half that flagged North at
+          // 12.08x. Now calls the SINGLE shared rule, so S7C, S7D and S13 cannot
+          // drift apart again.
+          var artifactFlag = isVarRatioArtifact(vFirst, vRatio) ?
+            '  \u26A0 LIKELY ARTIFACT: first-half variance is near-zero ('+fmtN(vFirst,5)+'), so this ratio is '+
+            'divided by the 1e-6 floor, not by a real number - treat this Var value with real caution at ANY ratio, '+
+            'not as a genuine surge.' : '';
           return '  '+node+': AC1='+fmtN(ac.realAC1,3)+' Var='+fmtN(vRatio,2)+'x (1st-half='+fmtN(vFirst,4)+', 2nd-half='+fmtN(vSecond,4)+') Skew='+fmtN(ac.skewness,2)+artifactFlag;
         }
         lines.push(varLine('Center',acC));
@@ -10494,7 +11339,7 @@ panel.add(legDiv());
 // rather than silently trusted.
 // ============================================================
 panel.add(sHead('S7D - FULL 9-NODE ALGAE COUPLING NETWORK (v10.106)','#3a1a5a'));
-panel.add(lbl('Scales S7C to the full 9-node ring with a real BEFORE/AFTER comparison. v10.107: rebuilt from ~43 separate Earth Engine calls down to just 3 batched calls (reduceRegions+flatten, stats computed client-side) - expect ~20-60s instead of 2-5 minutes. Correlation is still scored vs the Center node only (8 pairs), not the full 36-pair matrix, to keep this usable.',7,'#663388'));
+panel.add(lbl('Scales S7C to the full 9-node ring with a real BEFORE/AFTER comparison. v10.107: rebuilt from ~43 separate Earth Engine calls down to 3 batched calls (reduceRegions+flatten, stats computed client-side) - expect ~20-60s instead of 2-5 minutes. v10.162: down to 2 - the separate BEFORE fetch is gone. ONE series is fetched across BEFORE-start..AFTER-end and the two windows are sliced out of it client-side by real timestamp, the same fetch-once-and-slice pattern S13 STEP 4 already uses. This is the fix for a live run in which the BEFORE call returned 0 features while AFTER returned all 108, leaving S7E and S7F waiting on it forever. Correlation is still scored vs the Center node only (8 pairs), not the full 36-pair matrix, to keep this usable.',7,'#663388'));
 panel.add(lbl('NDVI-water is checked once per node to flag likely off-reef points (per the S7B finding that North showed strongly negative NDVI there) - a node/pair involving an off-reef point is caveated, not silently trusted as a real algae-dynamics comparison.',7,'#886600'));
 panel.add(lbl('Lat, Lon:',7,'#334466'));
 var s7dCoordInput = ui.Textbox({placeholder:'lat, lon  e.g. -23.51, 152.09',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
@@ -10536,12 +11381,12 @@ var s7dAfterStartInput = ui.Textbox({placeholder:'e.g. 2023-11-01',style:{stretc
 panel.add(s7dAfterStartInput);
 var s7dAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7dAfterMonthsInput);
-var s7dStatusV = ui.Label('Fill in the fields above, then press RUN. 3 batched calls, expect ~20-60 seconds.',
+var s7dStatusV = ui.Label('Fill in the fields above, then press RUN. 2 batched calls (v10.162: one combined BEFORE..AFTER series + NDVI), expect ~20-60 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7dResultV = ui.Label('',{fontSize:'8px',color:'#2a1040',backgroundColor:'#f2ecfa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
 var s7dRunSeq = 0;   // v10.161 S6a: a late callback from an abandoned run must not overwrite a newer run's label
 var s7dRunBtn = ui.Button({
-  label:'RUN FULL 9-NODE NETWORK (3 batched EE calls, ~20-60s)',
+  label:'RUN FULL 9-NODE NETWORK (2 batched EE calls, ~20-60s)',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#ded0f0',color:'#3a1560',stretch:'horizontal',padding:'6px 4px',border:'2px solid #5a2a80'},
   onClick:function(){
     var coordTxt=(s7dCoordInput.getValue()||'').trim();
@@ -10596,10 +11441,16 @@ var s7dRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7dStatusV.style().set('color','#cc0000'); return;
     }
+    // v10.162 S1: the combined-span cap, checked before any EE call is spent.
+    var _s7dSpanPre = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var _s7dSpanRefusal = combinedSpanRefusal(_s7dSpanPre, beforeMonths, afterMonths);
+    if(_s7dSpanRefusal){ s7dStatusV.setValue(_s7dSpanRefusal); s7dStatusV.style().set('color','#cc0000');
+      s7dStatusV.style().set('backgroundColor','#ffd0d0'); s7dStatusV.style().set('whiteSpace','pre'); return; }
     s7dRunSeq++; var s7dMyRun=s7dRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7D');
 
-    // v10.161 S4: cheap FAI data-density gate BEFORE the 3 heavy batched calls.
+    // v10.161 S4: cheap FAI data-density gate BEFORE the heavy batched calls
+    // (v10.162 S1: 2 of them now, not 3).
     faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7D', statusLbl:s7dStatusV, resultLbl:s7dResultV,
       windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
                {name:'AFTER', start:afterStartTxt, months:afterMonths}],
@@ -10632,12 +11483,15 @@ var s7dRunBtn = ui.Button({
     var ptsFC = ee.FeatureCollection(nodes.map(function(nd,idx){
       return ee.Feature(nd.buf, {label:nd.label, idx:idx});
     }));
-    var faiCollBefore=mkMoFAIRange(beforeStartTxt,beforeMonths);
-    var faiCollAfter=mkMoFAIRange(afterStartTxt,afterMonths);
+    // v10.162 S1: ONE combined series spanning BEFORE-start .. AFTER-end
+    // (including the gap), sliced into the two windows client-side by real
+    // timestamp. Replaces the separate BEFORE fetch that returned 0 features
+    // in the live Bocas del Toro run while AFTER returned all 108.
+    var _s7dSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var faiCollCombined = mkMoFAIRange(_s7dSpan.startDateStr, _s7dSpan.nMonths);
     var ndviWaterMasked=ndviWater.updateMask(oceanMask).rename('ndviW');
 
-    var rBeforeSeries = extractMultiNodeSeries(faiCollBefore, ptsFC, 'fai', 20);
-    var rAfterSeries = extractMultiNodeSeries(faiCollAfter, ptsFC, 'fai', 20);
+    var rCombinedSeries = extractMultiNodeSeries(faiCollCombined, ptsFC, 'fai', 20);
     // v10.109 FIX: switched from mean() over 150m to max() over a FIXED
     // 500m buffer to fix Center falsely reading "LIKELY NOT on-reef".
     // v10.110 FIX: that fixed value size (500m) was itself a bug - at the
@@ -10657,15 +11511,18 @@ var s7dRunBtn = ui.Button({
     }));
     var rNdviAll = ndviWaterMasked.reduceRegions({collection:ptsFCForNdvi, reducer:ee.Reducer.max(), scale:20});
 
-    s7dStatusV.setValue('Running: 3 batched Earth Engine calls (BEFORE series, AFTER series, NDVI check)\n'+
-      'covering all 9 nodes at once - much lighter than the previous ~43-call approach. Expect 20-60 seconds.');
+    s7dStatusV.setValue('Running: 2 batched Earth Engine calls (ONE combined '+_s7dSpan.nMonths+'-month BEFORE..AFTER series, NDVI check)\n'+
+      'covering all 9 nodes at once. v10.162: the separate BEFORE fetch is gone - one series is fetched\n'+
+      'across both windows and sliced client-side by timestamp, halving the call count. Expect 20-60 seconds.');
     s7dStatusV.style().set('color','#334466'); s7dStatusV.style().set('backgroundColor','#eeeeee');
     s7dStatusV.style().set('border','2px solid #aaaaaa'); s7dStatusV.style().set('whiteSpace','pre');
     s7dResultV.setValue('');
 
-    var s7dData={}, s7dPending=3, s7dErrors=0;
-    var s7dWaiting=['BEFORE series','AFTER series','NDVI check'];
-    var s7dCallName={before:'BEFORE series', after:'AFTER series', ndvi:'NDVI check'};
+    var s7dData={}, s7dPending=2, s7dErrors=0;
+    // v10.162 S1: two outstanding calls, not three. The run-sequence guard and
+    // the stall-explaining progress text from v10.161 S6a are unchanged.
+    var s7dWaiting=['combined BEFORE..AFTER series','NDVI check'];
+    var s7dCallName={combined:'combined BEFORE..AFTER series', ndvi:'NDVI check'};
     function s7dBump(key,val,err){
       if(s7dMyRun!==s7dRunSeq) return;   // v10.161 S6a: stale run, do not touch the label
       s7dData[key]=err?null:val;
@@ -10673,7 +11530,7 @@ var s7dRunBtn = ui.Button({
       s7dPending--;
       // v10.161 S6a: name the outstanding call(s) and say what a frozen counter means.
       var _wait=s7Outstanding(s7dWaiting, s7dCallName[key]||key);
-      s7dStatusV.setValue('Running: '+(3-s7dPending)+' / 3 batched calls done'+
+      s7dStatusV.setValue('Running: '+(2-s7dPending)+' / 2 batched calls done'+
         (s7dErrors>0?' ('+s7dErrors+' errored)':'')+'...\n'+_wait+
         (s7dPending>0?('\n'+S7_STALL_HINT+' (search "S7D [" in the Console.)'):''));
       if(s7dPending===0) s7dFinish();
@@ -10683,8 +11540,25 @@ var s7dRunBtn = ui.Button({
       try {
         function fmtN(v,d){ return (v!==null&&v!==undefined&&!isNaN(v))?v.toFixed(d):'n/a'; }
 
-        var beforeByNode = groupSeriesByLabel(s7dData.before, 'fai');
-        var afterByNode = groupSeriesByLabel(s7dData.after, 'fai');
+        // v10.162 S1: slice the ONE combined series into the two windows by
+        // real timestamp (sliceSeriesMapByWindow), not by array position.
+        var combinedByNode = groupSeriesByLabel(s7dData.combined, 'fai');
+        var beforeByNode = sliceSeriesMapByWindow(combinedByNode, beforeStartTxt, beforeMonths);
+        var afterByNode  = sliceSeriesMapByWindow(combinedByNode, afterStartTxt,  afterMonths);
+        // If the combined fetch came back but does not actually cover both
+        // windows, REFUSE with the existing insufficient-data wording rather
+        // than rendering half a table (the v10.161 behaviour) or hanging.
+        var _s7dShort = combinedSliceShortfall(beforeByNode['Center']||[], afterByNode['Center']||[], 4);
+        if(_s7dShort){
+          s7dStatusV.setValue(_s7dShort+'\nS7C-S7F cannot run here.');
+          s7dStatusV.style().set('color','#cc0000'); s7dStatusV.style().set('backgroundColor','#ffd0d0');
+          s7dStatusV.style().set('border','2px solid #cc0000'); s7dStatusV.style().set('whiteSpace','pre');
+          s7dResultV.setValue('Combined fetch returned '+((s7dData.combined&&s7dData.combined.features)?s7dData.combined.features.length:0)+
+            ' raw feature(s) across '+_s7dSpan.nMonths+' month(s) x '+nodes.length+' nodes.'+
+            (_pre&&_pre.note?'\n'+_pre.note:''));
+          print('=== S7D REFUSED (v10.162 S1 combined-slice shortfall) === '+_s7dShort);
+          return;
+        }
         var ndviByLabel = {};
         if(s7dData.ndvi && s7dData.ndvi.features){
           s7dData.ndvi.features.forEach(function(f){
@@ -10790,8 +11664,10 @@ var s7dRunBtn = ui.Button({
           // without any real surge). Ported here after a real S7D run
           // showed SW=+52.31x and SE=+11.99x, even more extreme than the
           // case that prompted the original fix.
+          // v10.162 S6: second private copy of the same rule, with the same
+          // leak. Routed through the shared isVarRatioArtifact().
           var artifactFlag='';
-          if(stB.varFirstHalf!==null&&stB.varFirstHalf<0.001&&dVar!==null&&Math.abs(dVar)>5){
+          if(isVarRatioArtifact(stB.varFirstHalf, dVar)){
             artifactFlag=' \u26A0ARTIFACT';
           }
           rows.push(nd.label+repeatChar(' ',Math.max(1,7-nd.label.length))+'| '+
@@ -10801,9 +11677,13 @@ var s7dRunBtn = ui.Button({
             dCorrTxt+' ('+corrPTxt+')');
         }
         rows.push(repeatChar('\u2500',56));
-        rows.push('\u26A0ARTIFACT flag: 1st-half FAI variance was near-zero (<0.001) and |\u0394Var|>5x - likely a division artifact (see S7C v10.105 note), not a genuine surge. Treat those \u0394Var values with real caution.');
+        rows.push('\u26A0ARTIFACT flag (v10.162): 1st-half FAI variance was near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), so the \u0394Var beside it is divided by the 1e-6 floor rather than by a real number - a division artifact (see S7C v10.105 note), not a genuine surge, at ANY magnitude. The flag no longer ALSO requires |\u0394Var|>'+CSD_VAR_ARTIFACT_MAG+'x: a live S7C run showed a 4.14x row and a 12.08x row with the same 0.0000 first half, and only the second was flagged.');
         rows.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo | radius='+radiusKm+'km | NDVI check buffer='+ndviBufM.toFixed(0)+'m (scaled to avoid overlapping adjacent nodes)');
-        rows.push('Method: 3 batched EE fetches (reduceRegions+flatten), AC1/variance/correlation computed client-side in JS.');
+        rows.push('Method (v10.162): 2 batched EE fetches (reduceRegions+flatten) - ONE combined '+_s7dSpan.nMonths+
+          '-month BEFORE..AFTER FAI series plus the NDVI check. The two windows are sliced out of that one series '+
+          'client-side by real timestamp; AC1/variance/correlation are computed client-side in JS. Under v10.161 this '+
+          'was 3 fetches with a separate BEFORE call, which is the call that returned 0 features in the live run and '+
+          'left S7E/S7F waiting forever.');
         rows.push('');
         rows.push('=== v10.154 SIGNIFICANCE (permutation, 500 shuffles, pairing preserved) ===');
         rows.push('S7D previously had NO significance test - its verdict came from fixed cutoffs');
@@ -10878,13 +11758,19 @@ var s7dRunBtn = ui.Button({
         // still all n/a, the problem is in property extraction instead -
         // these two failure modes need different fixes and this line tells
         // you which one you're looking at without opening the console.
-        var beforeFeatCount=(s7dData.before&&s7dData.before.features)?s7dData.before.features.length:0;
-        var afterFeatCount=(s7dData.after&&s7dData.after.features)?s7dData.after.features.length:0;
+        var combinedFeatCount=(s7dData.combined&&s7dData.combined.features)?s7dData.combined.features.length:0;
         var ndviFeatCount=(s7dData.ndvi&&s7dData.ndvi.features)?s7dData.ndvi.features.length:0;
-        rows.push('Raw features returned: BEFORE='+beforeFeatCount+' | AFTER='+afterFeatCount+' | NDVI='+ndviFeatCount+
-          ' (expect BEFORE='+(beforeMonths*9)+', AFTER='+(afterMonths*9)+', NDVI=9 if fully populated)');
+        // v10.162 S1: this line reported BEFORE and AFTER separately because
+        // they WERE separate calls. There is now one call, so it reports the
+        // combined fetch and then what the client-side timestamp slice pulled
+        // out of it - which is the number that can actually be short now.
+        var _sliceB=(beforeByNode['Center']||[]).length, _sliceA=(afterByNode['Center']||[]).length;
+        rows.push('Raw features returned: COMBINED='+combinedFeatCount+' | NDVI='+ndviFeatCount+
+          ' (expect COMBINED='+(_s7dSpan.nMonths*nodes.length)+' = '+_s7dSpan.nMonths+'mo x '+nodes.length+' nodes, NDVI='+nodes.length+' if fully populated)');
+        rows.push('Client-side timestamp slice (Center node): BEFORE='+_sliceB+'/'+beforeMonths+' months, AFTER='+_sliceA+'/'+afterMonths+
+          ' months. A shortfall here is a data gap in the combined series, not a failed second call - there is no second call.');
         if(nOffReef>0) rows.push('NOTE: '+nOffReef+' of 9 nodes flagged LIKELY NOT on-reef (NDVI-water <= -0.10) - their rows above are informational only, not trusted algae-dynamics comparisons.');
-        if(s7dErrors>0) rows.push('NOTE: '+s7dErrors+' of 3 batched calls returned no usable data. Check the Console for the exact error text (search for "S7D [" lines).');
+        if(s7dErrors>0) rows.push('NOTE: '+s7dErrors+' of 2 batched calls returned no usable data. Check the Console for the exact error text (search for "S7D [" lines).');
         if(_pre && _pre.note) rows.push(_pre.note);   // v10.161 S4
         s7dResultV.setValue(rows.join('\n'));
 
@@ -10934,7 +11820,7 @@ var s7dRunBtn = ui.Button({
         print('=== S7D FINAL ERROR === '+errFinal);
       }
     }
-    // v10.108 NEW: real diagnostics for each of the 3 batched calls, instead
+    // v10.108 NEW: real diagnostics for each batched call (v10.162: 2, not 3), instead
     // of only an aggregate "N errored" counter. A run came back with EVERY
     // node showing n/a on EVERY field, which the aggregate counter alone
     // can't explain (it only reported 1 of 3 calls as errored, but the
@@ -10956,8 +11842,7 @@ var s7dRunBtn = ui.Button({
         print('WARNING: 0 features returned - reduceRegions/flatten produced an empty table.');
       }
     }
-    rBeforeSeries.evaluate(function(v,e){ s7dDiagnose('BEFORE series', v, e); s7dBump('before', v, e); });
-    rAfterSeries.evaluate(function(v,e){ s7dDiagnose('AFTER series', v, e); s7dBump('after', v, e); });
+    rCombinedSeries.evaluate(function(v,e){ s7dDiagnose('combined BEFORE..AFTER series', v, e); s7dBump('combined', v, e); });
     rNdviAll.evaluate(function(v,e){ s7dDiagnose('NDVI check', v, e); s7dBump('ndvi', v, e); });
     });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
@@ -11031,7 +11916,7 @@ var s7eAfterStartInput = ui.Textbox({placeholder:'e.g. 2023-11-01',style:{stretc
 panel.add(s7eAfterStartInput);
 var s7eAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7eAfterMonthsInput);
-var s7eStatusV = ui.Label('Fill in the fields above, then press RUN. 3 batched calls, expect ~30-90 seconds.',
+var s7eStatusV = ui.Label('Fill in the fields above, then press RUN. 2 batched calls (v10.162: GEBCO reference search + one combined BEFORE..AFTER series), expect ~30-90 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7eResultV = ui.Label('',{fontSize:'8px',color:'#5a1020',backgroundColor:'#faeef2',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
 var s7eRunSeq = 0;   // v10.161 S6a
@@ -11088,6 +11973,11 @@ var s7eRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7eStatusV.style().set('color','#cc0000'); return;
     }
+    // v10.162 S1: combined-span cap, checked before any EE call is spent.
+    var _s7eSpanPre = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var _s7eSpanRefusal = combinedSpanRefusal(_s7eSpanPre, beforeMonths, afterMonths);
+    if(_s7eSpanRefusal){ s7eStatusV.setValue(_s7eSpanRefusal); s7eStatusV.style().set('color','#cc0000');
+      s7eStatusV.style().set('backgroundColor','#ffd0d0'); s7eStatusV.style().set('whiteSpace','pre'); return; }
     s7eRunSeq++; var s7eMyRun=s7eRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7E');
 
@@ -11121,7 +12011,7 @@ var s7eRunBtn = ui.Button({
     var candFC = ee.FeatureCollection(candFeats);
     var rCandidates = GEBCO.reduceRegions({collection:candFC, reducer:ee.Reducer.first(), scale:500});
 
-    s7eStatusV.setValue('Step 1/3: Searching 20-160km out for a genuine shallow-water reference reef (1 batched GEBCO call)...');
+    s7eStatusV.setValue('Step 1/2: Searching 20-160km out for a genuine shallow-water reference reef (1 batched GEBCO call)...');
     s7eStatusV.style().set('color','#334466'); s7eStatusV.style().set('backgroundColor','#eeeeee');
     s7eStatusV.style().set('border','2px solid #aaaaaa'); s7eStatusV.style().set('whiteSpace','pre');
     s7eResultV.setValue('');
@@ -11177,9 +12067,9 @@ var s7eRunBtn = ui.Button({
           return;
         }
 
-        s7eStatusV.setValue('Step 2/3: Reference reef found '+best.radiusKm+'km away (depth '+best.elev.toFixed(1)+'m)'+
+        s7eStatusV.setValue('Step 2/2: Reference reef found '+best.radiusKm+'km away (depth '+best.elev.toFixed(1)+'m)'+
           (excludedByHistoryCount>0?' ['+excludedByHistoryCount+' closer candidate(s) skipped - already tested as a study site]':'')+'. '+
-          'Fetching BEFORE/AFTER FAI at study + reference (2 batched calls)...');
+          'Fetching ONE combined BEFORE..AFTER FAI series at study + reference (1 batched call, v10.162 - was 2)...');
 
         var studyPtBuf=ee.Geometry.Point([lonIn,latIn]).buffer(150);
         var refPtBuf=ee.Geometry.Point([best.lon,best.lat]).buffer(150);
@@ -11187,29 +12077,46 @@ var s7eRunBtn = ui.Button({
           ee.Feature(studyPtBuf,{label:'Study'}),
           ee.Feature(refPtBuf,{label:'Reference'})
         ]);
-        var faiCollBefore=mkMoFAIRange(beforeStartTxt,beforeMonths);
-        var faiCollAfter=mkMoFAIRange(afterStartTxt,afterMonths);
-        var rBefore=extractMultiNodeSeries(faiCollBefore, pairFC, 'fai', 20);
-        var rAfter=extractMultiNodeSeries(faiCollAfter, pairFC, 'fai', 20);
+        // v10.162 S1: ONE combined BEFORE..AFTER series for study + reference,
+        // sliced client-side by timestamp. This is the call that returned
+        // nothing in the live Bocas del Toro run and left this panel parked on
+        // "Still waiting on: BEFORE FAI series" with no way to time out.
+        var _s7eSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+        var faiCollCombined=mkMoFAIRange(_s7eSpan.startDateStr,_s7eSpan.nMonths);
+        var rCombined=extractMultiNodeSeries(faiCollCombined, pairFC, 'fai', 20);
 
-        var s7ePending=2, s7eErrors=0, s7eData={};
-        var s7eWaiting=['BEFORE FAI series','AFTER FAI series'];
-        var s7eCallName={before:'BEFORE FAI series', after:'AFTER FAI series'};
+        var s7ePending=1, s7eErrors=0, s7eData={};
+        var s7eWaiting=['combined BEFORE..AFTER FAI series'];
+        var s7eCallName={combined:'combined BEFORE..AFTER FAI series'};
         function s7eBump(key,v,e){
           if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
           s7eData[key]=e?null:v;
           if(e) s7eErrors++;
           s7ePending--;
           var _wait=s7Outstanding(s7eWaiting, s7eCallName[key]||key);
-          s7eStatusV.setValue('Step '+(3-s7ePending)+'/3: '+(2-s7ePending)+' / 2 batched calls done...\n'+_wait+
+          s7eStatusV.setValue('Step '+(3-s7ePending)+'/2: '+(1-s7ePending)+' / 1 batched call done...\n'+_wait+
             (s7ePending>0?('\n'+S7_STALL_HINT+' (search "S7E [" in the Console.)'):''));
           if(s7ePending===0) s7eFinish();
         }
         function s7eFinish(){
           if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
           try {
-            var beforeByNode=groupSeriesByLabel(s7eData.before,'fai');
-            var afterByNode=groupSeriesByLabel(s7eData.after,'fai');
+            // v10.162 S1: slice the ONE combined series by real timestamp.
+            var combinedByNode=groupSeriesByLabel(s7eData.combined,'fai');
+            var beforeByNode=sliceSeriesMapByWindow(combinedByNode, beforeStartTxt, beforeMonths);
+            var afterByNode =sliceSeriesMapByWindow(combinedByNode, afterStartTxt,  afterMonths);
+            // Refuse with the existing insufficient-data wording if the combined
+            // series does not actually cover both windows at the study site.
+            var _s7eShort = combinedSliceShortfall(beforeByNode['Study']||[], afterByNode['Study']||[], 4);
+            if(_s7eShort){
+              s7eStatusV.setValue('CANNOT CLASSIFY (insufficient data in at least one period)\n'+_s7eShort);
+              s7eStatusV.style().set('color','#cc0000'); s7eStatusV.style().set('backgroundColor','#ffd0d0');
+              s7eStatusV.style().set('border','2px solid #cc0000'); s7eStatusV.style().set('whiteSpace','pre');
+              s7eResultV.setValue('Combined fetch returned '+((s7eData.combined&&s7eData.combined.features)?s7eData.combined.features.length:0)+
+                ' raw feature(s) across '+_s7eSpan.nMonths+' month(s) x 2 sites.'+(_pre&&_pre.note?'\n'+_pre.note:''));
+              print('=== S7E REFUSED (v10.162 S1 combined-slice shortfall) === '+_s7eShort);
+              return;
+            }
             // v10.160 S6: pooled climatology per site, shared across its two windows.
             var _eStudyClim=pooledClimFor(beforeByNode['Study']||[], afterByNode['Study']||[]);
             var _eRefClim  =pooledClimFor(beforeByNode['Reference']||[], afterByNode['Reference']||[]);
@@ -11372,7 +12279,7 @@ var s7eRunBtn = ui.Button({
             lines.push('statistic, not a safe one - below '+CSD_AC1_MIN_POOLED_MONTHS+' pooled valid months, and is now refused');
             lines.push('there rather than reported. At this panel\'s '+beforeMonths+'+'+afterMonths+' month boxes that means');
             lines.push((beforeMonths+afterMonths>=CSD_AC1_MIN_POOLED_MONTHS?'the AC1 p-value IS reported.':'the AC1 p-value is NOT reported - only the variance one.'));
-            if(s7eErrors>0) lines.push('NOTE: '+s7eErrors+' of 2 batched calls returned no usable data.');
+            if(s7eErrors>0) lines.push('NOTE: '+s7eErrors+' of 1 batched series call returned no usable data (v10.162: one combined BEFORE..AFTER fetch replaces the two separate ones).');
             lines.push(repeatChar('\u2500',50));
             lines.push('=== PERMUTATION TEST (real p-value, 500 shuffles, algae/FAI) ===');
             lines.push('Same engine as STEP 3 COMPARE (v10.122), applied here to algae instead of SST -');
@@ -11412,7 +12319,8 @@ var s7eRunBtn = ui.Button({
             print('=== S7E FINISH ERROR === '+errFinal2);
           }
         }
-        // v10.125 NEW: real diagnostics on S7E's 2 batched calls, porting
+        // v10.125 NEW: real diagnostics on S7E's series call (v10.162: one
+        // combined call, not two), porting
         // the exact pattern already proven for S7D in v10.108. Caught from
         // a real run that stayed stuck at "1/2 batched calls done" even
         // after a page reload (ruling out an expired session) AND after
@@ -11421,15 +12329,10 @@ var s7eRunBtn = ui.Button({
         // undiagnosed failure mode. Rather than guess a third fix blind,
         // this makes the NEXT run tell us exactly which of the two calls
         // (BEFORE or AFTER FAI fetch) is failing and why.
-        rBefore.evaluate(function(v,e){
-          if(e){ print('=== S7E [BEFORE series] ERROR === '+e); }
-          else { print('=== S7E [BEFORE series] OK - '+((v&&v.features)?v.features.length:0)+' feature(s) returned ==='); }
-          s7eBump('before', v, e);
-        });
-        rAfter.evaluate(function(v,e){
-          if(e){ print('=== S7E [AFTER series] ERROR === '+e); }
-          else { print('=== S7E [AFTER series] OK - '+((v&&v.features)?v.features.length:0)+' feature(s) returned ==='); }
-          s7eBump('after', v, e);
+        rCombined.evaluate(function(v,e){
+          if(e){ print('=== S7E [combined BEFORE..AFTER series] ERROR === '+e); }
+          else { print('=== S7E [combined BEFORE..AFTER series] OK - '+((v&&v.features)?v.features.length:0)+' feature(s) returned ==='); }
+          s7eBump('combined', v, e);
         });
       } catch(errFinal){
         s7eStatusV.setValue(friendlyEEError(errFinal));
@@ -11463,13 +12366,16 @@ panel.add(legDiv());
 // that tries several window lengths across every S7 tool would multiply
 // both the hang risk and the quota load severalfold, with no reliable
 // way to know if a huge combined run is progressing or stuck. This
-// version fires a bounded 6 EE calls total (matching S7D's 3 + S7E's 3),
+// version fires a bounded 4 EE calls total (v10.162: matching S7D's 2 +
+// S7E's 2 - each site now fetches ONE combined BEFORE..AFTER series and
+// slices the two windows out of it client-side, instead of firing a
+// separate BEFORE and AFTER call; under v10.116-v10.161 it was 6),
 // with the same proven functions S7D/S7E already use - not a new,
 // riskier reimplementation.
 // ============================================================
 panel.add(sHead('S7F - RUN ALL: S7D + S7E COMBINED (v10.116)','#1a3a5a'));
 panel.add(lbl('Runs S7D (within-reef coupling) and S7E (local vs regional) together from ONE shared Lat/Lon + BEFORE/AFTER input, tabulating both verdicts side by side. Does NOT try multiple window lengths automatically - see the note below for why.',7,'#224466'));
-panel.add(lbl('SCOPE: still just ONE window length per run, chosen by you (the same window-tuning process from S7D/S7E still applies - this only removes re-typing coordinates/dates twice). Does not include S7B/S7C/S13 - kept bounded to 6 EE calls total to avoid the quota/hang risk already seen this session with heavier combined runs.',7,'#886600'));
+panel.add(lbl('SCOPE: still just ONE window length per run, chosen by you (the same window-tuning process from S7D/S7E still applies - this only removes re-typing coordinates/dates twice). Does not include S7B/S7C/S13 - kept bounded to 4 EE calls total (v10.162: was 6; each site now fetches ONE combined BEFORE..AFTER series instead of two separate ones) to avoid the quota/hang risk already seen this session with heavier combined runs.',7,'#886600'));
 panel.add(lbl('Lat, Lon:',7,'#334466'));
 var s7fCoordInput = ui.Textbox({placeholder:'lat, lon  e.g. -23.51, 152.09',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7fCoordInput);
@@ -11526,7 +12432,7 @@ panel.add(s7fAfterStartInput);
 // no longer produces a p-value at all.
 var s7fAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7fAfterMonthsInput);
-var s7fStatusV = ui.Label('Fill in the fields above, then press RUN. 6 batched calls total, expect ~30-90 seconds.',
+var s7fStatusV = ui.Label('Fill in the fields above, then press RUN. 4 batched calls total (v10.162: was 6 - the separate BEFORE fetches are gone), expect ~30-90 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7fResultV = ui.Label('',{fontSize:'8px',color:'#1a2a4a',backgroundColor:'#eef2fa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
 var s7fRunSeq = 0;   // v10.161 S6a
@@ -11586,10 +12492,16 @@ var s7fRunBtn = ui.Button({
         'the shipped default of 24+12 sits 10 months clear of the floor.');
       s7fStatusV.style().set('color','#cc0000'); return;
     }
+    // v10.162 S1: combined-span cap, checked before any EE call is spent.
+    var _s7fSpanPre = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var _s7fSpanRefusal = combinedSpanRefusal(_s7fSpanPre, beforeMonths, afterMonths);
+    if(_s7fSpanRefusal){ s7fStatusV.setValue(_s7fSpanRefusal); s7fStatusV.style().set('color','#cc0000');
+      s7fStatusV.style().set('backgroundColor','#ffd0d0'); s7fStatusV.style().set('whiteSpace','pre'); return; }
     s7fRunSeq++; var s7fMyRun=s7fRunSeq;   // v10.161 S6a
     recordStudySite(latIn, lonIn, 'S7F');
 
-    // v10.161 S4: cheap FAI data-density gate BEFORE the 6-call budget.
+    // v10.161 S4: cheap FAI data-density gate BEFORE the call budget
+    // (v10.162 S1: 4 calls, down from 6).
     faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7F', statusLbl:s7fStatusV, resultLbl:s7fResultV,
       windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
                {name:'AFTER', start:afterStartTxt, months:afterMonths}],
@@ -11613,17 +12525,18 @@ var s7fRunBtn = ui.Button({
     var ptsFC = ee.FeatureCollection(nodes.map(function(nd,idx){
       return ee.Feature(nd.buf, {label:nd.label, idx:idx});
     }));
-    var faiCollBefore=mkMoFAIRange(beforeStartTxt,beforeMonths);
-    var faiCollAfter=mkMoFAIRange(afterStartTxt,afterMonths);
+    // v10.162 S1: ONE combined BEFORE..AFTER collection, shared by the S7D
+    // 9-node fetch and the S7E study/reference fetch below.
+    var _s7fSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var faiCollCombined=mkMoFAIRange(_s7fSpan.startDateStr,_s7fSpan.nMonths);
     var ndviWaterMaskedF=ndviWater.updateMask(oceanMask).rename('ndviW');
     var ndviBufMF = Math.max(80, Math.min(250, radiusKm*1000*0.3));
     var ptsFCForNdviF = ee.FeatureCollection(nodes.map(function(nd,idx){
       return ee.Feature(ee.Geometry.Point([nd.lon,nd.lat]).buffer(ndviBufMF), {label:nd.label, idx:idx});
     }));
 
-    // S7D's 3 calls
-    var rD_before = extractMultiNodeSeries(faiCollBefore, ptsFC, 'fai', 20);
-    var rD_after = extractMultiNodeSeries(faiCollAfter, ptsFC, 'fai', 20);
+    // S7D's calls - 2 now, not 3 (v10.162 S1: one combined series + NDVI)
+    var rD_combined = extractMultiNodeSeries(faiCollCombined, ptsFC, 'fai', 20);
     var rD_ndvi = ndviWaterMaskedF.reduceRegions({collection:ptsFCForNdviF, reducer:ee.Reducer.max(), scale:20});
 
     // S7E's candidate search (1 call, must resolve before its other 2)
@@ -11641,14 +12554,18 @@ var s7fRunBtn = ui.Button({
     var candFCF = ee.FeatureCollection(candFeatsF);
     var rCandidatesF = GEBCO.reduceRegions({collection:candFCF, reducer:ee.Reducer.first(), scale:500});
 
-    s7fStatusV.setValue('Running: 4 calls in parallel (S7D BEFORE/AFTER/NDVI + reference search), then 2 more once the reference is found. Expect ~30-90s.');
+    s7fStatusV.setValue('Running: 3 calls in parallel (v10.162: ONE combined '+_s7fSpan.nMonths+'-month S7D BEFORE..AFTER series + NDVI + reference search),\n'+
+      'then 1 more once the reference is found - 4 total, down from 6. The two windows are sliced out of the combined\n'+
+      'series client-side by real timestamp. Expect ~30-90s.');
     s7fStatusV.style().set('color','#334466'); s7fStatusV.style().set('backgroundColor','#eeeeee');
     s7fStatusV.style().set('border','2px solid #aaaaaa'); s7fStatusV.style().set('whiteSpace','pre');
     s7fResultV.setValue('');
 
-    var s7fData={}, s7fPending=4, s7fErrors=0;
-    var s7fWaiting=['S7D BEFORE series','S7D AFTER series','S7D NDVI check','reference-site GEBCO search'];
-    var s7fCallName={dBefore:'S7D BEFORE series', dAfter:'S7D AFTER series',
+    var s7fData={}, s7fPending=3, s7fErrors=0;
+    // v10.162 S1: three first-stage calls, not four. The v10.161 S6a run-sequence
+    // guard and stall-explaining progress text are unchanged.
+    var s7fWaiting=['S7D combined BEFORE..AFTER series','S7D NDVI check','reference-site GEBCO search'];
+    var s7fCallName={dCombined:'S7D combined BEFORE..AFTER series',
                      dNdvi:'S7D NDVI check', candidates:'reference-site GEBCO search'};
     function s7fBump(key,v,e){
       if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
@@ -11656,7 +12573,7 @@ var s7fRunBtn = ui.Button({
       if(e) s7fErrors++;
       s7fPending--;
       var _wait=s7Outstanding(s7fWaiting, s7fCallName[key]||key);
-      s7fStatusV.setValue('Running: '+(4-s7fPending)+' / 4 first-stage calls done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...\n'+_wait+
+      s7fStatusV.setValue('Running: '+(3-s7fPending)+' / 3 first-stage calls done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...\n'+_wait+
         (s7fPending>0?('\n'+S7_STALL_HINT):''));
       if(s7fPending===0) s7fStage2();
     }
@@ -11695,22 +12612,20 @@ var s7fRunBtn = ui.Button({
         var pairFCF=ee.FeatureCollection([
           ee.Feature(studyPtBufF,{label:'Study'}), ee.Feature(refPtBufF,{label:'Reference'})
         ]);
-        var rE_before = extractMultiNodeSeries(faiCollBefore, pairFCF, 'fai', 20);
-        var rE_after = extractMultiNodeSeries(faiCollAfter, pairFCF, 'fai', 20);
-        var s7fPending2=2;
-        var s7fWaiting2=['S7E study/reference BEFORE series','S7E study/reference AFTER series'];
-        var s7fCallName2={eBefore:'S7E study/reference BEFORE series', eAfter:'S7E study/reference AFTER series'};
+        var rE_combined = extractMultiNodeSeries(faiCollCombined, pairFCF, 'fai', 20);
+        var s7fPending2=1;
+        var s7fWaiting2=['S7E study/reference combined BEFORE..AFTER series'];
+        var s7fCallName2={eCombined:'S7E study/reference combined BEFORE..AFTER series'};
         function s7fBump2(key,v,e){
           if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
           s7fData[key]=e?null:v; if(e) s7fErrors++;
           s7fPending2--;
           var _wait2=s7Outstanding(s7fWaiting2, s7fCallName2[key]||key);
-          s7fStatusV.setValue('Running: second-stage '+(2-s7fPending2)+' / 2 calls done...\n'+_wait2+
+          s7fStatusV.setValue('Running: second-stage '+(1-s7fPending2)+' / 1 call done...\n'+_wait2+
             (s7fPending2>0?('\n'+S7_STALL_HINT):''));
           if(s7fPending2===0) s7fFinishAll(excludedCount);
         }
-        rE_before.evaluate(function(v,e){ s7fBump2('eBefore', v, e); });
-        rE_after.evaluate(function(v,e){ s7fBump2('eAfter', v, e); });
+        rE_combined.evaluate(function(v,e){ s7fBump2('eCombined', v, e); });
       } catch(errStage2){
         s7fStatusV.setValue(friendlyEEError(errStage2));
         s7fStatusV.style().set('color','#cc0000'); s7fStatusV.style().set('backgroundColor','#ffd0d0');
@@ -11719,8 +12634,10 @@ var s7fRunBtn = ui.Button({
     }
     function fmtNF(v,d){ return (v!==null&&v!==undefined&&!isNaN(v))?v.toFixed(d):'n/a'; }
     function buildS7DSummary(){
-      var beforeByNode = groupSeriesByLabel(s7fData.dBefore, 'fai');
-      var afterByNode = groupSeriesByLabel(s7fData.dAfter, 'fai');
+      // v10.162 S1: one combined series, sliced by real timestamp.
+      var combinedByNode = groupSeriesByLabel(s7fData.dCombined, 'fai');
+      var beforeByNode = sliceSeriesMapByWindow(combinedByNode, beforeStartTxt, beforeMonths);
+      var afterByNode = sliceSeriesMapByWindow(combinedByNode, afterStartTxt, afterMonths);
       var ndviByLabel = {};
       if(s7fData.dNdvi && s7fData.dNdvi.features){
         s7fData.dNdvi.features.forEach(function(f){
@@ -11785,8 +12702,21 @@ var s7fRunBtn = ui.Button({
       if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       try {
         var dSum = buildS7DSummary();
-        var eBeforeByNode = groupSeriesByLabel(s7fData.eBefore, 'fai');
-        var eAfterByNode = groupSeriesByLabel(s7fData.eAfter, 'fai');
+        // v10.162 S1: one combined series, sliced by real timestamp.
+        var eCombinedByNode = groupSeriesByLabel(s7fData.eCombined, 'fai');
+        var eBeforeByNode = sliceSeriesMapByWindow(eCombinedByNode, beforeStartTxt, beforeMonths);
+        var eAfterByNode = sliceSeriesMapByWindow(eCombinedByNode, afterStartTxt, afterMonths);
+        // Refuse with the existing insufficient-data wording if the combined
+        // series does not cover both windows at the study site.
+        var _s7fShort = combinedSliceShortfall(eBeforeByNode['Study']||[], eAfterByNode['Study']||[], 4);
+        if(_s7fShort){
+          s7fStatusV.setValue('S7E: CANNOT CLASSIFY (insufficient data in at least one period)\n'+_s7fShort);
+          s7fStatusV.style().set('color','#cc0000'); s7fStatusV.style().set('backgroundColor','#ffd0d0');
+          s7fStatusV.style().set('border','2px solid #cc0000'); s7fStatusV.style().set('whiteSpace','pre');
+          print('=== S7F REFUSED (v10.162 S1 combined-slice shortfall) === '+_s7fShort);
+          s7fFinishD_only();
+          return;
+        }
         // v10.160 S6: pooled climatology per site, shared across its two windows.
         var _feStudyClim=pooledClimFor(eBeforeByNode['Study']||[], eAfterByNode['Study']||[]);
         var _feRefClim  =pooledClimFor(eBeforeByNode['Reference']||[], eAfterByNode['Reference']||[]);
@@ -11954,8 +12884,7 @@ var s7fRunBtn = ui.Button({
         print('=== S7F finishAll error === '+eF2);
       }
     }
-    rD_before.evaluate(function(v,e){ s7fBump('dBefore', v, e); });
-    rD_after.evaluate(function(v,e){ s7fBump('dAfter', v, e); });
+    rD_combined.evaluate(function(v,e){ s7fBump('dCombined', v, e); });
     rD_ndvi.evaluate(function(v,e){ s7fBump('dNdvi', v, e); });
     rCandidatesF.evaluate(function(v,e){ s7fBump('candidates', v, e); });
     });  // end faiPrecheckThenRun callback (v10.161 S4)
@@ -12239,7 +13168,7 @@ panel.add(row('DO / O2 (32yr, BGC model surface)',toeDOv));
 // show "insufficient" here, same honest limitation already found for
 // STEP 5 with short spans.
 panel.add(sHead('S17b - REAL TREND SIGNIFICANCE TEST (Mann-Kendall)','#3a1a5a'));
-panel.add(lbl('Replaces S17\'s fixed SNR>=2.0 threshold with a genuine Kendall tau / Mann-Kendall test on the SAME real annual data - a real p-value instead of a fixed cutoff. Uses the last-clicked location. Short records (pH ~4yr, NO2 7yr) will likely show "insufficient data" - Kendall tau needs several real points to say anything.',7,'#663388'));
+panel.add(lbl('Replaces S17\'s fixed SNR>=2.0 threshold with a genuine Kendall tau / Mann-Kendall test on the SAME real annual data - a real p-value instead of a fixed cutoff. Uses the last-clicked location. Short records (pH ~4yr, NO2 7yr) will likely show "insufficient data" - Kendall tau needs several real points to say anything. v10.162: "the SAME real annual data" is now true. Until v10.161 S17 reduced a BARE POINT at 27750m for every variable while this panel sampled a 4km BUFFER at 4000m, so a live run at Bocas del Toro had S17 reporting n=32 of 32 valid salinity years and this panel n=7, on one click - and n=12 vs n=7 at another. Both panels now read the same pixel at the same per-variable scale, and where an n or a direction still differs this panel says so and uses the SMALLER count.',7,'#663388'));
 var toeMkVerdictV=ui.Label('Click a location above, then press CHECK.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var toeMkDetailsV=ui.Label('',{fontSize:'7px',color:'#553377',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
@@ -12253,13 +13182,22 @@ var toeMkBtn=ui.Button({
     var latM=lastClickLat, lonM=lastClickLon;
     toeMkVerdictV.setValue('Fetching real annual series for 5 variables (5 batched calls)...');
     toeMkVerdictV.style().set('color','#334466'); toeMkVerdictV.style().set('backgroundColor','#eeeeee');
-    var ptM = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([lonM,latM]).buffer(4000),{label:'Study'})]);
+    // v10.162 S2: BARE POINT, not a 4 km buffer, and the per-variable scale
+    // from TOE_SAMPLE_SCALE - the same geometry and the same scale S17's
+    // reductions now use. This is what makes the two panels' n's the same
+    // quantity: both reduce the identical pixel of the identical collection, so
+    // the count reducer above and the value list below see the same set of
+    // years. A 4 km buffer is defined whenever ANY pixel inside it is valid, so
+    // it was systematically MORE generous than a point read - the opposite
+    // direction from S17's pyramid-averaged count, which is why the two panels
+    // disagreed in both directions at different clicks.
+    var ptM = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([lonM,latM]),{label:'Study'})]);
     var vars=[
-      {key:'sst', coll:_annSSTColl, band:'sst', scale:4000, name:'SST'},
-      {key:'chl', coll:_annCHLColl, band:'chlor_a', scale:4000, name:'Chl-a'},
-      {key:'sal', coll:_annSALColl, band:'salinity_0', scale:4000, name:'Salinity'},
-      {key:'no2', coll:_annNO2Coll, band:'tropospheric_NO2_column_number_density', scale:4000, name:'NO2'},
-      {key:'ph',  coll:_annPHColl,  band:'ph', scale:25000, name:'pH'}
+      {key:'sst', coll:_annSSTColl, band:'sst', scale:TOE_SAMPLE_SCALE.sst, name:'SST'},
+      {key:'chl', coll:_annCHLColl, band:'chlor_a', scale:TOE_SAMPLE_SCALE.chl, name:'Chl-a'},
+      {key:'sal', coll:_annSALColl, band:'salinity_0', scale:TOE_SAMPLE_SCALE.sal, name:'Salinity'},
+      {key:'no2', coll:_annNO2Coll, band:'tropospheric_NO2_column_number_density', scale:TOE_SAMPLE_SCALE.no2, name:'NO2'},
+      {key:'ph',  coll:_annPHColl,  band:'ph', scale:TOE_SAMPLE_SCALE.ph, name:'pH'}
     ];
     var results={}, pending=vars.length;
     vars.forEach(function(vconf){
@@ -12279,35 +13217,109 @@ var toeMkBtn=ui.Button({
     function finalizeMk(){
       var lines=['=== S17b REAL TREND SIGNIFICANCE (Kendall tau / Mann-Kendall) ==='];
       lines.push('Same real annual data S17 already uses - a genuine p-value instead of the fixed SNR>=2.0 cutoff.');
+      // v10.162 S2: state the shared sampling contract explicitly. Before this
+      // version S17 reduced a bare point at 27750 m for every variable while
+      // this panel sampled a 4 km buffer at 4000 m, so "the SAME real annual
+      // data" was not true and the two panels reported different n for the same
+      // variable at the same click - in BOTH directions.
+      lines.push('v10.162: S17 and S17b now read the SAME pixel - bare point, and the same per-variable scale');
+      lines.push('(SST/Chl/Salinity/NO2 '+TOE_SAMPLE_SCALE.sst+'m, pH '+TOE_SAMPLE_SCALE.ph+'m). The n below and the n in S17 above are');
+      lines.push('therefore the same quantity by construction, not two different footprints being compared.');
+      // Is S17's published result for the SAME point we just sampled?
+      var _sameClick = (toeLastLat!==null && toeLastLon!==null &&
+                        Math.abs(toeLastLat-latM)<1e-6 && Math.abs(toeLastLon-lonM)<1e-6);
       lines.push(repeatChar('\u2500',50));
-      var nSig=0, nTotal=0;
+      var nSig=0, nTotal=0, nMismatch=0, nDirConflict=0;
       vars.forEach(function(vconf){
         var res=results[vconf.key];
         if(res.error){ lines.push(vconf.name+': error - '+res.error); return; }
-        if(res.mk.error){ lines.push(res.name+': n/a - '+res.mk.error+' (n='+res.n+' annual points, needs 4+)'); return; }
+        // --- reconcile against S17's n for the same variable, same point ---
+        var s17 = _sameClick ? toeLastResults[vconf.key] : null;
+        var s17n = (s17 && !s17.error && s17.n!==null && s17.n!==undefined) ? s17.n : null;
+        var recon = '';
+        if(s17n!==null){
+          if(s17n===res.n){
+            recon = '  [S17 agrees: n='+s17n+']';
+          } else {
+            nMismatch++;
+            // Cannot be resolved without an extra EE call (S17's count reducer
+            // and this panel's value list are two different server-side
+            // products of the same pixel). Take the SMALLER - the conservative
+            // option - and say which, rather than the flattering one.
+            recon = '  [DISAGREES WITH S17: S17 n='+s17n+', here n='+res.n+' -> the SMALLER ('+Math.min(s17n,res.n)+
+              ') is the one to trust; the larger would inflate Sxx and df]';
+          }
+        } else if(_sameClick){
+          recon = '  [S17 has no usable result for this variable at this point]';
+        } else {
+          recon = '  [S17 has not been run at THIS point in this session - click the map, then re-check]';
+        }
+        if(res.mk.error){
+          lines.push(res.name+': n/a - '+res.mk.error+' (n='+res.n+' annual points, needs 4+)'+recon);
+          return;
+        }
         nTotal++;
         var sig = res.mk.p<0.05;
         if(sig) nSig++;
         var dir = res.mk.tau>0?'RISING':res.mk.tau<0?'FALLING':'flat';
         lines.push(res.name+': tau='+(res.mk.tau>0?'+':'')+res.mk.tau.toFixed(3)+', p='+res.mk.p.toFixed(4)+
-          ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+res.n+' annual points]'+mkMethodTxt(res.mk));
-        // v10.145 DIAGNOSTIC: Salinity is nominally a 32-year record
-        // (1993-2024) in S17 above - if far fewer real annual points
-        // show up here, that is a genuine HYCOM data-sparsity finding
-        // at this specific site, not a bug in this test.
-        if(vconf.key==='sal' && res.n<15){
-          lines.push('  NOTE: Salinity is nominally a 32yr record (1993-2024) in S17 above, but only '+res.n+
-            ' years had real, valid HYCOM data at this exact point - a genuine data-sparsity finding for this site, not a code error.');
+          ' -> '+dir+(sig?' *** SIGNIFICANT (p<0.05)':' not significant')+' [n='+res.n+' annual points]'+mkMethodTxt(res.mk)+recon);
+        // v10.162 S2: the live run had S17 saying RISING (MEASURED r=+0.564)
+        // and S17b saying FALLING (tau=-0.333) for salinity on ONE click. With
+        // the footprints unified those are now the same sample, so a remaining
+        // sign difference is an ESTIMATOR difference - an OLS slope is pulled by
+        // outliers, Kendall's tau is not - and neither direction is established
+        // while they disagree. Said here rather than left for the reader.
+        if(s17 && !s17.error && s17.direction && dir!=='flat' &&
+           ((s17.direction==='RISING'&&dir==='FALLING')||(s17.direction==='FALLING'&&dir==='RISING'))){
+          nDirConflict++;
+          lines.push('  DIRECTIONS DISAGREE: S17 reports '+s17.direction+' (least-squares slope'+
+            (s17.corr!==null&&s17.corr!==undefined?', measured r='+s17.corr.toFixed(3):'')+') while this test reports '+dir+
+            ' (Kendall tau='+res.mk.tau.toFixed(3)+'). v10.162 makes both read the same pixel and the same years, so this is'+
+            ' no longer two different datasets: it is an ordinary-least-squares slope and a rank-based trend disagreeing on'+
+            ' the SAME sample, which happens when a few years dominate the fit. Treat the direction as UNESTABLISHED -'+
+            ' neither panel has earned it.');
+        }
+        // v10.145/v10.162: this used to be a salinity-specific note asserting
+        // that "only N years had real, valid HYCOM data at this exact point" -
+        // which S17 could and did contradict on the same click (n=32 of 32 vs
+        // n=7). It is now variable-agnostic, reports what BOTH panels measured,
+        // and states the shared footprint that makes the comparison meaningful.
+        if(res.n < Math.round(0.5*((s17&&s17.nNominal)||0)) && s17 && s17.nNominal){
+          lines.push('  NOTE: '+res.name+' is nominally a '+s17.nNominal+'yr record in S17 above, and '+res.n+
+            ' of those years have a valid value at this exact pixel'+
+            (s17n!==null && s17n!==res.n ? ' by this panel\'s count ('+s17n+' by S17\'s count reducer - see the disagreement flagged above)' : '')+
+            '. That is a genuine data-sparsity finding for this site, not a code error - and it is what S17\'s df and Sxx are built on.');
         }
       });
+      if(nMismatch>0){
+        lines.push(repeatChar('\u2500',50));
+        lines.push('n RECONCILIATION: '+nMismatch+' variable(s) still report a different n in S17 and S17b.');
+        lines.push('v10.162 removed the footprint difference that caused this (bare point + one shared scale');
+        lines.push('per variable), so a remaining gap is a genuine difference between what ee.Reducer.count()');
+        lines.push('returns for the pixel and what reduceRegions actually delivered - which cannot be resolved');
+        lines.push('without an extra Earth Engine call. The SMALLER count is the one to act on: an over-counted n');
+        lines.push('inflates Sxx = n(n^2-1)/12 and df = n-2, which is anti-conservative and is exactly the defect');
+        lines.push('TOE-01 exists to prevent.');
+      }
+      if(nDirConflict>0){
+        lines.push('DIRECTION RECONCILIATION: '+nDirConflict+' variable(s) have S17 and S17b pointing opposite ways on');
+        lines.push('the SAME sample. That is an estimator disagreement (least-squares slope vs Kendall tau), not a');
+        lines.push('data disagreement, and no direction should be reported as established for those variables.');
+      }
       lines.push(repeatChar('\u2500',50));
       // v10.161 S7: "0 of 0 testable variables" when nothing was testable.
       lines.push(nTotal===0?
         'NO variable had enough valid annual points at this pixel to run Mann-Kendall, so nothing was tested (this is not "no trends found").':
         (nSig+' of '+nTotal+' testable variables show a REAL statistically significant trend (p<0.05).'));
-      toeMkVerdictV.setValue(nTotal===0?'No variable had enough annual data to test.':
-        nSig+'/'+nTotal+' variables REAL significant trend (p<0.05)'+(nSig>=2?' - compare vs S17\'s SNR-based count above':''));
-      toeMkVerdictV.style().set('color',nSig>=2?'#880000':nSig>=1?'#886600':'#115511');
+      // v10.162 S2: an unreconciled n or an opposite direction is surfaced in the
+      // headline, not only in the detail text - it changes what the panel can claim.
+      var _reconTag = (nMismatch>0?'\nn DISAGREES WITH S17 on '+nMismatch+' variable(s) - the SMALLER count is the one to trust':'')+
+                      (nDirConflict>0?'\nDIRECTION DISAGREES WITH S17 on '+nDirConflict+' variable(s) on the SAME sample - direction UNESTABLISHED there':'');
+      toeMkVerdictV.setValue((nTotal===0?'No variable had enough annual data to test.':
+        nSig+'/'+nTotal+' variables REAL significant trend (p<0.05)'+(nSig>=2?' - compare vs S17\'s SNR-based count above':''))+_reconTag);
+      toeMkVerdictV.style().set('color',(nMismatch>0||nDirConflict>0)?'#aa3300':nSig>=2?'#880000':nSig>=1?'#886600':'#115511');
+      toeMkVerdictV.style().set('whiteSpace','pre');
       toeMkDetailsV.setValue(lines.join('\n'));
       print(lines.join('\n'));
     }
@@ -12781,25 +13793,35 @@ function analyzeLocation(lat, lon) {
   // a wrong key in a plain dictionary is just a missing client-side value that
   // toeNum() reports as unavailable. Same defensive pattern as v10.88's
   // computeSpatialEWS/extractSpatialAC1Detail.
-  function _toeRR(img){ return img.reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}); }
-  var rToeSST=ee.Dictionary({scale:toeSSTFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeSSTNoise.select('sst_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('sst_stdDev'),
-    count:_toeRR(toeSSTCount), corr:_toeRR(toeSSTCorr)});
-  var rToeCHL=ee.Dictionary({scale:toeCHLFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeCHLNoise.select('chlor_a_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('chlor_a_stdDev'),
-    count:_toeRR(toeCHLCount), corr:_toeRR(toeCHLCorr)});
-  var rToeSAL=ee.Dictionary({scale:toeSALFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeSALNoise.select('salinity_0_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('salinity_0_stdDev'),
-    count:_toeRR(toeSALCount), corr:_toeRR(toeSALCorr)});
-  var rToeNO2=ee.Dictionary({scale:toeNO2Fit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeNO2Noise.select('tropospheric_NO2_column_number_density_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('tropospheric_NO2_column_number_density_stdDev'),
-    count:_toeRR(toeNO2Count), corr:_toeRR(toeNO2Corr)});
-  var rToePH=ee.Dictionary({scale:toePHFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toePHNoise.select('ph_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('ph_stdDev'),
-    count:_toeRR(toePHCount), corr:_toeRR(toePHCorr)});
-  var rToeDO=ee.Dictionary({scale:toeDOFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeDONoise.select('o2_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('o2_stdDev'),
-    count:_toeRR(toeDOCount), corr:_toeRR(toeDOCorr)});
+  // v10.162 S2: every one of these reductions now runs at the VARIABLE'S OWN
+  // scale (TOE_SAMPLE_SCALE), not at the single 27750 m that was correct only
+  // for OISST. toeScale is kept as the fallback for anything not in the table.
+  // All four reductions for a variable share one scale, so the invariant
+  // calcToE() relies on - that the count, the stdDev and the linearFit skip the
+  // SAME masked pixels - still holds. Reducing a COUNT image with mean() at a
+  // scale coarser than the data's own resolution is what returned a ~28 km
+  // block average as "the number of valid years at this pixel".
+  function _toeSc(k){ return TOE_SAMPLE_SCALE[k]||toeScale; }
+  function _toeRR(img, k){ return img.reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:_toeSc(k),maxPixels:1e9}); }
+  function _toeGet(img, band, k){ return img.select(band).reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:_toeSc(k),maxPixels:1e9}).get(band); }
+  var rToeSST=ee.Dictionary({scale:_toeGet(toeSSTFit,'scale','sst'),
+    noise:_toeGet(toeSSTNoise,'sst_stdDev','sst'),
+    count:_toeRR(toeSSTCount,'sst'), corr:_toeRR(toeSSTCorr,'sst')});
+  var rToeCHL=ee.Dictionary({scale:_toeGet(toeCHLFit,'scale','chl'),
+    noise:_toeGet(toeCHLNoise,'chlor_a_stdDev','chl'),
+    count:_toeRR(toeCHLCount,'chl'), corr:_toeRR(toeCHLCorr,'chl')});
+  var rToeSAL=ee.Dictionary({scale:_toeGet(toeSALFit,'scale','sal'),
+    noise:_toeGet(toeSALNoise,'salinity_0_stdDev','sal'),
+    count:_toeRR(toeSALCount,'sal'), corr:_toeRR(toeSALCorr,'sal')});
+  var rToeNO2=ee.Dictionary({scale:_toeGet(toeNO2Fit,'scale','no2'),
+    noise:_toeGet(toeNO2Noise,'tropospheric_NO2_column_number_density_stdDev','no2'),
+    count:_toeRR(toeNO2Count,'no2'), corr:_toeRR(toeNO2Corr,'no2')});
+  var rToePH=ee.Dictionary({scale:_toeGet(toePHFit,'scale','ph'),
+    noise:_toeGet(toePHNoise,'ph_stdDev','ph'),
+    count:_toeRR(toePHCount,'ph'), corr:_toeRR(toePHCorr,'ph')});
+  var rToeDO=ee.Dictionary({scale:_toeGet(toeDOFit,'scale','do_o2'),
+    noise:_toeGet(toeDONoise,'o2_stdDev','do_o2'),
+    count:_toeRR(toeDOCount,'do_o2'), corr:_toeRR(toeDOCorr,'do_o2')});
   // v10.89 FIX: previously bundled into ONE rToeAll dictionary and evaluated
   // together - since pH/DO both depend on COPERNICUS/MARINE/GLOBAL_OCEAN_BGC/
   // MFC_001_028 (currently returns "asset not found" in the GEE catalog),
@@ -13470,8 +14492,29 @@ function analyzeLocation(lat, lon) {
       var rawCount=toeNum(r.count,['count','sst_count','chlor_a_count','salinity_0_count',
         'tropospheric_NO2_column_number_density_count','ph_count','o2_count'],null,'_count');
       if(rawCount!==null) rawCount=Math.floor(rawCount+0.5);
+      // v10.162 S2: "the dictionary came back and its count key is explicitly
+      // NULL" and "no count key exists at all" are different findings, and the
+      // v10.157-v10.161 code collapsed both into the nominal-fallback - the most
+      // FLATTERING branch there is. Earth Engine returns null (not 0) for a
+      // reduceRegion over a region with no valid pixel, so a point where the
+      // variable is fully masked - a coastal HYCOM pixel, exactly the Bocas del
+      // Toro case - handed calcToE() n=32, df=30 and a full-length Sxx for a
+      // pixel with NO data at all. An explicit null is now read as ZERO valid
+      // years, which lands in countTooShort and can never carry an EMERGED
+      // verdict. The nominal-fallback survives only for the genuinely
+      // unrecognised-key case it was written for.
+      var countKeyPresentButNull=false;
+      if(rawCount===null && r.count && typeof r.count==='object'){
+        for(var _ck in r.count){
+          var _ckl=String(_ck).toLowerCase();
+          if(_ckl.substring(_ckl.length-6)==='_count' || _ckl==='count'){
+            if(r.count[_ck]===null){ countKeyPresentButNull=true; }
+          }
+        }
+      }
       var n, countSource;
-      if(rawCount===null||rawCount<0){ n=nom; countSource='nominal-fallback'; rawCount=null; }
+      if(countKeyPresentButNull){ n=0; countSource='measured-empty'; rawCount=0; }
+      else if(rawCount===null||rawCount<0){ n=nom; countSource='nominal-fallback'; rawCount=null; }
       else if(rawCount>nom){ n=nom; countSource='clamped'; }
       else { n=rawCount; countSource='actual'; }
       // df<1 means no slope test exists at all - not "not significant", but
@@ -13541,6 +14584,10 @@ function analyzeLocation(lat, lon) {
           'assumed, so df and Sxx here may be far too generous; treat this t as an upper bound)';
       else if(t.countSource==='clamped')
         nTxt+=' (raw count '+t.nActual+' exceeded the nominal record length and was clamped to it)';
+      else if(t.countSource==='measured-empty')
+        nTxt+=' (v10.162: the valid-year count came back EXPLICITLY NULL at this pixel, i.e. no year has '+
+          'a valid value here. That is a measurement of ZERO, not a missing measurement, so the nominal '+
+          'record length is NOT assumed - nothing can emerge at this pixel)';
       if(t.countTooShort)
         return '  '+nTxt+' - fewer than 3 usable annual values here, so df<1 and NO slope test '+
           'exists. Emergence CANNOT be established at this pixel. v10.157.';
@@ -13595,6 +14642,10 @@ function analyzeLocation(lat, lon) {
       // come from the real per-pixel valid-year count carried in *.count.
       var tSST=calcToE(coreRes.sst,44), tCHL=calcToE(coreRes.chl,27), tSAL=calcToE(coreRes.sal,32), tNO2=calcToE(coreRes.no2,7);
       toeResults.sst=tSST; toeResults.chl=tCHL; toeResults.sal=tSAL; toeResults.no2=tNO2;
+      // v10.162 S2: publish for S17b, so the two panels can be reconciled on
+      // screen instead of contradicting each other silently.
+      toeLastLat=lat; toeLastLon=lon;
+      toeLastResults.sst=tSST; toeLastResults.chl=tCHL; toeLastResults.sal=tSAL; toeLastResults.no2=tNO2;
       toeSSTv.setValue(toeTxt(tSST,'HIGH conf - 44yr OISST, v10.54 fix applied'));
       toeCHLv.setValue(toeTxt(tCHL,'MARGINAL - 27yr, global product'));
       toeSALv.setValue(toeTxt(tSAL,'MARGINAL - 32yr HYCOM model'));
@@ -13627,6 +14678,7 @@ function analyzeLocation(lat, lon) {
         // real record length used to build _annPHColl above.
         var tPH=calcToE(phRes.ph,4);
         toeResults.ph=tPH;
+        toeLastLat=lat; toeLastLon=lon; toeLastResults.ph=tPH;   // v10.162 S2
         toePHv.setValue(toeTxt(tPH,'REAL asset (COPERNICUS CAR/ph_depth1), surface only, ~4yr record (2022-2025) - LOW confidence, short record'));
         toePHv.style().set('color',tPH&&tPH.emerged?'#880000':'#226644');
         print('=== S17 ToE pH (v10.141: real asset, ~4yr record) ===');
@@ -13647,6 +14699,7 @@ function analyzeLocation(lat, lon) {
       toeDoAvailable=true;
       var tDO=calcToE(doRes.do_o2,32);
       toeResults.do_o2=tDO;
+      toeLastLat=lat; toeLastLon=lon; toeLastResults.do_o2=tDO;   // v10.162 S2
       toeDOv.setValue(toeTxt(tDO,'BGC model surface only - not measured, no depth zones'));
       toeDOv.style().set('color',tDO&&tDO.emerged?'#880000':'#226644');
       renderToeCompound();
@@ -13812,6 +14865,195 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.162 FIX 20: 6 defects, all from the SAME live Earth Engine browser run at');
+print('  Bocas del Toro, Panama (9.175, -81.981) that produced the v10.161 round. The');
+print('  on-screen output is quoted verbatim where it is the evidence. Every other');
+print('  figure was re-derived this session in a Node harness that EXECUTES THIS WHOLE');
+print('  FILE against stubbed ee/ui/Map and calls the shipped functions, and states its');
+print('  design. Earth Engine itself was NOT run - see RESIDUAL RISK at the end.');
+print('');
+print('  S1 BLOCKER - S7E/S7F NEVER COMPLETED BECAUSE THE BEFORE FETCH FAILED.');
+print('    OBSERVED: "Raw features returned: BEFORE=0 | AFTER=108 | NDVI=9 (expect');
+print('    BEFORE=216 ...)" and "1 of 3 batched calls returned no usable data". S7D');
+print('    rendered on half its data; S7E and S7F parked on "Still waiting on: BEFORE');
+print('    FAI series" forever - both AWAIT it and this sandbox has no timer.');
+print('    FIXED STRUCTURALLY: the separate BEFORE fetch is GONE. One series per site');
+print('    spans BEFORE-start..AFTER-end including the gap, and the two windows are');
+print('    sliced out of it CLIENT-SIDE BY REAL TIMESTAMP - S13 STEP 4\'s fetch-once-');
+print('    and-slice pattern, except STEP 4\'s windows share a start and can slice by');
+print('    array position while these cannot.');
+print('    EE CALLS: S7D 3->2, S7E 3->2, S7F 6->4. Every on-screen string quoting the');
+print('    old counts was updated. Refuses (existing insufficient-data wording) when');
+print('    the combined series misses a window, and refuses BEFORE spending a call when');
+print('    the two windows are more than beforeMonths+afterMonths+24 apart.');
+print('    VERIFIED IN NODE by driving the real handlers with synthetic EE payloads:');
+print('    S7D consumes 3 .evaluate() calls, S7E 3, S7F 5 (each including the FAI');
+print('    pre-check); v10.161 consumed 4/4/7 on the same drive-through. Feeding');
+print('    SHIPPED v10.161 an empty BEFORE reproduces the live line verbatim and it');
+print('    renders anyway; v10.162 refuses. Combined-empty, AFTER-only and');
+print('    windows-too-far-apart all refuse, never "Still waiting". The slice was');
+print('    unit-tested: 24 BEFORE + 12 AFTER months recovered exactly from a 42-month');
+print('    grid, still correct when the input is reversed and a third deleted (where an');
+print('    array-position slice is wrong), and with mismatched day-of-month starts.');
+print('    NOT FIXED: the combined graph is HEAVIER than either window alone. If the');
+print('    live failure was graph weight this can fail too - but as ONE visible refusal');
+print('    instead of an invisible half-run that hangs two other panels.');
+print('');
+print('  S2 BLOCKER - S17 AND S17b DISAGREED ABOUT n, ON ONE CLICK, BOTH WAYS.');
+print('    OBSERVED, salinity, one click: S17 "n=32 of 32 nominal yr (df=30) RISING');
+print('    [MEASURED r=+0.564]" against S17b "tau=-0.333, p=0.3813 -> FALLING [n=7');
+print('    annual points]"; and n=12 of 32 vs n=7 a few hundred metres away.');
+print('    CAUSE DETERMINED. Ruled OUT: count counting IMAGES (each annual image is');
+print('    filter(year).select(band).mean() with t as a separate band, so a masked year');
+print('    is masked in the value band), and different collections/date ranges (S17b is');
+print('    handed the very same _ann*Coll objects). The cause is the SAMPLING FOOTPRINT,');
+print('    different in BOTH dimensions: S17 reduced a BARE POINT at 27750m for every');
+print('    variable; S17b sampled a 4km BUFFER at 4000m (25000m for pH). HYCOM is ~9km');
+print('    and CMEMS ocean colour 4km, so at 27750m EE serves a pyramid overview and');
+print('    mean() over the COUNT image returns the ~28km block\'s MEAN valid-year count,');
+print('    rounded by floor(x+0.5) into a fake integer. At a coastal pixel that is');
+print('    biased UP. Over-counting inflates Sxx=n(n^2-1)/12 and df=n-2 - anti-');
+print('    conservative, the exact defect TOE-01 exists to prevent.');
+print('    FIXED: one shared footprint, the CONSERVATIVE one already in use - bare point');
+print('    at the FINER scale, per variable (4000m SST/Chl/Sal/NO2, 25000m pH/DO). Both');
+print('    panels reduce the identical pixel of the identical collection, so their n is');
+print('    the same quantity by construction. All four of a variable\'s reductions moved');
+print('    together, so calcToE()\'s same-masked-pixels assumption still holds. ZERO');
+print('    extra EE calls.');
+print('    ALSO FIXED: calcToE() treated "count key present and EXPLICITLY NULL" as');
+print('    "no count key", and both fell to the nominal-fallback. EE returns null, not');
+print('    0, for a region with no valid pixel. VERIFIED IN NODE: on an explicitly-null');
+print('    count, SHIPPED v10.161 rendered "SAL: EMERGED ... n=32 of 32 nominal yr" for');
+print('    a pixel with NO data; v10.162 renders n=0 and cannot emerge. An UNRECOGNISED');
+print('    key still falls back to nominal with its upper-bound warning.');
+print('    RECONCILED ON SCREEN: S17 publishes its per-variable result and S17b compares');
+print('    per variable. A remaining gap needs an extra EE call to resolve, so it is not');
+print('    resolved: S17b names both n\'s and uses the SMALLER. VERIFIED IN NODE on both');
+print('    live cases - "[DISAGREES WITH S17: S17 n=32, here n=7 -> the SMALLER (7) is');
+print('    the one to trust]", the same with 12, and "[S17 agrees: n=7]" when they match.');
+print('    The hardcoded-sounding "only N years had real, valid HYCOM data" note is gone:');
+print('    it is variable-agnostic now, reports what BOTH panels measured, and names any');
+print('    disagreement. Directions: with one footprint, S17 RISING vs S17b FALLING is an');
+print('    OLS-slope-vs-Kendall-tau disagreement on the SAME sample, and S17b now calls');
+print('    that direction UNESTABLISHED, in the detail text and in its headline.');
+print('    COST: S17\'s slope/noise/r now describe THIS PIXEL, not a ~28km block, so SNR');
+print('    and r WILL move at coastal sites. Intended, and unverifiable without a live run.');
+print('');
+print('  S3 THE BONFERRONI CLAIM RESTED ON PERMUTATION NOISE.');
+print('    OBSERVED: the 48-month row reported "Study AC1 p=0.023" against a corrected');
+print('    bar of 0.0250 and the panel concluded "At least one window survives the');
+print('    STRICTER Bonferroni-corrected bar - this is real evidence". At 300 shuffles');
+print('    p=0.023 IS 7/300 and the grid step is 0.0033. OBSERVED separately: three');
+print('    DUPLICATE rows with IDENTICAL statistics (-0.70x, +0.214, -1.03x, +0.34x)');
+print('    returned control-variance p of 0.003 / 0.010 / 0.030.');
+print('    FIXED: 10000 shuffles on any row that can be COUNTED; 300 kept on sub-floor');
+print('    and DUPLICATE rows, which are excluded from every tally anyway.');
+print('    WHY 10000, RE-DERIVED against the shipped permutationTestDeltaFixed at the');
+print('    heaviest row (BEFORE 36 valid months, AFTER 48):');
+print('        B      SE at p=0.025   SE at p=0.00833   per test');
+print('       300       0.00901         0.00525          20 ms');
+print('      2000       0.00349         0.00203          49 ms');
+print('     10000       0.00156         0.00091         187 ms');
+print('     20000       0.00110         0.00064         337 ms');
+print('    The bar is 0.05/k, i.e. 0.0500 (k=1) to 0.00833 (k=6). 10000 puts the SE at');
+print('    the k=2 bar (0.0250, the live case) at 0.0016 - 1/16 of the bar, 5.8x tighter');
+print('    than 300 - for 1.5-3.0s realistic (4.5s worst case) against this panel\'s 8 EE');
+print('    calls at 20-60s. No EE work added; the shuffles are client-side JS.');
+print('    SEED SPREAD on ONE fixed dataset, 12 repeats: B=300 gave 0.6033-0.7000');
+print('    (spread 0.0967); B=10000 gave 0.6493-0.6653 (spread 0.0160).');
+print('    The panel PRINTS the shuffle count per row, in its own column, and no longer');
+print('    asserts what it cannot: if p is within 2 Monte Carlo SE of the bar it prints');
+print('    TOO CLOSE TO CALL with the numbers. RE-DERIVED: at the live figures (p=0.023,');
+print('    bar 0.0250, B=10000) SE=0.0015 and p+2SE=0.0260, ABOVE the bar - so that row');
+print('    would now be too close to call, not a survivor. p=0.023 would need B=100000');
+print('    to clear 0.0250 by 2 SE.');
+print('');
+print('  S4 THE STEP 3 HEADLINE CONTRADICTED ITSELF.');
+print('    OBSERVED, in this order on one panel: "STATISTICALLY SIGNIFICANT LOCAL CSD');
+print('    SIGNAL (AC1-confirmed, p=0.028)", then "STRONG SIGNAL, LIKELY REGIONAL');
+print('    (AC1-confirmed, but matches control site too)", then "Regional context:');
+print('    VERDICTS DISAGREE ... Treat NEITHER as confirmed". v10.151 FIX 6 made the');
+print('    disagreement visible; it did not stop the banner asserting one side.');
+print('    ROOT CAUSE: that permutation test runs on the STUDY SITE ONLY and never looks');
+print('    at the control, so LOCAL - "different from the control" - was never something');
+print('    it could establish.');
+print('    FIXED: the banner states what IS established (the p-value on the study site\'s');
+print('    dAC1) first and what is NOT (local vs regional) second, and says so when the');
+print('    two classifiers disagree instead of picking a side. It is a function now, and');
+print('    both async paths redraw it, so whichever lands second updates the other.');
+print('    MAGNITUDE: the numbers behind "matches control site too" were study dAC1');
+print('    =+0.512 vs control +0.134, about 3.8x. A pure, unit-tested');
+print('    classifyRegionalAC1() compares them and the headline carries both numbers.');
+print('    RE-DERIVED: "amplified", ratio 3.82x on the live pair; "comparable", 0.97x on');
+print('    the Nuuk pair (+0.234 / +0.242) the old wording was written for.');
+print('    THE DECISION RULE IS DELIBERATELY UNCHANGED, on measured grounds: on PAIRED');
+print('    NULL data (both sites the same AR(1) process, each dAC1 the difference of two');
+print('    independent lag-1 AC1 estimates from the shipped jsLag1AC1, 20000 draws/cell)');
+print('    a >=2x ratio occurs 14.5% at n=24 phi=0.2, 16.0% at n=36 phi=0.2, 13.9% at');
+print('    n=48 phi=0.5 and 13.4% at n=60 phi=0.5 - about 1 run in 7, on pure noise. So');
+print('    it changes WORDING and gates no verdict, and that 13.4-16.0% is on screen.');
+print('');
+print('  S5 A SIGNIFICANT CONTROL-SITE CHANGE WAS GOING UNREPORTED.');
+print('    OBSERVED: 36mo Study Var p=0.647 / Ctrl Var p=0.000; 48mo(40) 0.553 / 0.000;');
+print('    60mo(40) 0.603 / 0.007. "Local signal? no" was CORRECT - local means the');
+print('    study site DIVERGING - but the panel ended "No window shows a real local');
+print('    signal" and never said the CONTROL was changing. The control is the baseline');
+print('    the study site is measured against; a baseline that is itself moving is a');
+print('    regional result, not a null.');
+print('    FIXED: significant control hits on either statistic, in either direction, on');
+print('    countable rows, are reported in a REGIONAL FINDING block with the statistic,');
+print('    direction, p, shuffle count, delta, and whether the study site is significant');
+print('    on that statistic too. It states what it is NOT (a local warning), that it');
+print('    weakens any local claim made against a moving baseline, and repeats the');
+print('    10km/80km buffer caveat. Hits only on UNDERPOWERED or DUPLICATE rows are');
+print('    excluded and said so.');
+print('    VERIFIED IN NODE by driving the real FIND SWEET SPOT handler with a synthetic');
+print('    control-variance surge: the table reproduces the reported shape (Study Var not');
+print('    significant at 36/48/54/60mo, Ctrl Var p<=0.001) and the block lists all five');
+print('    control hits. SHIPPED v10.161 on the identical input ends at "No window shows');
+print('    a real local signal" and says nothing about the control.');
+print('');
+print('  S6 THE VARIANCE-ARTIFACT RULE LEAKED.');
+print('    OBSERVED in S7C: "Center: AC1=-0.146 Var=4.14x (1st-half=0.0000, 2nd-half=');
+print('    0.0000)" NOT flagged, beside "North: AC1=0.009 Var=12.08x (1st-half=0.0000,');
+print('    2nd-half=0.0000)" flagged LIKELY ARTIFACT. Same 0.0000 first half. The rule');
+print('    was varFirst<0.001 AND |ratio|>5, and that AND made the magnitude threshold');
+print('    decide something it cannot know: varTrendRatio = secondHalfVar /');
+print('    max(firstHalfVar,1e-6), so at the 1e-6 floor the denominator is a CONSTANT.');
+print('    FIXED: a near-zero denominator disqualifies on its own. S7C and S7D each had');
+print('    their OWN copy of the rule with the same leak; both now call the single');
+print('    shared isVarRatioArtifact().');
+print('    RE-RAN THE SWEEP against the shipped jsNodeStatsFixed - genuine AR(1) surges,');
+print('    BEFORE phi=0.2 vs AFTER phi=0.9, noise SD 1.0, 500 draws/cell: 0/500 flagged');
+print('    at 24 months and 0/500 at 36, BEFORE and AFTER the change (min first-half');
+print('    variance 0.202 and 0.234, two orders above the 0.001 bar). Flat 0.2->0.2');
+print('    control at 36mo: 0/500 both. At the live numbers, Center (4e-5, 4.14x) goes');
+print('    unflagged -> FLAGGED and North (2e-5, 12.08x) stays flagged. Genuine surges');
+print('    on a real first half (1.0/0.4/0.0012 at 12x/40x/50x) stay unflagged in both.');
+print('    HONEST CAVEAT from the same sweep: the 0.001 bar is ABSOLUTE and therefore');
+print('    scale-dependent - at noise SD 0.05 (real variance ~2.6e-3) flags rise from');
+print('    4/500 to 12/500. That is the pre-existing threshold, unchanged, not the AND');
+print('    removal; recorded rather than absorbed.');
+print('');
+print('  RESIDUAL RISK, v10.162. EARTH ENGINE WAS NOT RUN. Everything above was');
+print('  verified by executing this entire file in Node against stubbed ee/ui/Map and');
+print('  driving the real handlers with synthetic payloads - every client-side path, but');
+print('  NOT what Earth Engine returns. UNVERIFIABLE WITHOUT A LIVE SESSION: whether the');
+print('  S1 combined fetch SUCCEEDS (the slicing, call counts and refusals are proven;');
+print('  whether a 42-month Sentinel-2 graph returns where a 24-month one did not is');
+print('  EE\'s answer, and the combined graph is the heavier one - the hang is removed');
+print('  either way); whether S2\'s 4000/25000m reductions return what they should and');
+print('  whether the two n\'s then agree in the field (the reasoning is that they must,');
+print('  same pixel of the same collection, but pyramid behaviour at a point is not');
+print('  reproducible here, and S17\'s SNR and r will move at coastal sites by an amount');
+print('  no one can state until it is run); the exact reducer key names, still read');
+print('  defensively by toeNum as since v10.157; and S5\'s real control-site p-values.');
+print('  NOT FIXED DELIBERATELY: STEP 3 still has TWO classifiers with different inputs.');
+print('  v10.162 stops the banner asserting one over the other and makes the magnitudes');
+print('  visible; merging them into a single local-vs-regional significance test would');
+print('  be a new statistical design, not a fix, and could not be calibrated without a');
+print('  live session.');
 print('');
 print('v10.161 FIX 19: 7 defects from a REAL Earth Engine browser run at Bocas del');
 print('  Toro, Panama (9.175, -81.981). These are OBSERVED behaviours from live');
