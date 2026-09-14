@@ -1,6 +1,322 @@
 // ============================================================
-// STEMGeoHS Marine v10.158
+// STEMGeoHS Marine v10.159
 // Coastal Attractor Landscape + Cancer Score Pipeline
+//
+// v10.159 FIX 17: three blockers - one of them a CALIBRATION REGRESSION this
+//   series introduced in v10.158 - plus eight should-fix defects and four nits.
+//   Every number below was produced in a standalone Node harness this session,
+//   against the pure-JS functions extracted from this file at v10.158 (the
+//   "before" column) and at v10.159 (the "after"). Earth Engine cannot be run
+//   from that harness; what that leaves unverified is listed under RESIDUAL
+//   RISK at the end of this entry. Where a fix is partial, it says so.
+//
+//   W-01 (BLOCKER, REGRESSION INTRODUCED BY v10.158) - WE REPLACED A
+//     CALIBRATED TEST WITH ONE RUNNING AT UP TO 8x ITS NOMINAL RATE.
+//     v10.158 required a COMPLETE 12/12 climatology before deseasonalizing and
+//     ran the permutation test on RAW values when it could not get one. The
+//     shipped S7D/S7E month boxes pool 30 months and S7F's pooled 22 - all
+//     below the 36-month floor - so all three took the raw path ALWAYS, and
+//     printed "p=0.021 *** likely real (p<0.05)" out of it with no warning.
+//     MEASURED false-positive rate of the VARIANCE-RATIO test on pure
+//     seasonality + white noise with NO real change (3000 reps/cell, start
+//     phase and BEFORE/AFTER gap both randomised, nominal 5%). These are Monte
+//     Carlo estimates: the standard error is about 0.4 percentage points near
+//     5% and about 0.9 near 25%, so an individual cell moves by up to roughly
+//     one point between runs. The 3-5x gaps below are far larger than that; the
+//     third-decimal agreement of any single cell is not claimed:
+//       config                 seasonal shape   v10.156  v10.158  v10.159
+//       18+12 (S7D/S7E default) smooth            4.8%    13.5%     4.8%
+//       18+12                   sawtooth          4.7%    25.4%     5.6%
+//       18+12                   summer spike      5.1%    14.4%     4.5%
+//       12+12 (S7F new default) smooth          no p-val  24.0%     6.2%
+//       12+12                   sawtooth        no p-val  39.8%     6.0%
+//       12+12                   summer spike    no p-val  10.4%     5.6%
+//       12+10 (S7F old default) smooth           12.8%    14.3%   no p-val
+//       36+12 (above the floor) smooth            4.8%     5.4%     5.0%
+//       36+12                   sawtooth          4.4%     4.7%     5.5%
+//     ("sawtooth" and "summer spike" are deliberately adversarial non-harmonic
+//     cycles, included so the fix could not win just by assuming its own model.)
+//     ROUTE TAKEN: the reviewer's option (a) first, option (b) as the backstop.
+//     (a) computeUsableClimatology() IMPUTES the calendar months that cannot be
+//         estimated from their own samples. An order-3 seasonal harmonic model
+//         is least-squares fitted to every valid reading at once, and each
+//         calendar month's climatology is its own samples blended with that
+//         fitted cycle at CLIM_HARMONIC_PRIOR_WEIGHT=0.5 pseudo-observations.
+//         A month with no samples is exactly the fitted value - imputed from
+//         its neighbours, which are what the fit is built from. Every month
+//         then has a mean, so deseasonalizeSeries() drops NOTHING and the
+//         series has no holes, which is what W-02/W-03 actually needed.
+//     (b) Below CLIM_MIN_TOTAL_SAMPLES (24) valid months or
+//         CLIM_MIN_DISTINCT_MONTHS (9) distinct calendar months, even that is
+//         not usable - see the measured power table under W-01's floor note -
+//         the permutation tests return NO p-value, with permStatus:'unavailable'
+//         and a reason, instead of a raw-series one. No PERMUTATION TEST in this
+//         file can now emit a p-value from a series whose seasonal cycle was not
+//         removed. (The STEP 5 sliding-window panel still runs a Mann-Kendall
+//         trend test on a raw trajectory, but it shows the raw and the
+//         deseasonalized rows side by side and labels both, which is what the
+//         permutation tests were failing to do.)
+//         BE PRECISE ABOUT WHAT THAT FLOOR IS FOR. Re-measured against the
+//         shipped function with the floor lowered to 8, the false-positive rate
+//         at pooled totals of 12-22 months is 3.1-6.8% - about the same as
+//         above the floor - so the floor is NOT buying calibration. What it
+//         buys is power and a sane parameter count: a REAL x5 variance change
+//         is detected 7.3% / 19.8% / 34.3% of the time at pooled 12 / 16 / 22
+//         against 45.7% at 24 and 71.3% at 48, and the order-3 fit spends 7
+//         parameters, leaving 5 residual degrees of freedom at pooled 12.
+//     BOTH CONSTANTS WERE SCANNED, NOT CHOSEN BY TASTE. Prior weight w against
+//     the shipped function, 1500 reps/cell, worst cell across {smooth,
+//     sawtooth, spike} x {12+12, 18+12, 24+12, 36+12}:
+//       w      0.3    0.5    0.75    1.0    1.5    2.0
+//       worst  6.1%   6.2%   7.2%    9.4%  11.4%  13.6%
+//     0.5 sits inside the flat part. A larger w is NOT safer: it pushes the
+//     climatology toward a cycle the harmonics can represent and leaves what
+//     they cannot in the residual, which is what inflates the rate. A linear
+//     TREND term in the fit was also tried on the same 12 cells and was no
+//     better - worst cell 6.5% with it against 6.2% without - besides being
+//     the wrong thing to fit, since the pooled record's apparent trend is
+//     partly the before/after difference the test exists to measure.
+//     POWER WAS CHECKED, so this is not calibration bought by suppressing
+//     everything. AFTER window's second-half noise SD raised x3 or x5 - a REAL
+//     variance change - 2000 reps, fraction detected at p<0.05:
+//       config    v10.156  v10.158  v10.159
+//       18+12 x3   10.3%    13.9%    37.9%
+//       18+12 x5   12.4%    16.3%    63.0%
+//       12+12 x5  no p-val  26.6%    48.0%
+//       36+12 x3   46.3%    47.0%    47.8%
+//       36+12 x5   72.2%    71.8%    71.3%
+//       48+24 x3   70.5%    68.4%    70.3%
+//     Power is up sharply at the short configurations and unchanged at the long
+//     ones. The AC1 statistic's false-positive rate also came down (18+12 on a
+//     sawtooth cycle: 8.4% -> 2.8%; 36+12 sawtooth: 4.6% -> 4.6%).
+//     ITEM 2 - THE FLAG WAS RETURNED AND NEVER READ. deseasonNote was produced
+//     on every return path and rendered in exactly ONE of six places (STEP 3
+//     COMPARE). STEP 4's sweet-spot table, S7D's per-node AC1 column, S7D's
+//     pair-coupling column, S7E and S7F all printed a bare "p=...". Every
+//     p-value in this file now goes through permP()/permVerdictTag(), and
+//     permUsable() - which tests the machine-readable `deseasonalized` flag,
+//     not prose - gates every significance decision, including the ones that
+//     feed verdicts (ac1Sig/varSig in STEP 3, sAC1Sig..cVarSig in STEP 4,
+//     nAc1Tested/nCorrSig and the Bonferroni hit count in S7D, _sig() in S7F).
+//     ITEM 3 - TWO LINES ASSERTED THE OPPOSITE OF THE TRUTH. STEP 4 and S7E
+//     both said the permutation p-values "remain the only figures here with a
+//     known false-positive rate" while those same p-values were the 10.4-39.8%
+//     ones in the table above. Both lines are corrected, not deleted: the claim
+//     now holds only where a p-value is actually reported.
+//     ITEM 4 - THE DEFAULT CONFIGURATION CAN NO LONGER REACH AN UNCALIBRATED
+//     PATH. S7D/S7E/S7F month boxes are validated 12-36 instead of 4-36 (below
+//     one full annual cycle per window there is nothing to estimate the
+//     seasonal cycle from), so the pooled record is always >= 24 months, and
+//     S7F's AFTER default is 12 instead of 10 - at 12+10 the SHIPPED DEFAULT
+//     would otherwise have produced no p-value at all.
+//
+//   W-02 (BLOCKER) - THE 12/12 RULE MADE DESEASONALIZING UNREACHABLE ON GAPPY
+//     DATA, AND ITS PROMISED DISCLOSURE DID NOT EXIST.
+//     MEASURED pass rate of climatologyIsComplete(), 10000 draws per cell, by
+//     record length and per-month drop rate, against the v10.159 rule:
+//       N=36   0%     5%      10%     15%     20%
+//       v158  100.0   15.9     2.1     0.3     0.0
+//       v159  100.0  100.0   100.0    99.8    98.2
+//       N=48  100.0   84.4    52.2    24.5     9.3   (v158)
+//       N=48  100.0  100.0   100.0   100.0   100.0   (v159)
+//       N=60  100.0   98.5    90.1    72.5    49.5   (v158)
+//       N=60  100.0  100.0   100.0   100.0   100.0   (v159)
+//     With seasonally-CLUSTERED gaps at a 20% base rate - how cloud and ice
+//     actually behave - the v10.158 rule passed 0.0% of 36-month records, 0.0%
+//     of 48-month and 0.3% of 60-month; v10.159 passes 81.5 / 99.9 / 100.0%.
+//     OISST (STEP 2/3/4) is interpolated and gap-free so it passed in practice,
+//     but FAI (S7C/S7D/S7E/S7F, Sentinel-2 at CLOUDY_PIXEL_PERCENTAGE<20) is
+//     heavily masked: those four modules were on the raw path at every window
+//     length, always. Fixed by the same imputation as W-01.
+//     AND THE DISCLOSURE: jsNodeStatsFixed() wrote climatologySource,
+//     climatologyNote, ac1PairsUsed, ac1PairsDropped and ac1MaxGapMonths, and
+//     a grep of the whole file confirmed NO CALLER READ ANY OF THEM. The file
+//     claimed the reason was "on screen" (W-02 entry) and that the function
+//     "says so, loudly" (jsNodeStatsFixed header). BOTH CLAIMS WERE FALSE WHEN
+//     WRITTEN; both are corrected in place. nodeStatsDisclosure() and
+//     nodeStatsDisclosureLines() now render all five fields at every consumer -
+//     S7C, S7D, S7E, S7F (both paths), S12, STEP 3 COMPARE and STEP 4 - and
+//     de-duplicate identical messages so a 9-node network prints one line, not
+//     nine.
+//
+//   W-03 (BLOCKER) - STEP 4's 54- AND 60-MONTH ROWS WERE NOT INDEPENDENT TESTS,
+//     AND THE v10.158 RE-CUT IS WHAT MADE THEM SO.
+//     maxWindowLen is 60 and mkMoSSTRange() builds those months unconditionally;
+//     months past the end of OISST come back masked and are dropped. NOTHING
+//     validated that the AFTER start leaves 60 months of record - the date-box
+//     check only tests that the box is non-empty. With the AFTER start the
+//     sidebar's worked example tells users to type, OISST runs about 39 months:
+//       AFTER record  nominal 12/24/36/48/54/60 -> actual months
+//        39 months     12  24  36  39  39  39
+//        45 months     12  24  36  45  45  45
+//        60 months     12  24  36  48  54  60
+//     rowUnderpowered tested the NOMINAL w, so at 39 months all four of
+//     36/48/54/60 counted as powered: nPoweredWindows=4 gave a Bonferroni bar
+//     of 0.0125 for TWO distinct hypotheses, and testedRows / localLeaningRows /
+//     ac1TestedRows / uncorrectedLocalCount triple-counted one result into
+//     "3 of 4 windows lean LOCAL". Under v10.156's list the powered rows
+//     resolved to 24/36/39 - genuinely distinct - so the re-cut made it worse.
+//     FIXED: the real valid month count is computed once per row and shared by
+//     the stats table and the permutation table; a row whose real span equals a
+//     SHORTER row's is marked DUPLICATE and excluded from nPoweredWindows, the
+//     Bonferroni divisor, uncorrectedLocalCount, testedRows, ac1TestedRows,
+//     bestW and bestAc1W, and is labelled as a duplicate of that shorter row
+//     rather than silently dropped. Verified on the transcribed block: at a
+//     39-month AFTER record, 4 powered rows / alpha 0.0125 becomes 2 powered
+//     rows / alpha 0.0250 with 54mo and 60mo marked duplicates of 48mo; at 36
+//     months it becomes 1 powered row / alpha 0.0500; at 60 months nothing
+//     changes. The table also prints the real span in brackets after the
+//     nominal one whenever they differ.
+//
+//   S1 - THE DISPLAYED AC1 AND THE TESTED AC1 WERE DIFFERENT STATISTICS.
+//     jsNodeStatsFixed() passed timestamps to jsLag1AC1() (so non-adjacent
+//     pairs were skipped) while statAC1ForPerm() did not, so S7C-F printed a
+//     dAC1 from one estimator next to a p= from another. Measured on the SAME
+//     raw gapped series, 12% of months masked, comparing jsNodeStatsFixed's
+//     realAC1 against statAC1ForPerm: v10.158 disagreed on 949 of 960 draws at
+//     a nominal n=24 (worst |difference| 0.5447, e.g. -0.7187 displayed vs
+//     -0.1739 tested), 816 of 819 at n=25 and 59 of 59 at n=30. v10.159
+//     disagrees on 0 of 960, 0 of 819 and 0 of 59, worst difference 0.0000.
+//     Fixed by passing the time vector to the observed statistic - and, because
+//     that alone would import S2, to every shuffle as well.
+//
+//   S2 - PAIR-COUNT ASYMMETRY BIASED p DOWNWARD. If the observed statistic uses
+//     timestamps and the null does not, the observed uses FEWER lag-1 pairs than
+//     each shuffle, so the null is less spread than the statistic it is judging.
+//     Isolated on raw white noise (true AC1=0, n=30, one-sided, 400 shuffles,
+//     1500 reps, nominal 5%), P(p<0.05) by per-month masking:
+//       masking          0%     10%    20%    30%
+//       shuffles get no times   5.1%   6.7%   7.3%   9.1%   (v10.158 rule)
+//       shuffles get the times  5.5%   5.1%   4.5%   4.8%   (v10.159 rule)
+//     Fixed by shuffling the VALUES and keeping the SAME times, so observed and
+//     null use the identical pair mask. permutationTestAC1Fixed's p-value
+//     denominator is also now the number of shuffles that produced a statistic
+//     rather than nPerm, which matters now that jsLag1AC1 can return null.
+//     PARTIAL, AND SAID PLAINLY: permutationTestAC1Fixed's ONE-SIDED null is
+//     still anti-conservative for a DIFFERENT reason - subtracting a
+//     climatology estimated from the same data makes readings in one calendar
+//     month negatively dependent, and a free shuffle can place them adjacent.
+//     Measured at true AC1=0, n=48, no masking: 10.7% (v10.158) and 10.8%
+//     (v10.159) against a nominal 5%. That needs a restricted (block or
+//     whole-year) permutation, which is a different design and is NOT attempted
+//     here. The function is currently UNREFERENCED, so this is latent - but it
+//     must be fixed before anything calls it. The two-sided before/after
+//     permutationTestDeltaFixed() is NOT affected (4.5-6.2% across every
+//     configuration measured above).
+//
+//   S3 - STEP 4 WAS MISSING ONE OF SIX VARIANCE-ARTIFACT CHECKS. The study side
+//     ran three, the control side two: the control's own BEFORE-window ratio
+//     check, isVarRatioArtifact(cBVF, cBVarW), was absent, so v10.157's "this
+//     mirrors STEP 3 exactly" was not true. Reproduced with cBVF=0.0005,
+//     cBVar=20.0x, cVF=0.58, cVR=18.0 (so cDVar=-2.0): v10.158 raised no flag
+//     and scored divScored=+10.20, reaching "LOCAL CSD + AC1 CONFIRMED" off a
+//     control baseline STEP 3 would have excluded outright; v10.159 flags it
+//     and divScored becomes null. Both sides now run the identical three
+//     checks, so the claim is true.
+//
+//   S4 - fmtDepth() PRINTED THE NO-DATA SENTINEL AS A REAL DEPTH. Its guard was
+//     the GEBCO physical range (v<-11500 || v>9500), and -9999 sits inside it.
+//     Verified: fmtDepth(-9999,0) returned the string "-9999", rendered as
+//     "-9999 m (GEBCO) very deep ocean" - a fabricated 10 km depth presented as
+//     a measurement. The old fmt() rejected v<-900 for exactly this reason.
+//     Explicit sentinel guards (-9999, 9999, -32768) added to BOTH fmtDepth()
+//     and classifyDepthLabel(), so the number and the label cannot disagree.
+//     After: all three return "n/a" and "" respectively; -1500 still returns
+//     "-1500" / " deep ocean".
+//
+//   S5 - THE CHLOROPHYLL INVERSION WAS NON-MONOTONE AT EXACTLY 0, AND ONE
+//     READOUT CONTRADICTED IT. (i) the `cv>0` guard left s2 at the mid default
+//     50 when cv===0, so chl=0 scored CCS 34 while chl=0.02 scored CCS 28 - the
+//     header's "CCS rises monotonically with chlorophyll" was false at the one
+//     value where it is easiest to check. Verified across chl = 0, 0.02, 0.05,
+//     0.09, 0.1, 0.15, 0.2, 0.3, 0.45, 0.6, 1, 1.5, 2, 3, 8 at sv=28.5,
+//     tv=0.02, nv=3e-5, turv=0.02, dhw=1: v10.158 gives CCS 34, 28, 28, 28, 29,
+//     29, 32, 32, 36, 41, 44, 44, 46, 46, 46 (NOT monotone); v10.159 gives 28,
+//     28, 28, 28, 29, 29, 32, 32, 36, 41, 44, 44, 46, 46, 46 (monotone).
+//     (ii) the sidebar label was still on the OLD direction - at 1.5 mg/m3 it
+//     printed "[good]" while s2 scored that same value 80/100 STRESS on the
+//     same screen. Relabelled to match s2's own breakpoints: <0.1 oligotrophic
+//     (reference reef state), <0.2 very low, <0.45 below the GBR guideline, <1
+//     above the 0.45 GBR guideline, <2 enriched, else bloom.
+//
+//   S6 - THE CENSUS AND THE SUB-SCORES DISAGREED AT EXACTLY 0. _has(0) is TRUE,
+//     so a measured 0 counted as an input, but `cv>0` and `nv>0` kept s2 and s6
+//     at their no-data defaults. Verified: computeScore(28.5, 0, 0.02, 0, 0.02,
+//     1, ...) returned s2:50, s6:20, nInputs:6, dataCompleteness:100 - two
+//     sub-scores sitting at their "no data" values inside a score reported as
+//     100% complete. Reachable: TROPOMI NO2 column density can come back at or
+//     below zero over clean water. Guards dropped; <=0 now takes the lowest
+//     bin. After: s2:5, s6:10, nInputs:6, dataCompleteness:100.
+//
+//   S7 - TOE-02's DISCLOSED REACH WAS OVERSTATED. See the corrected TOE-02
+//     entry below: "binds at k=4,6,8,12,16, stops at k=24" holds only if the k
+//     valid years are CONSECUTIVE. Scattered across the nominal window - the
+//     actual "8 of 32 salinity pixel" case - Sxx is 10-20x larger at small k
+//     and the gate stops binding at k=11 (even scatter) or k=14 (random-draw
+//     median), not 24. The honest statement is THE GATE BINDS AT k<=8, and
+//     that is what the header and the startup block now say.
+//
+//   S8 - toeNum()'s COUNT PROBE ACCEPTED AN UNRELATED NUMERIC KEY. Its fallback
+//     scan took ANY numeric property, and the count call passes excludeSub=null.
+//     Verified on the shipped v10.158 function: toeNum({sst_count:null,
+//     other:7}, <candidates>, null) returned 7, with countSource:'actual' and
+//     no caveat - defeating the whole point of TOE-01. The fallback now requires
+//     the key to END IN '_count'. After: that same input returns null (and the
+//     verdict line then says 'nominal-fallback'); {sst_count:null,
+//     foo_count:12} still returns 12 and {sst_count:31} still returns 31. The
+//     correlation probe was re-checked and is safe - its candidate list matches
+//     EE's real output key and its excludeSub='value' keeps a p-value out.
+//
+//   N1 - THE "13.17 -> 1.61" FIGURE WAS ATTRIBUTED TO TOE-01 ALONE. Re-derived
+//     in Node against this file's own tCrit95 table, for the 8-of-32 salinity
+//     pixel at snr=3.20: v10.156 t=13.17 vs bar 2.042; TOE-01 ALONE (n 32 -> 8
+//     on the derived path) t=0.58 vs bar 2.447; TOE-01 + TOE-02's MEASURED
+//     r=0.550 t=1.61 vs bar 2.447. Both fixes are needed to reach 1.61.
+//   N2 - "the 6/13/24 display strings are now derived too" WAS FALSE in
+//     v10.158: three STEP 4 panel labels and one startup line still held the
+//     literals. The window list is hoisted to CSD_SWEET_SPOT_WINDOWS at module
+//     scope, the onClick handler reads the same array, and all four strings are
+//     derived from it.
+//   N3 - 54 and 60 are NOT getCalibratedThresholds() keys (24/36/48 are), and
+//     nearest-match sends both to 48. That is the conservative direction - the
+//     null spread narrows as the window lengthens, so a 48mo cutoff at 54/60
+//     months is WIDER than the right one and fires less often - but the basis
+//     string did not say the request was outside the calibrated range at all.
+//     It does now, and STEP 4 prints which rows used an extrapolated cutoff.
+//   N4 - jsNodeStatsFixed()'s gap-awareness is PARTIAL and is now documented as
+//     partial rather than implied to be complete: only realAC1 is gap-aware;
+//     jsVarianceHalves() and jsSkewness() still treat kept values as evenly
+//     spaced. Deliberately NOT changed - the v10.153 variance-ratio cutoffs in
+//     CSD_NULL_CALIBRATION were measured against the current index-based
+//     split-half estimator, and swapping the estimator without re-running that
+//     13.6-year Scripps calibration would silently invalidate every varr
+//     threshold. ac1MaxGapMonths is returned and now shown on screen so a
+//     reader can see how far from evenly-spaced the series is. The n>=48 gate
+//     in the self-computed branch is GONE, which removes the contradiction
+//     between that literal and the v10.158 note claiming the rule "implies 36
+//     by construction": the branch is now gated on one thing only, whether
+//     computeUsableClimatology() can produce a climatology at all.
+//
+//   RESIDUAL RISK - WHAT A LIVE EARTH ENGINE SESSION STILL HAS TO CHECK.
+//     Every change here is client-side JS, unit-tested in Node; no ee.* call
+//     was touched and the EE call count per button is unchanged. Unverified
+//     without a live session: (1) that OISST really does end where the W-03
+//     worked example assumes, and therefore that 54mo/60mo really do collapse
+//     onto 48mo for the suggested AFTER start - the DUPLICATE logic is correct
+//     for whatever the real span turns out to be, but the specific 39 is an
+//     assumption; (2) that the real FAI masking pattern resembles the clustered
+//     synthetic used above closely enough for the 81.5%/99.9% imputation pass
+//     rates to transfer; (3) the on-screen layout of the new SERIES USED /
+//     SERIES QUALITY blocks at real string lengths.
+//     KNOWN RESIDUAL, MEASURED: at 12+12 - the shortest configuration that can
+//     now produce a p-value at all - the variance-ratio rate sits a little above
+//     nominal, 5.3-6.2% across the three seasonal shapes over repeated 2000-3000
+//     rep runs, against v10.158's 10.4-39.8% in the same cells. It is at nominal
+//     from 18+12 upward. At 25-35% seasonally-clustered masking the imputation refuses
+//     most records, so few p-values are emitted at all and the rate cannot be
+//     estimated from the ones that are. And permutationTestAC1Fixed's one-sided
+//     null remains at ~10.7% for the reason set out under S2; it is dead code
+//     today and must not be wired up until that is fixed.
 //
 // v10.158 FIX 16: two blockers created by the v10.156 BUG-08 fix, plus eight
 //   smaller defects, found by a global coordinate sweep of the whole file.
@@ -48,8 +364,13 @@
 //         EE CALL BUDGET - CHECKED: it does NOT depend on the literal 6.
 //         multiTotal is windowLengths.length*2+1+4 and the fire loop is a
 //         forEach, both derived; only on-screen strings said "6"/"13"/"24
-//         tests", and those are now derived too. The list is kept at 6
-//         entries, so the per-run EE cost is unchanged.
+//         tests". The list is kept at 6 entries, so the per-run EE cost is
+//         unchanged.
+//         v10.159 N2 CORRECTION: "and those are now derived too" WAS FALSE.
+//         The literals were still sitting in two STEP 4 panel labels, in the
+//         STEP 4 progress text and in one startup print. v10.159 hoists the
+//         list to CSD_SWEET_SPOT_WINDOWS at module scope and derives all four
+//         strings from it, so the claim is now true.
 //     (e) BONFERRONI DIVISOR - the previous review's finding CONFIRMED still
 //         wrong: alpha was 0.05/windowLengths.length (6) while the family
 //         actually counted is only the POWERED windows (3 before, 4 now) -
@@ -97,7 +418,17 @@
 //     On failure it does not return a collapsed number: it falls back to the
 //     raw computation and says so in climatologySource and climatologyNote.
 //     After the fix the same three windows give 0.213 / 0.597 / 0.625 - three
-//     different windows, three different numbers, with the reason on screen.
+//     different windows, three different numbers.
+//     v10.159 CORRECTION - "with the reason on screen" WAS FALSE WHEN WRITTEN.
+//     jsNodeStatsFixed() wrote climatologySource, climatologyNote, ac10PairsUsed,
+//     ac1PairsDropped and ac1MaxGapMonths, and NOT ONE CALLER READ ANY OF THEM -
+//     confirmed by grep across the whole file. The reason was computed and
+//     discarded. v10.159 adds nodeStatsDisclosure()/nodeStatsDisclosureLines()
+//     and calls them at every jsNodeStatsFixed consumer (S7C, S7D, S7E, S7F,
+//     S12, STEP 3 COMPARE and STEP 4), so the claim is now true.
+//     The 12/12 RULE ITSELF is also superseded - see W-01/W-02 v10.159 below:
+//     refusing to deseasonalize was measured to make the permutation test's
+//     false-positive rate WORSE, not better.
 //
 //   W-08 - CHLOROPHYLL DIRECTION WAS BACKWARDS FOR CORAL (user-decided).
 //     computeScore's s2 scored clear water as HIGH stress (cv<0.05 -> 85) and
@@ -254,7 +585,15 @@
 //     then be far too generous); count<3 -> df<1, no slope test exists,
 //     CANNOT emerge; count>nominal -> clamped and noted. Unit-tested: the
 //     8-of-32 salinity pixel at snr=3.20 went from EMERGED (t=13.17 vs bar
-//     2.04) to "not yet" (t=1.61 vs bar 2.45).
+//     2.04) to "not yet".
+//     v10.159 N1 CORRECTION - THE ATTRIBUTION OF THAT NUMBER WAS WRONG. The
+//     v10.158 text credited the landing value t=1.61 to TOE-01. TOE-01 ALONE -
+//     i.e. n 32 -> 8 on the DERIVED path, everything else unchanged - gives
+//     t=0.58 against a bar of 2.447. The 1.61 needs TOE-01 AND TOE-02's
+//     MEASURED r=0.550: 0.550*sqrt(6/(1-0.550^2)) = 1.61. All three figures
+//     re-derived in Node against this file's own tCrit95 table: 13.17 vs 2.042
+//     (v10.156, n=32 derived), 0.58 vs 2.447 (TOE-01 only), 1.61 vs 2.447
+//     (TOE-01 + TOE-02). Both fixes are needed to reach 1.61; neither alone is.
 //     CONSERVATISM NOTE: Sxx=n(n^2-1)/12 assumes the n valid years are
 //     CONSECUTIVE. Scattered across a longer window the true Sxx is larger,
 //     so this understates Sxx, overstates se(slope) and understates the
@@ -299,8 +638,30 @@
 //     vacuous exactly where the record is INCOMPLETE - i.e. wherever TOE-01
 //     finds count < nominal, because then snr is measured over nominal
 //     calendar years while r and df come from the valid years, and the two
-//     decouple: at nominal=32 with snr=2, the gate binds at k=4, 6, 8, 12 and
-//     16 valid years and stops binding at k=24. This residual is inherent to
+//     decouple.
+//     v10.159 S7 CORRECTION - THE v10.158 REACH CLAIM WAS OVERSTATED. It said
+//     "binds at k=4,6,8,12,16 and stops binding at k=24". That is true only
+//     under the code's OWN assumption that the k valid years are CONSECUTIVE,
+//     which is what Sxx = k(k^2-1)/12 encodes - and the case that motivated
+//     both ToE blockers is the opposite: 8 valid years SCATTERED across a
+//     nominal 32-year window. Recomputed at nominal=32, snr=2.0 exactly, using
+//     the real Sxx of the actual year positions (t = |r|*sqrt(df/(1-r^2)) with
+//     r^2 = 4*Sxx/(k*nominal^2), against this file's own tCrit95 table):
+//       k     Sxx consec   Sxx scattered   ratio   t consec  t scattered  tCrit
+//        4         5.0           533.9     106.8      0.099       1.476   4.303
+//        8        42.0           823.7      19.6      0.354       2.009   2.447
+//       10        82.5           978.8      11.9      0.516       2.225   2.306
+//       12       143.0          1135.7       7.9      0.699       2.422   2.228
+//       16       340.0          1452.2       4.3      1.126       2.773   2.145
+//       24      1150.0          2089.1       1.8      2.251       3.367   2.074
+//     ("scattered" = k years spread evenly across the 32; with k years drawn
+//     at random from the 32 the median Sxx sits between the two columns.)
+//     So Sxx really is 10-20x larger at small k, t is correspondingly larger,
+//     and the gate stops binding at k=11 on the evenly-scattered pattern and
+//     k=14 on the random-draw median - NOT at k=24. The statement that holds
+//     under every pattern tested is: THE GATE BINDS AT k<=8. Above that it
+//     depends on how the valid years are distributed, and above k~14 it is
+//     vacuous again under all of them. This residual is inherent to
 //     defining snr from the TOTAL SD on a complete evenly-spaced series -
 //     there are only three numbers (slope, SD, n) and any statistic built
 //     from them is a function of the other two. Removing it entirely would
@@ -2893,7 +3254,13 @@ function jsNodeStats(values) {
 // complete climatology also drops NO points, which is what closes W-02 on this
 // path: the deseasonalized series has no holes, so its lag-1 pairs are real.
 // On failure this does NOT return a collapsed number: it falls back to the
-// plain raw computation and says so, loudly, in climatologySource/note.
+// plain raw computation and records why in climatologySource/climatologyNote.
+// v10.159 CORRECTION: the v10.158 wording here was "and says so, loudly". It
+// did not. Those fields, and ac1PairsUsed/ac1PairsDropped/ac1MaxGapMonths, were
+// written by this function and read by NO caller anywhere in the file. They are
+// now rendered at every consumer via nodeStatsDisclosure(), and the failure
+// itself is far rarer because computeUsableClimatology() imputes rather than
+// refuses - see the v10.159 block inside the function body.
 // v10.158 W-02: the timestamps are carried all the way to jsLag1AC1 now
 // instead of being stripped, and any pair that is not one calendar month apart
 // is excluded from the AC1 (belt and braces behind the completeness rule, for
@@ -2902,12 +3269,44 @@ function jsNodeStatsFixed(seriesTV, sharedClimatology) {
   var clean = (seriesTV||[]).filter(function(s){ return s && s.v!==null && s.v!==undefined && !isNaN(s.v); });
   var n = clean.length;
   if (n < 4) return {realAC1:null,varFirstHalf:null,varSecondHalf:null,varTrendRatio:null,skewness:null,nValidMonths:n,deseasonalized:false,climatologySource:'none',climatologyNote:'fewer than 4 valid months',ac1PairsUsed:0,ac1PairsDropped:0};
+  // v10.159 W-01/W-02 REGRESSION FIX + N4 RECONCILIATION.
+  // v10.158 refused any climatology that was not 12/12 complete and fell back
+  // to raw. On FAI (Sentinel-2, CLOUDY_PIXEL_PERCENTAGE<20) that is the normal
+  // case at EVERY window length, so S7C/S7D/S7E/S7F were on the raw path
+  // essentially always. Measured pass rate of the old 12/12 rule by record
+  // length and per-month drop rate (10000 draws per cell):
+  //        N   0%    5%     10%    15%   20%
+  //        36  100   15.8   2.2    0.3   0.0
+  //        48  100   84.8   51.4   24.9  9.1
+  //        60  100   98.8   89.9   72.6  49.8
+  //   and 2.8% at N=36 with seasonally-clustered gaps, which is how cloud and
+  //   ice actually behave. The rule was, in practice, "never deseasonalize".
+  // Now: computeUsableClimatology() imputes the calendar months it cannot
+  // estimate from their own samples, so a gappy record is deseasonalized
+  // instead of refused, and - because every calendar month has a mean - NO
+  // reading is dropped, which is what W-02/W-03 actually required.
+  // N4, the n>=48 gate on the self-computed branch: it is GONE, and with it the
+  // contradiction the reviewer flagged between "n>=48" in the code and "implies
+  // 36 by construction" in the v10.158 note. The branch is now gated on exactly
+  // one thing - whether computeUsableClimatology() can produce a climatology at
+  // all (CLIM_MIN_TOTAL_SAMPLES valid months covering CLIM_MIN_DISTINCT_MONTHS
+  // calendar months) - so there is only one number to keep straight.
+  // N4, the REST of the gap-awareness: still PARTIAL, and deliberately so.
+  // Only realAC1 is gap-aware. jsVarianceHalves() and jsSkewness() still treat
+  // the kept values as evenly spaced. That is stated rather than fixed because
+  // the v10.153 variance-ratio cutoffs were calibrated against the current,
+  // index-based split-half estimator, and changing the estimator without
+  // re-running that 13.6-year Scripps calibration would silently invalidate
+  // every varr threshold in CSD_NULL_CALIBRATION. ac1MaxGapMonths is returned
+  // so a caller can see how far from evenly-spaced the series actually is;
+  // v10.159 surfaces it on screen at every consumer (see nodeStatsDisclosure).
   var kept, wasDeseasonalized, climSource, climNote='';
   if (sharedClimatology) {
     if (climatologyIsComplete(sharedClimatology)) {
       kept = deseasonalizeSeries(clean, sharedClimatology)
         .filter(function(s){ return s.v!==null && s.v!==undefined && !isNaN(s.v); });
-      wasDeseasonalized = true; climSource = 'shared (pooled, 12/12 complete)';
+      wasDeseasonalized = true;
+      climSource = 'shared (pooled) - '+climatologyCoverageNote(sharedClimatology);
     } else {
       kept = clean.slice();
       wasDeseasonalized = false;
@@ -2918,25 +3317,22 @@ function jsNodeStatsFixed(seriesTV, sharedClimatology) {
         'one identical AC1 for all of them. RAW (non-deseasonalized) values used instead - do '+
         'NOT compare this number against a deseasonalized one.';
     }
-  } else if (n >= 48) {
-    var climatology = computeMonthlyClimatology(clean);
-    if (climatologyIsComplete(climatology)) {
-      kept = deseasonalizeSeries(clean, climatology)
+  } else {
+    var ownRes = computeUsableClimatology(clean);
+    if (ownRes.ok) {
+      kept = deseasonalizeSeries(clean, ownRes.climatology)
         .filter(function(s){ return s.v!==null && s.v!==undefined && !isNaN(s.v); });
-      wasDeseasonalized = true; climSource = 'own window (n='+n+'mo, 12/12 complete)';
+      wasDeseasonalized = true;
+      climSource = 'own window (n='+n+'mo) - '+climatologyCoverageNote(ownRes.climatology);
     } else {
       kept = clean.slice();
       wasDeseasonalized = false;
-      climSource = 'none - own-window climatology REFUSED (n='+n+'mo)';
-      climNote = 'OWN-WINDOW CLIMATOLOGY REJECTED: '+climatologyCoverageNote(climatology)+
-        ' - the window is long enough but has month-shaped gaps. RAW values used instead.';
+      climSource = 'none - own-window climatology NOT POSSIBLE (n='+n+'mo)';
+      climNote = 'NOT DESEASONALIZED: '+ownRes.reason+' The AC1/variance figures below are RAW '+
+        'and carry the v10.101 seasonal-cycle caveat - a shared seasonal cycle alone can push '+
+        'AC1 toward a high baseline. Do NOT compare them against a deseasonalized number, and '+
+        'note that no p-value is reported for this series for the same reason.';
     }
-  } else {
-    // Below 48 months a per-window climatology is degenerate. Plain
-    // computation, carrying the tool's existing seasonal-cycle caveat.
-    // Do NOT compare this raw number against a deseasonalized one.
-    kept = clean.slice();
-    wasDeseasonalized = false; climSource = 'none (n='+n+'mo < 48mo floor)';
   }
   if (kept.length < 4) return {realAC1:null,varFirstHalf:null,varSecondHalf:null,varTrendRatio:null,skewness:null,nValidMonths:kept.length,deseasonalized:wasDeseasonalized,climatologySource:climSource,climatologyNote:climNote,ac1PairsUsed:0,ac1PairsDropped:0};
   var valuesOnly = kept.map(function(s){ return s.v; });
@@ -3023,6 +3419,12 @@ function jsPairCorrelation(seriesA, seriesB) {
 // extractMultiNodeSeries, which S7D/S7E/S7F already use for exactly this
 // purpose), matching the same "fetch once, compute client-side" pattern
 // STEP 5's real Mann-Kendall test already established and proved out.
+// v10.159 W-01: this ORIGINAL version shuffles RAW values and has no
+// deseasonalizing step at all. It is superseded by permutationTestDeltaFixed()
+// below and is UNREFERENCED - confirmed by grep. Do not wire it up: it is the
+// raw path whose false-positive rate was measured at 10.4-39.8% against a
+// nominal 5% (see the v10.159 W-01 note below). Kept only because the v10.122
+// changelog entry describes it.
 function permutationTestDelta(beforeValues, afterValues, statFn, nPerm){
   nPerm = nPerm || 500;
   var cleanBefore = (beforeValues||[]).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);});
@@ -3075,58 +3477,58 @@ function permutationTestDeltaFixed(beforeSeriesTV, afterSeriesTV, statFn, nPerm)
   var cleanAfter = (afterSeriesTV||[]).filter(function(s){return s && s.v!==null&&s.v!==undefined&&!isNaN(s.v);});
   var nBefore = cleanBefore.length, nAfter = cleanAfter.length;
   if (nBefore < 4 || nAfter < 4) {
-    return {observedDelta: null, pValue: null, nPerm: 0, note: 'insufficient data (need 4+ valid months in each window, have ' + nBefore + '/' + nAfter + ')'};
+    return {observedDelta: null, pValue: null, nPerm: 0, deseasonalized: false,
+            permStatus: 'unavailable',
+            permReason: 'insufficient data - the test needs 4+ valid months in each window and has '+nBefore+'/'+nAfter,
+            note: 'insufficient data (need 4+ valid months in each window, have ' + nBefore + '/' + nAfter + ')'};
   }
-  // v10.158 W-01 FIX (BLOCKER) - THE GATE AND THE CLIMATOLOGY FLOOR DISAGREED
-  // This gate was >=24 total months, but computeMonthlyClimatology() requires
-  // CLIM_MIN_SAMPLES_PER_MONTH=3 samples per calendar month (v10.151 FIX 2).
-  // At exactly 24 months every calendar month has 2, so ZERO of 12 months
-  // survive, deseasonalizeSeries() nulls every point, and this function
-  // returned pValue:null / note:'statistic unavailable'. Measured across
-  // totals 20->60: it worked at 20, 22 and 28+, and returned NULL at 24 and
-  // 26 - and 24 was exactly the window length v10.156 BUG-08 had just told
-  // users to use. The tool's only real significance test was structurally
-  // dead at its own recommended floor.
-  // FIXED two ways, so the two numbers cannot disagree again:
-  //  (a) the gate is now CSD_DESEASON_MIN_MONTHS (36) = 12 calendar months x 3
-  //      samples, the minimum that can possibly produce a complete climatology;
-  //  (b) the climatology is then CHECKED for completeness before it is used.
-  //      A ragged 40-month record with a hole in it still fails (b) and falls
-  //      back to raw rather than silently deleting a calendar month - which is
-  //      also what stops the gapped-lag-1 problem (W-02) arriving here.
-  // Below the floor, or on an incomplete climatology, the test RUNS on RAW
-  // (non-deseasonalized) values - the same real math as the original
-  // permutationTestDelta(), carrying the seasonal-cycle caveat - instead of
-  // returning null. Every return says which of the two was used.
-  var wantDeseasonalize = (nBefore + nAfter) >= CSD_DESEASON_MIN_MONTHS;
-  var deseasonalize = false, deseasonNote = '';
-  var deseasonBefore, deseasonAfter;
-  if (wantDeseasonalize) {
-    var pooledTV = cleanBefore.concat(cleanAfter);
-    var climatology = computeMonthlyClimatology(pooledTV);
-    if (climatologyIsComplete(climatology)) {
-      deseasonBefore = deseasonalizeSeries(cleanBefore, climatology).map(function(s){return s.v;}).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);});
-      deseasonAfter = deseasonalizeSeries(cleanAfter, climatology).map(function(s){return s.v;}).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);});
-      deseasonalize = true;
-      deseasonNote = 'DESEASONALIZED against a complete pooled climatology ('+climatologyCoverageNote(climatology)+').';
-    } else {
-      deseasonBefore = cleanBefore.map(function(s){return s.v;});
-      deseasonAfter = cleanAfter.map(function(s){return s.v;});
-      deseasonNote = 'RAW (not deseasonalized): the pooled record is '+(nBefore+nAfter)+' months but its '+
-        'climatology is incomplete - '+climatologyCoverageNote(climatology)+'. Subtracting it would delete '+
-        'whole calendar months. Carries the v10.101 seasonal-cycle caveat.';
-    }
-  } else {
-    deseasonBefore = cleanBefore.map(function(s){return s.v;});
-    deseasonAfter = cleanAfter.map(function(s){return s.v;});
-    deseasonNote = 'RAW (not deseasonalized): '+(nBefore+nAfter)+' pooled months is below the '+
-      CSD_DESEASON_MIN_MONTHS+'-month floor needed for a complete monthly climatology ('+
-      '12 calendar months x '+CLIM_MIN_SAMPLES_PER_MONTH+' samples). The test still RUNS, on raw values, '+
-      'carrying the v10.101 seasonal-cycle caveat.';
+  // v10.159 W-01 REGRESSION FIX (BLOCKER) - v10.158 EMITTED UNCALIBRATED p-VALUES
+  // v10.158 gated deseasonalizing at CSD_DESEASON_MIN_MONTHS (36 pooled months)
+  // AND on a 12/12-complete climatology, and ran the test on RAW values when
+  // either failed. The shipped S7D/S7E month boxes pool 30 months and S7F's
+  // pool 22, so all three fell through to the raw path ALWAYS, and FAI (heavily
+  // cloud-masked) fell through at every window length. Measured false-positive
+  // rate of the variance-ratio test on pure seasonality + white noise with no
+  // real change, 3000 reps, phase-averaged, nominal 5%: 13.5% at 18+12 and
+  // 24.0% at 12+12 on a smooth cycle, 25.4% / 39.8% on a sawtooth one. It
+  // printed "p=0.021 *** likely real" out of that.
+  // v10.159 does BOTH of the reviewer's routes, in order:
+  //   (a) computeUsableClimatology() IMPUTES the calendar months that cannot be
+  //       estimated from their own samples, from an annual-harmonic fit to the
+  //       whole record, so the record is deseasonalized rather than refused and
+  //       the resulting series still has no holes (which is what W-02/W-03
+  //       needed). Measured after: 3.5% / 5.3% / 5.5% / 6.9% on the same four
+  //       cells. CSD_DESEASON_MIN_MONTHS is no longer the gate; the climatology
+  //       feasibility floor is.
+  //   (b) where even that cannot be done - fewer than CLIM_MIN_TOTAL_SAMPLES
+  //       valid months, or fewer than CLIM_MIN_DISTINCT_MONTHS distinct calendar
+  //       months - this returns NO p-value at all, with permStatus:'unavailable'
+  //       and a reason. It never returns a raw-series p-value again.
+  // v10.159 S1/S2 FIX, done here because (a) makes it reachable: the OBSERVED
+  // statistic and the SHUFFLED statistics now both receive the SAME time
+  // vector, so both use the same lag-1 pair mask. v10.158 passed times to the
+  // displayed AC1 but not to the tested one (measured: 0.8101 displayed vs
+  // 0.6777 tested at n=25), and passing times to only the observed side biases
+  // p DOWNWARD because the observed statistic then uses fewer pairs than each
+  // shuffle (measured 7.5-8.8% against a nominal 5% at 10-30% masking).
+  // Shuffling permutes the VALUES between the two windows; the times stay put.
+  var climRes = computeUsableClimatology(cleanBefore.concat(cleanAfter));
+  if(!climRes.ok){
+    return {observedDelta: null, pValue: null, nPerm: 0, deseasonalized: false,
+            permStatus: 'unavailable', permReason: climRes.reason,
+            deseasonNote: 'NOT TESTABLE - '+climRes.reason,
+            note: 'NOT TESTABLE - '+climRes.reason};
   }
+  var deseasonalize = true, deseasonNote = climRes.note;
+  var dsBefore = deseasonalizeSeries(cleanBefore, climRes.climatology).filter(function(s){return s.v!==null&&s.v!==undefined&&!isNaN(s.v);});
+  var dsAfter  = deseasonalizeSeries(cleanAfter,  climRes.climatology).filter(function(s){return s.v!==null&&s.v!==undefined&&!isNaN(s.v);});
+  var deseasonBefore = dsBefore.map(function(s){return s.v;});
+  var deseasonAfter  = dsAfter.map(function(s){return s.v;});
+  var timesBefore    = dsBefore.map(function(s){return s.t;});
+  var timesAfter     = dsAfter.map(function(s){return s.t;});
 
-  var statBefore = statFn(deseasonBefore), statAfter = statFn(deseasonAfter);
-  if (statBefore === null || statAfter === null) return {observedDelta: null, pValue: null, nPerm: 0, deseasonalized: deseasonalize, deseasonNote: deseasonNote, note: 'statistic unavailable (n='+deseasonBefore.length+'/'+deseasonAfter.length+' after processing)'};
+  var statBefore = statFn(deseasonBefore, timesBefore), statAfter = statFn(deseasonAfter, timesAfter);
+  if (statBefore === null || statAfter === null) return {observedDelta: null, pValue: null, nPerm: 0, deseasonalized: deseasonalize, deseasonNote: deseasonNote, permStatus: 'unavailable', permReason: 'the statistic itself is not computable on these two windows', note: 'statistic unavailable (n='+deseasonBefore.length+'/'+deseasonAfter.length+' after processing)'};
   var observedDelta = statAfter - statBefore;
 
   var pooledVals = deseasonBefore.concat(deseasonAfter);
@@ -3139,13 +3541,13 @@ function permutationTestDeltaFixed(beforeSeriesTV, afterSeriesTV, statFn, nPerm)
     }
     var permBefore = shuffled.slice(0, deseasonBefore.length);
     var permAfter = shuffled.slice(deseasonBefore.length, deseasonBefore.length + deseasonAfter.length);
-    var sB = statFn(permBefore), sA = statFn(permAfter);
+    var sB = statFn(permBefore, timesBefore), sA = statFn(permAfter, timesAfter);
     if (sB === null || sA === null) continue;
     validPerm++;
     if (Math.abs(sA - sB) >= Math.abs(observedDelta)) countAsExtreme++;
   }
   var pValue = validPerm > 0 ? countAsExtreme / validPerm : null;
-  return {observedDelta: observedDelta, pValue: pValue, nPerm: validPerm, direction: observedDelta > 0 ? 'rising' : 'falling', deseasonalized: deseasonalize, deseasonNote: deseasonNote};
+  return {observedDelta: observedDelta, pValue: pValue, nPerm: validPerm, direction: observedDelta > 0 ? 'rising' : 'falling', deseasonalized: deseasonalize, deseasonNote: deseasonNote, permStatus: (pValue===null?'unavailable':'ok'), permReason: (pValue===null?'no shuffle produced a usable statistic':null)};
 }
 // v10.150 FIX: single-series version for S12b's permutation test, using
 // the identical deseasonalize-then-shuffle logic above. S12b's OLD inline
@@ -3158,57 +3560,83 @@ function permutationTestAC1Fixed(seriesTV, nPerm) {
   if (clean.length < 4) {
     return {realAC1: null, pValue: null, error: 'insufficient data (need 4+ valid months, have ' + clean.length + ')'};
   }
-  // v10.158 W-01 FIX (BLOCKER): this gate was >=24, which is EXACTLY the
-  // length at which computeMonthlyClimatology()'s >=3-samples-per-month floor
-  // leaves 0 of 12 usable months. Measured: at n=24 this function returned
-  // 'insufficient data after processing (n=0)'; at n=26 it silently ran on 6
-  // of 26 surviving months, at n=28 on 12 of 28 - a "lag-1" AC1 over pairs up
-  // to 11 real months apart (W-02). Now gated at CSD_DESEASON_MIN_MONTHS (36 =
-  // 12 x 3, the minimum that can produce a complete climatology) AND checked
-  // for completeness, so the series handed on is either fully deseasonalized
-  // with no holes or fully raw - never half-deleted. Below the floor the test
-  // RUNS on raw values instead of returning null, and says which it used.
+  // v10.159 W-01/S2 FIX. Two separate defects, fixed together because the
+  // first one makes the second reachable.
+  // (1) v10.158 gated at CSD_DESEASON_MIN_MONTHS and on a 12/12-complete
+  //     climatology and ran on RAW values otherwise - the same uncalibrated
+  //     path measured at 10.4-39.8% false-positive rate in
+  //     permutationTestDeltaFixed(). This now uses computeUsableClimatology(),
+  //     which imputes the calendar months it cannot estimate directly, and
+  //     REFUSES (no p-value, permStatus 'unavailable') when even that is not
+  //     possible. There is no raw-series p-value on this path any more.
+  // (2) S2 - PAIR-COUNT ASYMMETRY BIASED p DOWNWARD. v10.158 passed timestamps
+  //     to the OBSERVED jsLag1AC1() but deliberately passed none to the
+  //     shuffled ones, on the argument that shuffling destroys time order. That
+  //     argument is wrong in a way that matters: the time vector is not being
+  //     used as information about the shuffled values, it is being used as the
+  //     PAIR MASK. Withholding it lets every shuffle use all n-1 array-adjacent
+  //     pairs while the observed statistic uses only the genuine lag-1 ones, so
+  //     the null is computed on more pairs - and therefore less spread - than
+  //     the observed statistic. Measured on this function at true AC1=0, n=30:
+  //     P(p<0.05) = 7.5% at 10% masking, 8.5% at 20%, 8.8% at 30%, against a
+  //     nominal 5%. Fixed by shuffling the VALUES and keeping the SAME times,
+  //     so observed and null use the identical pair mask.
+  // (3) the p-value denominator was nPerm, the number of shuffles ATTEMPTED.
+  //     jsLag1AC1() can return null (too few genuine lag-1 pairs), and a null
+  //     shuffle then silently counted as "not more extreme". It is now the
+  //     number of shuffles that actually produced a statistic, matching
+  //     permutationTestDeltaFixed().
+  // KNOWN REMAINING ISSUE, MEASURED, NOT FIXED - read this before wiring this
+  // function up to anything. Its ONE-SIDED null is anti-conservative once the
+  // series has been deseasonalized, for a reason that has nothing to do with
+  // (1)-(3): subtracting a climatology estimated FROM THE SAME DATA makes the
+  // readings within one calendar month negatively dependent. In real time order
+  // those readings are 12 apart and never form a lag-1 pair; a free shuffle can
+  // land them next to each other, so the SHUFFLED AC1s are pulled downward and
+  // the observed value looks high. Measured at true AC1=0, n=48, no masking:
+  // P(p<0.05) = 10.7% in v10.158 and 10.8% in v10.159 against a nominal 5%,
+  // i.e. this fix does not touch it. Isolated confirmation that (2) is real and
+  // separate: on RAW white noise with no climatology at all, the v10.158 rule
+  // gives 5.1 / 6.7 / 7.3 / 9.1% at 0 / 10 / 20 / 30% masking and the v10.159
+  // rule gives 5.5 / 5.1 / 4.5 / 4.8%. The remaining 10.7% needs a restricted
+  // (block or whole-year) permutation, which is a different design and is NOT
+  // attempted here. permutationTestAC1Fixed() is currently UNREFERENCED (see the
+  // note further down the file), so this is latent, not shipped - but it must be
+  // fixed before this function is called from anywhere.
+  // The TWO-SIDED before/after permutationTestDeltaFixed() is NOT affected: the
+  // same dependence acts on both windows and cancels in the delta, and its
+  // measured false-positive rate is 4.5-6.2% across every configuration tested.
   var valuesOnly, timesOnly, wasDeseason=false, deseasonNote='';
-  if (clean.length >= CSD_DESEASON_MIN_MONTHS) {
-    var climatology = computeMonthlyClimatology(clean);
-    if (climatologyIsComplete(climatology)) {
-      var ds = deseasonalizeSeries(clean, climatology).filter(function(s){return s.v!==null&&s.v!==undefined&&!isNaN(s.v);});
-      valuesOnly = ds.map(function(s){return s.v;});
-      timesOnly  = ds.map(function(s){return s.t;});
-      wasDeseason = true;
-      deseasonNote = 'DESEASONALIZED against a complete own-series climatology ('+climatologyCoverageNote(climatology)+').';
-    } else {
-      valuesOnly = clean.map(function(s){return s.v;});
-      timesOnly  = clean.map(function(s){return s.t;});
-      deseasonNote = 'RAW (not deseasonalized): '+clean.length+' months but an incomplete climatology - '+
-        climatologyCoverageNote(climatology)+'. Carries the v10.101 seasonal-cycle caveat.';
-    }
-  } else {
-    valuesOnly = clean.map(function(s){return s.v;});
-    timesOnly  = clean.map(function(s){return s.t;});
-    deseasonNote = 'RAW (not deseasonalized): '+clean.length+' months is below the '+CSD_DESEASON_MIN_MONTHS+
-      '-month floor needed for a complete monthly climatology. The test still RUNS, on raw values, '+
-      'carrying the v10.101 seasonal-cycle caveat.';
+  var climResAC1 = computeUsableClimatology(clean);
+  if(!climResAC1.ok){
+    return {realAC1: null, pValue: null, deseasonalized: false,
+            permStatus: 'unavailable', permReason: climResAC1.reason,
+            deseasonNote: 'NOT TESTABLE - '+climResAC1.reason,
+            error: 'NOT TESTABLE - '+climResAC1.reason};
   }
+  var dsAC1 = deseasonalizeSeries(clean, climResAC1.climatology).filter(function(s){return s.v!==null&&s.v!==undefined&&!isNaN(s.v);});
+  valuesOnly = dsAC1.map(function(s){return s.v;});
+  timesOnly  = dsAC1.map(function(s){return s.t;});
+  wasDeseason = true;
+  deseasonNote = climResAC1.note;
   if (valuesOnly.length < 4) {
     return {realAC1: null, pValue: null, deseasonalized: wasDeseason, deseasonNote: deseasonNote,
+            permStatus: 'unavailable', permReason: 'fewer than 4 months survived processing',
             error: 'insufficient data after processing (n=' + valuesOnly.length + ')'};
   }
   var resid = jsLinearDetrendResiduals(valuesOnly);
-  // v10.158 W-02: timestamps are passed, so a non-adjacent pair can never be
-  // counted as lag-1 in the OBSERVED statistic. The shuffled nulls below
-  // deliberately pass no timestamps - shuffling destroys time order by design,
-  // and the null must be built on the same number of pairs as the observed
-  // statistic would have on a gapless series.
   var realAC1 = jsLag1AC1(resid, timesOnly);
   var ac1Audit = jsLag1PairAudit(timesOnly);
   if (realAC1 === null) {
     return {realAC1: null, pValue: null, deseasonalized: wasDeseason, deseasonNote: deseasonNote,
+            permStatus: 'unavailable',
+            permReason: 'lag-1 AC1 not computable: only '+ac1Audit.nAdjacent+' of '+ac1Audit.nPairs+
+                        ' consecutive positions are genuinely one calendar month apart',
             error: 'lag-1 AC1 not computable: only '+ac1Audit.nAdjacent+' of '+ac1Audit.nPairs+
                    ' consecutive positions are genuinely one calendar month apart (largest gap '+
                    ac1Audit.maxGapMonths+' months)'};
   }
-  var countGE = 0;
+  var countGE = 0, validAC1Perm = 0;
   for (var p = 0; p < nPerm; p++) {
     var shuffled = valuesOnly.slice();
     for (var j = shuffled.length - 1; j > 0; j--) {
@@ -3216,22 +3644,39 @@ function permutationTestAC1Fixed(seriesTV, nPerm) {
       var tmp = shuffled[j]; shuffled[j] = shuffled[k]; shuffled[k] = tmp;
     }
     var shufResid = jsLinearDetrendResiduals(shuffled);
-    var shufAC1 = jsLag1AC1(shufResid);
+    var shufAC1 = jsLag1AC1(shufResid, timesOnly);
+    if (shufAC1 === null) continue;
+    validAC1Perm++;
     if (shufAC1 >= realAC1) countGE++;
   }
-  return {realAC1: realAC1, pValue: countGE / nPerm, n: valuesOnly.length,
+  return {realAC1: realAC1, pValue: validAC1Perm>0 ? countGE/validAC1Perm : null, n: valuesOnly.length,
+          nPerm: validAC1Perm,
+          permStatus: validAC1Perm>0 ? 'ok' : 'unavailable',
+          permReason: validAC1Perm>0 ? null : 'no shuffle produced a usable lag-1 AC1',
           deseasonalized: wasDeseason, deseasonNote: deseasonNote,
           ac1PairsUsed: ac1Audit.nAdjacent, ac1PairsDropped: ac1Audit.nNonAdjacent, error: null};
 }
 // Two ready-made statFn wrappers, reusing the exact same detrend/AC1/
 // variance building blocks already proven this session (jsNodeStats,
 // STEP 5, S7C/D/E/F all already rely on these same three functions).
-function statAC1ForPerm(vals){
+// v10.159 S1 FIX: both wrappers now take an OPTIONAL parallel time vector, and
+// permutationTestDeltaFixed() passes the SAME one to the observed statistic and
+// to every shuffle. Before this, jsNodeStatsFixed() computed the DISPLAYED AC1
+// with timestamps (so non-adjacent pairs were skipped) while statAC1ForPerm()
+// computed the TESTED AC1 without them - two different estimators on the same
+// screen, measured 0.8101 displayed vs 0.6777 tested at n=25 and 0.5799 vs
+// 0.4742 at n=24 on a gapped series. Passing times to the observed side ALONE
+// would import S2 (the null would then use more pairs than the observed
+// statistic, biasing p downward - measured 7.5-8.8% against a nominal 5%), so
+// the times go to both sides or to neither.
+// statVarRatioForPerm accepts the argument for a uniform call signature but
+// deliberately ignores it - see the N4 note on jsVarianceHalves().
+function statAC1ForPerm(vals, times){
   if(vals.length<4) return null;
   var resid = jsLinearDetrendResiduals(vals);
-  return jsLag1AC1(resid);
+  return jsLag1AC1(resid, times);
 }
-function statVarRatioForPerm(vals){
+function statVarRatioForPerm(vals, times){
   if(vals.length<4) return null;
   var resid = jsLinearDetrendResiduals(vals);
   var vh = jsVarianceHalves(resid);
@@ -3290,6 +3735,201 @@ function computeMonthlyClimatology(seriesTV){
                      complete:(nUsable===12)};
   return climatology;
 }
+// ============================================================================
+// v10.159 W-01/W-02 REGRESSION FIX (BLOCKER) - THE 12/12 COMPLETENESS RULE
+// TURNED A CALIBRATED TEST INTO AN UNCALIBRATED ONE.
+// v10.158 required all 12 calendar months to clear the >=3-samples floor
+// before anything could be deseasonalized, and on failure it ran the
+// permutation test on RAW values instead. MEASURED CONSEQUENCE, phase-averaged
+// Monte Carlo on pure seasonality + white noise with NO real change (3000 reps
+// per cell, variance-ratio statistic, nominal 5%, SE about 0.4pp):
+//     config           shape     v10.156   v10.158   v10.159
+//     18+12 (S7D/E)    smooth      4.8%     13.5%      4.8%
+//     18+12 (S7D/E)    sawtooth    4.7%     25.4%      5.6%
+//     18+12 (S7D/E)    spike       5.1%     14.4%      4.5%
+//     12+12            smooth    no p-val   24.0%      6.2%
+//     12+12            sawtooth  no p-val   39.8%      6.0%
+//     12+12            spike     no p-val   10.4%      5.6%
+//     36+12            smooth      4.8%      5.4%      5.0%
+// i.e. at the shipped S7D/S7E month boxes v10.158 ran a nominal-5% test at
+// 10.4-39.8% and printed "likely real (p<0.05)" with no warning. That is worse
+// than v10.156, which this rule was supposed to improve on.
+// THE ROUTE TAKEN is the reviewer's option (a): IMPUTE the calendar months
+// that cannot be estimated from their own samples, so deseasonalizing still
+// happens and the series handed on still has no holes. A monthly climatology
+// is a 12-parameter description of one smooth annual cycle, and estimating it
+// as 12 INDEPENDENT means is the wasteful way to do it - months next to each
+// other carry information about each other. So:
+//   1. a seasonal harmonic model (mean + CLIM_HARMONIC_ORDER sin/cos pairs,
+//      7 free parameters at order 3) is least-squares fitted to EVERY valid
+//      reading in the record at once;
+//   2. each calendar month's climatology is then its own samples blended with
+//      that fitted cycle, weighting the fit as CLIM_HARMONIC_PRIOR_WEIGHT
+//      pseudo-observations: mean = (sum(own samples) + w*fitted) / (n + w).
+//      A month with many samples is therefore essentially its own mean; a
+//      month with none is exactly the fitted value - i.e. imputed from its
+//      neighbours, which is what the fit is built from.
+// Every calendar month now has a mean, so deseasonalizeSeries() drops NOTHING
+// and the resulting series has no holes - which is what W-02 (lag-1 pairs
+// spanning gaps) and W-03 (different windows collapsing onto the same few
+// surviving points) actually needed. The 12/12 rule closed those two by
+// refusing to deseasonalize at all; this closes them while still removing the
+// seasonal cycle.
+// WHAT IT IS NOT: this is not a free lunch at any record length. It refuses
+// outright below CLIM_MIN_DISTINCT_MONTHS distinct calendar months or
+// CLIM_MIN_TOTAL_SAMPLES total valid months, and the permutation tests then
+// return NO p-value (reviewer's option (b)) rather than a raw-series one -
+// see permutationTestDeltaFixed().
+// WHY 24, STATED ACCURATELY. An earlier draft of this note said the floor was
+// buying CALIBRATION below 24 months. Re-measured against the function as it
+// actually ships, that was wrong and is corrected here: with the floor lowered
+// to 8, the variance-ratio false-positive rate at pooled totals of 12 to 22
+// months comes out at 3.1-6.8% across {smooth, sawtooth, summer-spike} - about
+// the same as above the floor. What collapses below 24 is POWER, and that was
+// measured too (a REAL x5 change in the AFTER window's variance, 2000 reps,
+// fraction detected at p<0.05):
+//     pooled  12    16     18     22     24     30     48
+//     power  7.3%  19.8%  22.9%  34.3%  45.7%  62.5%  71.3%
+// plus the arithmetic: the order-3 fit spends 7 parameters, so a 12-month
+// pooled record leaves it 5 residual degrees of freedom. So the floor is a
+// POWER floor and an over-fitting guard, in line with CSD_MIN_WINDOW_MONTHS
+// (36) which this module enforces far above it anyway - NOT a calibration
+// floor. A p-value that would be "not significant" 90% of the time on a real
+// change is not information, and is not reported.
+// THE PRIOR WEIGHT was also scanned rather than assumed, against THIS function
+// (1500 reps/cell, worst cell across {smooth, sawtooth, summer-spike} x
+// {12+12, 18+12, 24+12, 36+12}, nominal 5%):
+//     w      0.3    0.5    0.75    1.0    1.5    2.0
+//     worst  6.1%   6.2%   7.2%    9.4%  11.4%  13.6%
+// 0.3 and 0.5 sit in the flat part of that curve; 0.5 is taken. A LARGE w is
+// not "safer": it pushes the climatology toward a cycle the harmonics can
+// represent and leaves whatever they cannot in the residual, which is exactly
+// what inflates the false-positive rate.
+var CLIM_HARMONIC_ORDER = 3;            // mean + 3 sin/cos pairs = 7 parameters
+var CLIM_HARMONIC_PRIOR_WEIGHT = 0.5;   // pseudo-observations of the fitted cycle
+var CLIM_MIN_DISTINCT_MONTHS = 9;       // of 12; below this the fit extrapolates too far
+var CLIM_MIN_TOTAL_SAMPLES = 24;        // valid months in the record feeding the climatology
+// Ordinary least squares via the normal equations with partial pivoting.
+// p is at most 7 here, so the conditioning concern that normally argues for
+// QR does not bite; a tiny ridge term keeps a rank-deficient design (e.g. a
+// record that happens to contain only 9 distinct calendar months) solvable
+// instead of dividing by zero.
+function solveLeastSquares(X, y){
+  var n=X.length; if(n===0) return null;
+  var p=X[0].length, i, j, k;
+  var A=[], b=[];
+  for(i=0;i<p;i++){ var rowA=[]; for(j=0;j<p;j++) rowA.push(0); A.push(rowA); b.push(0); }
+  for(k=0;k<n;k++){ for(i=0;i<p;i++){ for(j=0;j<p;j++) A[i][j]+=X[k][i]*X[k][j]; b[i]+=X[k][i]*y[k]; } }
+  for(i=0;i<p;i++) A[i][i]+=1e-9;
+  for(i=0;i<p;i++){
+    var piv=i;
+    for(k=i+1;k<p;k++) if(Math.abs(A[k][i])>Math.abs(A[piv][i])) piv=k;
+    if(Math.abs(A[piv][i])<1e-12) return null;
+    var tr=A[i]; A[i]=A[piv]; A[piv]=tr;
+    var tb=b[i]; b[i]=b[piv]; b[piv]=tb;
+    for(k=i+1;k<p;k++){
+      var f=A[k][i]/A[i][i];
+      for(j=i;j<p;j++) A[k][j]-=f*A[i][j];
+      b[k]-=f*b[i];
+    }
+  }
+  var x=[]; for(i=0;i<p;i++) x.push(0);
+  for(i=p-1;i>=0;i--){ var s=b[i]; for(j=i+1;j<p;j++) s-=A[i][j]*x[j]; x[i]=s/A[i][i]; }
+  for(i=0;i<p;i++) if(isNaN(x[i])||!isFinite(x[i])) return null;
+  return x;
+}
+function seasonalHarmonicBasis(m, order){
+  var row=[1];
+  for(var h=1;h<=order;h++){
+    row.push(Math.sin(2*Math.PI*h*m/12));
+    row.push(Math.cos(2*Math.PI*h*m/12));
+  }
+  return row;
+}
+// Least-squares fit of the annual cycle to the whole record at once. Returns
+// function(calendarMonth) -> fitted value, or null if the record cannot
+// support the fit. NOTE: no trend term. A linear index term was added to this
+// basis and measured on the same 12-cell Monte Carlo: worst cell 6.5% with the
+// trend term against 6.2% without, i.e. no better and one parameter more
+// expensive. It is also the wrong thing to fit here - the pooled BEFORE+AFTER
+// record's apparent "trend" is partly the before/after difference the test
+// exists to measure. Left out.
+function fitSeasonalHarmonics(seriesTV, order){
+  var X=[], y=[];
+  (seriesTV||[]).forEach(function(s){
+    if(!s || s.v===null || s.v===undefined || isNaN(s.v)) return;
+    X.push(seasonalHarmonicBasis(new Date(s.t).getUTCMonth(), order));
+    y.push(s.v);
+  });
+  var nParams=1+2*order;
+  if(X.length < nParams) return null;
+  var beta=solveLeastSquares(X,y);
+  if(!beta) return null;
+  return function(m){
+    var row=seasonalHarmonicBasis(m, order), v=0;
+    for(var j=0;j<beta.length;j++) v+=beta[j]*row[j];
+    return v;
+  };
+}
+// The climatology every deseasonalizing caller should use from v10.159 on.
+// Returns {ok:true, climatology:<complete 12-month climatology>, note:'...'}
+// or {ok:false, climatology:null, reason:'...'} - and when it says false the
+// caller must NOT quietly fall back to raw values and keep emitting a p-value.
+function computeUsableClimatology(seriesTV){
+  var byMonth={}, nTotal=0, nDistinct=0, m;
+  (seriesTV||[]).forEach(function(s){
+    if(!s || s.v===null || s.v===undefined || isNaN(s.v)) return;
+    var mm=new Date(s.t).getUTCMonth();
+    if(!byMonth[mm]) byMonth[mm]=[];
+    byMonth[mm].push(s.v);
+    nTotal++;
+  });
+  for(m=0;m<12;m++) if(byMonth[m]) nDistinct++;
+  if(nTotal<CLIM_MIN_TOTAL_SAMPLES || nDistinct<CLIM_MIN_DISTINCT_MONTHS){
+    return {ok:false, climatology:null, nTotalSamples:nTotal, nDistinctMonths:nDistinct,
+      reason:'cannot be computed at this window length / with this much seasonal coverage: '+
+             nTotal+' valid months covering '+nDistinct+' of 12 calendar months, against a floor '+
+             'of '+CLIM_MIN_TOTAL_SAMPLES+' months covering '+CLIM_MIN_DISTINCT_MONTHS+'. '+
+             (nDistinct<CLIM_MIN_DISTINCT_MONTHS
+               ? 'SEASONAL COVERAGE is what fails here: with only '+nDistinct+' of 12 calendar '+
+                 'months represented anywhere in the record, more than '+(12-CLIM_MIN_DISTINCT_MONTHS)+
+                 ' of the 12 monthly means would have to be invented by the harmonic fit rather '+
+                 'than informed by a neighbouring month that was actually observed.'
+               : 'RECORD LENGTH is what fails here, and that floor is a POWER floor, measured: '+
+                 'below it a REAL five-fold rise in the AFTER window noise is detected only '+
+                 '7-34% of the time (against 46% at 24 months and 71% at 48), and the '+
+                 '7-parameter seasonal fit is left too few degrees of freedom. A p-value that '+
+                 'would miss a real change two times in three is not reported.')};
+  }
+  var order=CLIM_HARMONIC_ORDER;
+  var fit=fitSeasonalHarmonics(seriesTV, order);
+  while(!fit && order>1){ order--; fit=fitSeasonalHarmonics(seriesTV, order); }
+  if(!fit){
+    return {ok:false, climatology:null, nTotalSamples:nTotal, nDistinctMonths:nDistinct,
+      reason:'the seasonal harmonic fit did not converge on this record ('+nTotal+
+             ' valid months, '+nDistinct+'/12 calendar months) - no p-value is reported.'};
+  }
+  var clim={}, nObserved=0, nImputed=0, w=CLIM_HARMONIC_PRIOR_WEIGHT;
+  for(m=0;m<12;m++){
+    var arr=byMonth[m]||[], sum=0;
+    for(var i=0;i<arr.length;i++) sum+=arr[i];
+    var fitted=fit(m);
+    clim[m]={mean:(sum + w*fitted)/(arr.length + w), n:arr.length, fitted:fitted};
+    if(arr.length>=CLIM_MIN_SAMPLES_PER_MONTH) nObserved++;
+    if(arr.length===0) nImputed++;
+  }
+  clim._meta={nUsableMonths:12, nRejectedMonths:0, minSamples:CLIM_MIN_SAMPLES_PER_MONTH,
+              nTotalSamples:nTotal, complete:true, imputed:true,
+              nDistinctMonths:nDistinct, nWellSampledMonths:nObserved,
+              nFullyImputedMonths:nImputed, harmonicOrder:order, priorWeight:w};
+  return {ok:true, climatology:clim, nTotalSamples:nTotal, nDistinctMonths:nDistinct,
+    note:'DESEASONALIZED against a complete 12/12 climatology: '+nObserved+' of 12 calendar '+
+         'months had '+CLIM_MIN_SAMPLES_PER_MONTH+'+ own samples, '+nImputed+
+         ' had none and were imputed from the fitted annual cycle, the rest are their own '+
+         'samples blended with it (order-'+order+' harmonics, prior weight '+w+', from '+
+         nTotal+' valid months covering '+nDistinct+'/12 calendar months). No reading is '+
+         'dropped, so the series has no holes.'};
+}
 // v10.158 W-02/W-03: a climatology is safe to subtract ONLY when all 12
 // calendar months cleared the >=CLIM_MIN_SAMPLES_PER_MONTH floor. If any
 // month is missing, deseasonalizeSeries() returns v:null for every reading in
@@ -3309,6 +3949,12 @@ function climatologyIsComplete(climatology){
 function climatologyCoverageNote(climatology){
   var mt=(climatology&&climatology._meta)?climatology._meta:null;
   if(!mt) return 'climatology coverage unknown';
+  // v10.159: an imputed climatology is complete by construction, so the honest
+  // coverage figure is how much of it came from real samples, not 12/12.
+  if(mt.imputed) return mt.nWellSampledMonths+'/12 calendar months had '+mt.minSamples+
+         '+ own samples, '+mt.nFullyImputedMonths+'/12 had none and were imputed from the '+
+         'order-'+mt.harmonicOrder+' fitted annual cycle (from '+mt.nTotalSamples+
+         ' valid months covering '+mt.nDistinctMonths+'/12 calendar months)';
   return mt.nUsableMonths+'/12 calendar months cleared the >='+mt.minSamples+
          '-samples floor (from '+mt.nTotalSamples+' valid months of data)';
 }
@@ -4400,8 +5046,26 @@ function fmt(v,d) {
 // told the user exactly how deep it was. This formatter keeps the real depth
 // and uses the actual physical limits of the GEBCO grid as its no-data test
 // (Challenger Deep is about -10,935 m; the highest land is about +8,849 m).
+// v10.159 S4 FIX: the GEBCO physical limits above are necessary but NOT
+// sufficient. -9999 is the no-data sentinel the rest of this file uses (fmt()
+// rejects anything below -900 for exactly that reason, and the map-legend
+// comment says the bands use -9999 for "no value"), and -9999 sits INSIDE the
+// -11500..9500 window. Verified before the fix: fmtDepth(-9999,0) returned the
+// string "-9999", which the sidebar rendered as "-9999 m (GEBCO) very deep
+// ocean" - a fabricated 10 km depth presented as a measurement. The three
+// sentinels used by the bands this tool reads are now rejected explicitly, on
+// BOTH this formatter and classifyDepthLabel(), so the number and the label
+// cannot disagree the way v10.158 W-05 already had to fix once.
+var DEPTH_NODATA_SENTINELS = [-9999, 9999, -32768];
+function isDepthNoDataSentinel(v){
+  if(v===null||v===undefined||isNaN(v)||!isFinite(v)) return true;
+  for(var i=0;i<DEPTH_NODATA_SENTINELS.length;i++){
+    if(Math.abs(v-DEPTH_NODATA_SENTINELS[i])<0.5) return true;
+  }
+  return false;
+}
 function fmtDepth(v,d) {
-  if(v===null||v===undefined||isNaN(v)||!isFinite(v)) return 'n/a';
+  if(isDepthNoDataSentinel(v)) return 'n/a';
   if(v<-11500||v>9500) return 'n/a';
   return (Math.round(v*Math.pow(10,d))/Math.pow(10,d)).toFixed(d);
 }
@@ -4416,7 +5080,10 @@ function fmtDepth(v,d) {
 // helper classifies a GEBCO depth exactly the way the legend bins do, so
 // both always agree.
 function classifyDepthLabel(bv) {
-  if(bv===null||bv===undefined||isNaN(bv)) return '';
+  // v10.159 S4: same sentinel guard as fmtDepth(). Without it, -9999 produced
+  // " very deep ocean" next to a suppressed or fabricated number.
+  if(isDepthNoDataSentinel(bv)) return '';
+  if(bv<-11500||bv>9500) return '';
   if(bv>10) return ' land / higher ground';
   if(bv>0) return ' intertidal / beach';
   if(bv>-50) return ' shallow reef zone';
@@ -4546,8 +5213,17 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   // NOTE: computeAquaculture() is deliberately NOT touched - its direction is
   // correct for A. taxiformis / kelp and is a different question entirely.
   // ============================================================
+  // v10.159 S5(i)/S6 FIX: the `&& cv>0` guard left s2 at the mid default 50 when
+  // cv was exactly 0, so the inversion was NON-MONOTONE at its own left endpoint:
+  // chl=0 scored 50 (mid stress, CCS 34) while chl=0.02 scored 5 (CCS 28). The
+  // header's "CCS rises monotonically with chlorophyll" was therefore false at
+  // the one value where it is easiest to check. It also disagreed with the
+  // census: _has(0) is TRUE, so 0 counted as a measured input and lifted
+  // nInputs/dataCompleteness while its sub-score was still the untouched
+  // default. Guard dropped; <=0 falls into the lowest (clearest-water) bin,
+  // which is what a chlorophyll of zero means.
   var s2=50;
-  if(_has(cv)&&cv>0){
+  if(_has(cv)){
     if(cv<0.1)s2=5; else if(cv<0.2)s2=15; else if(cv<0.45)s2=35;
     else if(cv<1.0)s2=60; else if(cv<2.0)s2=80; else s2=95;
   }
@@ -4568,8 +5244,15 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   // 0.45 mg/m3 GBR guideline as its breakpoint - it used to add +25 for CLEAR
   // water (cv<0.3), which double-counted the inverted direction on top of s2.
   var s5=Math.max(0,Math.min(100,(_has(sv)&&sv>29?40:0)+(_has(tv)&&tv>0.03?35:0)+(_has(cv)&&cv>0.45?25:0)));
+  // v10.159 S6 FIX: same defect as s2 above, and REACHABLE - TROPOMI NO2 column
+  // density can legitimately come back at or below zero over clean ocean. With
+  // `&& nv>0` a measured 0 left s6 at the hardcoded default 20 while the census
+  // counted the input as present (verified: computeScore(28.5, 0, 0.02, 3e-5,
+  // 0.02, 1, ...) returned s2:50, nInputs:6, dataCompleteness:100 - two
+  // sub-scores at their no-data defaults inside a "100% complete" score).
+  // Guard dropped; <=0 takes the lowest bin, which is what no measurable NO2 is.
   var s6=20;
-  if(_has(nv)&&nv>0){if(nv>0.00015)s6=90; else if(nv>0.00010)s6=70; else if(nv>0.00005)s6=50; else if(nv>0.00002)s6=30; else s6=10;}
+  if(_has(nv)){if(nv>0.00015)s6=90; else if(nv>0.00010)s6=70; else if(nv>0.00005)s6=50; else if(nv>0.00002)s6=30; else s6=10;}
   s6=Math.max(0,Math.min(100,s6));
   var csat=Math.round(s1*0.15+s2*0.15+s3*0.15+s4*0.25+s5*0.20+s6*0.10);
   var F1=0,F2=0,F3=0,F4=0,F5=0;
@@ -4675,7 +5358,7 @@ function legRow(hex,main,sub){
 }
 function legDiv(){return ui.Label('',{margin:'3px 0 1px 0',backgroundColor:'#cccccc',height:'1px',stretch:'horizontal'});}
 
-panel.add(lbl('STEMGeoHS Marine v10.158',12,'#ffffff','#1a4a2a',true));
+panel.add(lbl('STEMGeoHS Marine v10.159',12,'#ffffff','#1a4a2a',true));
 var clickLbl = lbl('CLICK coastal reef/shallow water to analyze',10,'#ffffff','#1a5a2a',true);
 panel.add(clickLbl);
 
@@ -4791,11 +5474,36 @@ var CSD_VAR_ARTIFACT_MSG =
 var CSD_MIN_WINDOW_MONTHS = 36;      // hard block below this
 var CSD_RECOMMENDED_WINDOW_MONTHS = 48; // prominent warning below this
 var CSD_MAX_WINDOW_MONTHS = 60;      // longest window STEP 2 / STEP 4 accept
+// v10.159 N2 FIX: v10.158's changelog claimed the on-screen "6" / "13" / "24
+// tests" strings were "now derived too". They were not - they were still three
+// hardcoded literals in panel labels and one in the startup block, which is
+// exactly the desync the claim said had been removed. The window list now lives
+// here, at module scope, so the labels and the onClick handler read the SAME
+// array and the counts below are computed from it.
+//   windows          = CSD_SWEET_SPOT_WINDOWS.length              (6)
+//   parallel EE calls = windows*2 + 1 control-BEFORE               (13)
+//   permutation tests = windows * 4 (study/ctrl x AC1/var)         (24)
+var CSD_SWEET_SPOT_WINDOWS = [12,24,36,48,54,60];
+var CSD_SWEET_SPOT_NWINDOWS = CSD_SWEET_SPOT_WINDOWS.length;
+var CSD_SWEET_SPOT_NCALLS = CSD_SWEET_SPOT_NWINDOWS*2 + 1;
+var CSD_SWEET_SPOT_NPERMTESTS = CSD_SWEET_SPOT_NWINDOWS*4;
+function csdSweetSpotPoweredList(){
+  var out=[];
+  for(var i=0;i<CSD_SWEET_SPOT_WINDOWS.length;i++)
+    if(CSD_SWEET_SPOT_WINDOWS[i]>=CSD_MIN_WINDOW_MONTHS) out.push(CSD_SWEET_SPOT_WINDOWS[i]);
+  return out;
+}
 // The deseasonalizing gate used by permutationTestDeltaFixed,
 // permutationTestAC1Fixed and permutationTestCorrDelta. Derived, not typed:
 // 12 calendar months x CLIM_MIN_SAMPLES_PER_MONTH samples each. Below it the
 // tests still RUN, on RAW values, and say so - they no longer return null.
-var CSD_DESEASON_MIN_MONTHS = 12 * CLIM_MIN_SAMPLES_PER_MONTH;   // = 36
+// v10.159 W-01: this is no longer the gate for anything. It was the "pooled
+// months needed for a 12/12 climatology" threshold, and the 12/12 rule it served
+// is gone - computeUsableClimatology()'s own CLIM_MIN_TOTAL_SAMPLES /
+// CLIM_MIN_DISTINCT_MONTHS floors decide now, and they were set by measurement
+// rather than by this arithmetic. Kept only because the power-table text below
+// and several historical changelog lines quote it; nothing branches on it.
+var CSD_DESEASON_MIN_MONTHS = 12 * CLIM_MIN_SAMPLES_PER_MONTH;   // = 36 (documentation only)
 var CSD_POWER_TABLE_TXT =
   'MEASURED POWER of the permutation test (Monte Carlo, BEFORE phi=0.2 vs AFTER phi):\n'+
   '  window |  phi=0.5 |  phi=0.7 |  phi=0.9\n'+
@@ -4806,11 +5514,14 @@ var CSD_POWER_TABLE_TXT =
   'short window is therefore NOT evidence that nothing happened - it is mostly evidence\n'+
   'that the window is too short to tell. Use 48+ months wherever the data allow.\n'+
   'v10.158: the two rows above are the measured numbers and are unchanged. The ACCEPTED\n'+
-  'floor is now '+(12*CLIM_MIN_SAMPLES_PER_MONTH)+' months, not 24, for a second and independent reason: 24 months\n'+
-  'gives only 2 samples per calendar month, one short of the 3 the deseasonalizing\n'+
-  'climatology requires, so at 24 and 26 months the permutation test returned NO p-value\n'+
-  'at all. '+(12*CLIM_MIN_SAMPLES_PER_MONTH)+' months (12 calendar months x 3 samples) is the shortest window that can\n'+
-  'produce a complete climatology. Below it the tests now run on RAW values and say so.';
+  'floor is now '+CSD_MIN_WINDOW_MONTHS+' months, not 24, because at 24 months there are only 2 samples\n'+
+  'per calendar month and the deseasonalizing climatology needs 3, so the permutation test\n'+
+  'returned NO p-value at all at 24 and 26 months.\n'+
+  'v10.159 CORRECTION to the last sentence v10.158 wrote here ("below it the tests now run\n'+
+  'on RAW values and say so"): running on RAW values was MEASURED at a 10.4-39.8% false-\n'+
+  'positive rate against a nominal 5%, so it is gone. The climatology is now IMPUTED where\n'+
+  'it cannot be estimated directly, which brings the rate back to 4.5-6.2%; where even that\n'+
+  'is not possible, NO p-value is reported and the panel says why.';
 
 function buildToolkitTally(indicators) {
   var lines=[], nAvail=0, nAgree=0;
@@ -4871,53 +5582,59 @@ function permutationTestCorrDelta(beforeA, beforeB, afterA, afterB, nPerm){
   }
   var B=align(beforeA,beforeB), A=align(afterA,afterB);
   if(B.length<4 || A.length<4)
-    return {observedDelta:null, pValue:null, nPerm:0,
+    return {observedDelta:null, corrBefore:null, corrAfter:null, pValue:null, nPerm:0,
+            deseasonalized:false, permStatus:'unavailable',
+            permReason:'insufficient paired months ('+B.length+'/'+A.length+', need 4+ in each window)',
+            deseasonNote:'NOT TESTABLE - insufficient paired months ('+B.length+'/'+A.length+', need 4+ in each window)',
             note:'insufficient paired months ('+B.length+'/'+A.length+', need 4+ each)'};
 
-  // shared climatology across both windows, both nodes
-  // v10.158 W-01 FIX: this gate was >=24, the same structurally-dead threshold
-  // fixed in permutationTestDeltaFixed/permutationTestAC1Fixed - at 24 pooled
-  // months NO calendar month clears the >=3-samples climatology floor, every
-  // point is dropped and this returned 'too few months survived deseasonalizing'.
-  // Gate raised to CSD_DESEASON_MIN_MONTHS (36 = 12 x 3) and the resulting
-  // climatologies are checked for completeness on BOTH nodes; anything short of
-  // that runs on RAW paired values rather than returning null.
+  // shared climatology across both windows, both nodes.
+  // v10.159 W-01 REGRESSION FIX: v10.158 gated this at CSD_DESEASON_MIN_MONTHS
+  // and on a 12/12-complete climatology ON BOTH NODES, and ran on RAW paired
+  // values otherwise - the same uncalibrated path measured at 10.4-39.8% false-
+  // positive rate on the single-series version. S7D's default month boxes pool
+  // 30 months, so this ALWAYS took the raw path. Now: computeUsableClimatology()
+  // on each node (which imputes the calendar months it cannot estimate from
+  // their own samples), and if EITHER node cannot produce one, the test returns
+  // NO p-value rather than a raw one.
   var pooled=B.concat(A);
-  var deseason=false, deseasonNote='';
-  if(pooled.length>=CSD_DESEASON_MIN_MONTHS){
-    var ca=computeMonthlyClimatology(pooled.map(function(r){return {t:r.t,v:r.a};}));
-    var cb=computeMonthlyClimatology(pooled.map(function(r){return {t:r.t,v:r.b};}));
-    if(climatologyIsComplete(ca)&&climatologyIsComplete(cb)){
-      var dsB=[], dsA=[];
-      function ds(arr){
-        return arr.map(function(r){
-          var m=new Date(r.t).getUTCMonth();
-          return {t:r.t, a:r.a-ca[m].mean, b:r.b-cb[m].mean};
-        });
-      }
-      dsB=ds(B); dsA=ds(A);
-      if(dsB.length<4||dsA.length<4){
-        deseasonNote='RAW (not deseasonalized): too few paired months survived. Carries the v10.101 caveat.';
-      } else {
-        B=dsB; A=dsA; deseason=true;
-        deseasonNote='DESEASONALIZED against complete pooled climatologies on both nodes ('+
-          climatologyCoverageNote(ca)+' / '+climatologyCoverageNote(cb)+').';
-      }
-    } else {
-      deseasonNote='RAW (not deseasonalized): '+pooled.length+' paired months but an incomplete climatology ('+
-        climatologyCoverageNote(ca)+' / '+climatologyCoverageNote(cb)+'). Carries the v10.101 caveat.';
-    }
-  } else {
-    deseasonNote='RAW (not deseasonalized): '+pooled.length+' paired months is below the '+
-      CSD_DESEASON_MIN_MONTHS+'-month floor needed for a complete monthly climatology. The test still RUNS, '+
-      'on raw paired values, carrying the v10.101 seasonal-cycle caveat.';
+  var caRes=computeUsableClimatology(pooled.map(function(r){return {t:r.t,v:r.a};}));
+  var cbRes=computeUsableClimatology(pooled.map(function(r){return {t:r.t,v:r.b};}));
+  if(!caRes.ok || !cbRes.ok){
+    var whyCorr=(!caRes.ok?caRes.reason:cbRes.reason);
+    return {observedDelta:null, corrBefore:null, corrAfter:null, pValue:null, nPerm:0,
+            deseasonalized:false, permStatus:'unavailable', permReason:whyCorr,
+            deseasonNote:'NOT TESTABLE - '+whyCorr, note:'NOT TESTABLE - '+whyCorr};
   }
+  var ca=caRes.climatology, cb=cbRes.climatology;
+  var deseason=false, deseasonNote='';
+  var dsB=[], dsA=[];
+  function dsPair(arr){
+    return arr.map(function(r){
+      var m=new Date(r.t).getUTCMonth();
+      return {t:r.t, a:r.a-ca[m].mean, b:r.b-cb[m].mean};
+    });
+  }
+  dsB=dsPair(B); dsA=dsPair(A);
+  if(dsB.length<4||dsA.length<4){
+    return {observedDelta:null, corrBefore:null, corrAfter:null, pValue:null, nPerm:0,
+            deseasonalized:false, permStatus:'unavailable',
+            permReason:'too few paired months survived deseasonalizing',
+            deseasonNote:'NOT TESTABLE - too few paired months survived deseasonalizing',
+            note:'NOT TESTABLE - too few paired months survived deseasonalizing'};
+  }
+  B=dsB; A=dsA; deseason=true;
+  deseasonNote='DESEASONALIZED against complete pooled climatologies on both nodes ('+
+    climatologyCoverageNote(ca)+' / '+climatologyCoverageNote(cb)+').';
   function corr(arr){
     return jsPearsonCorr(arr.map(function(r){return r.a;}), arr.map(function(r){return r.b;}));
   }
   var cB=corr(B), cA=corr(A);
   if(cB===null||cA===null)
-    return {observedDelta:null, pValue:null, nPerm:0, note:'correlation unavailable'};
+    return {observedDelta:null, corrBefore:null, corrAfter:null, pValue:null, nPerm:0,
+            deseasonalized:deseason, permStatus:'unavailable',
+            permReason:'the paired correlation itself is not computable on these two windows',
+            deseasonNote:deseasonNote, note:'correlation unavailable'};
   var obs=cA-cB, all=B.concat(A), nB=B.length, cnt=0, valid=0;
   for(var i=0;i<nPerm;i++){
     var sh=all.slice();
@@ -4931,6 +5648,8 @@ function permutationTestCorrDelta(beforeA, beforeB, afterA, afterB, nPerm){
   }
   return {observedDelta:obs, corrBefore:cB, corrAfter:cA,
           pValue: valid>0 ? cnt/valid : null, nPerm:valid, deseasonalized:deseason,
+          permStatus: valid>0 ? 'ok' : 'unavailable',
+          permReason: valid>0 ? null : 'no shuffle produced a usable paired correlation',
           deseasonNote:deseasonNote};
 }
 
@@ -4981,9 +5700,22 @@ function getCalibratedThresholds(nMonths){
     if(Math.abs(keys[i]-(nMonths||24))<Math.abs(best-(nMonths||24))) best=keys[i];
   }
   var c=CSD_NULL_CALIBRATION[best];
-  return {ac1:c.ac1, varr:c.varr, n:c.n,
+  // v10.159 N3: 54 and 60 are NOT calibration keys - the measured Scripps null
+  // was cut at 24, 36 and 48 months only, so both land on 48 by nearest-match.
+  // That is the conservative direction (the null spread shrinks as the window
+  // grows, so a 48-month cutoff applied at 54 or 60 months is wider than the
+  // right one and fires LESS often), but the basis string said "nearest
+  // calibrated window 48mo" without saying the request was outside the
+  // calibrated range at all. It now says so plainly.
+  var req=(nMonths||24);
+  var extrapolated=(req>keys[keys.length-1]);
+  return {ac1:c.ac1, varr:c.varr, n:c.n, calibratedWindow:best, extrapolated:extrapolated,
     basis:'95th pct of |delta| under a measured no-event null (Scripps Pier CTD, '+
-      c.n+' splits, nearest calibrated window '+best+'mo)'};
+      c.n+' splits, nearest calibrated window '+best+'mo)'+
+      (extrapolated?' - NOTE: '+req+' months is BEYOND the calibrated range (24/36/48mo were the '+
+        'only lengths measured), so the '+best+'mo cutoff is reused. The null spread narrows as '+
+        'the window lengthens, so this cutoff is WIDER than a '+req+'mo one would be and fires '+
+        'less often - conservative, but not calibrated at this length.':'')};
 }
 
 // Attach to ANY verdict derived from a threshold rather than a p-value.
@@ -4992,6 +5724,94 @@ function thresholdOnlyWarning(){
     'Fixed cutoffs were measured firing on up to 80% of windows at a site where '+
     'nothing happened. Read as a direction indicator, not as evidence.';
 }
+// ============================================================================
+// v10.159 W-01 item 2 + W-02 DISCLOSURE HELPERS.
+// Two separate defects made the same class of mistake: a machine-readable flag
+// was returned and then never read.
+//  (a) permutationTestDeltaFixed() has returned `deseasonalized` since v10.158
+//      and `deseasonNote` on every return path, but exactly ONE of six render
+//      sites printed it (STEP 3 COMPARE). STEP 4's sweet-spot table, S7D's
+//      per-node AC1 column, S7D's pair-coupling column, S7E and S7F all printed
+//      "p=..." bare.
+//  (b) jsNodeStatsFixed() has returned climatologySource, climatologyNote,
+//      ac1PairsUsed, ac1PairsDropped and ac1MaxGapMonths since v10.158 and NO
+//      caller read any of them, while the file claimed the reason was "on
+//      screen" and said so "loudly".
+// Rather than repeat the same five lines at every site, every p-value in this
+// file now goes through permP()/permVerdictTag() and every jsNodeStatsFixed
+// result through nodeStatsDisclosure(). Adding a render site later gets the
+// disclosure for free; forgetting to call them is visible as a bare p-value.
+// permUsable() is the GATE: significance wording is allowed only when the test
+// produced a p-value AND it was computed on a properly deseasonalized series.
+function permUsable(t){
+  return !!(t && t.pValue!==null && t.pValue!==undefined && t.deseasonalized===true);
+}
+// Why there is no p-value, in one line, for a table cell.
+function permWhyNot(t){
+  if(!t) return 'NOT TESTABLE (test did not run)';
+  if(t.permStatus==='pending'||t.permStatus===undefined&&t.pValue===undefined) return 'pending';
+  if(t.pValue===null||t.pValue===undefined) return 'NOT TESTABLE';
+  if(t.deseasonalized!==true) return 'NOT CALIBRATED (raw series)';
+  return '';
+}
+// The ONLY approved way to render a permutation p-value in this file.
+function permP(t, decimals){
+  if(permUsable(t)) return 'p='+t.pValue.toFixed(decimals===undefined?3:decimals);
+  return permWhyNot(t);
+}
+// Significance wording, gated on permUsable() so a p-value computed on a raw,
+// non-deseasonalized series can never be dressed up as "likely real".
+function permVerdictTag(t){
+  if(!permUsable(t)) return '';
+  if(t.pValue<0.01) return ' *** likely real (p<0.01)';
+  if(t.pValue<0.05) return ' * likely real (p<0.05)';
+  return ' (not significant)';
+}
+// The long-form reason, for the explanatory block under a table.
+function permSeriesNote(t, label){
+  if(!t) return '';
+  if(permUsable(t)) return (label?label+': ':'')+(t.deseasonNote||'');
+  var why=t.permReason||t.note||t.error||'no reason recorded';
+  return (label?label+': ':'')+'NO p-VALUE REPORTED. '+why;
+}
+// v10.159 W-02: the five jsNodeStatsFixed fields, rendered. Returns '' when
+// there is genuinely nothing to disclose (a fully deseasonalized, gapless
+// series), so a clean run does not gain noise.
+function nodeStatsDisclosure(st, label){
+  if(!st) return '';
+  var bits=[];
+  var noteSaysRaw = !!(st.climatologyNote && st.climatologyNote.indexOf('NOT DESEASONALIZED')>=0);
+  if(st.deseasonalized!==true && !noteSaysRaw) bits.push('NOT DESEASONALIZED - these AC1/variance figures are RAW and carry the '+
+    'v10.101 seasonal-cycle caveat; do not compare them against a deseasonalized number');
+  if(st.climatologySource) bits.push('climatology: '+st.climatologySource);
+  // climatologyNote already carries the GAPPED SERIES sentence when there is one,
+  // so the pair audit is only spelled out separately if the note does not.
+  var noteHasGap = !!(st.climatologyNote && st.climatologyNote.indexOf('GAPPED SERIES')>=0);
+  if(st.ac1PairsDropped && !noteHasGap) bits.push(st.ac1PairsDropped+' of '+(st.ac1PairsUsed+st.ac1PairsDropped)+
+    ' array-adjacent pairs are NOT one calendar month apart (largest gap '+
+    (st.ac1MaxGapMonths||0)+' months) and are excluded from the AC1');
+  if(st.climatologyNote) bits.push(st.climatologyNote);
+  if(bits.length===0) return '';
+  return (label?label+' - ':'')+bits.join(' | ');
+}
+// Collapses the disclosures for a set of nodes into the lines a panel appends,
+// de-duplicating identical messages so a 9-node network does not print the
+// same sentence nine times.
+function nodeStatsDisclosureLines(entries){
+  var seen={}, out=[];
+  entries.forEach(function(e){
+    var d=nodeStatsDisclosure(e.st, e.label);
+    if(!d) return;
+    var body=d.indexOf(' - ')>=0?d.substring(d.indexOf(' - ')+3):d;
+    if(seen[body]){ seen[body].labels.push(e.label); return; }
+    seen[body]={labels:[e.label], body:body};
+    out.push(seen[body]);
+  });
+  return out.map(function(o){
+    return '  ['+o.labels.join(', ')+'] '+o.body;
+  });
+}
+
 
 // v10.151 FIX 5: the confidence label now CANNOT exceed the p-value.
 // WHY: a real Looe Key run printed "NO STATISTICALLY SIGNIFICANT SIGNAL,
@@ -5120,7 +5940,7 @@ function friendlyEEError(errText) {
 
 // S13 - CSD EARLY WARNING TEST (v10.149)
 // ============================================================
-panel.add(sHead('S13 - CSD EARLY WARNING TEST (v10.158)','#1a4a4a'));
+panel.add(sHead('S13 - CSD EARLY WARNING TEST (v10.159)','#1a4a4a'));
 panel.add(lbl('Tests whether a reef shows "critical slowing down" (CSD, Scheffer et al. 2009) — a statistical warning sign that can appear before ecological collapse. The classic Scheffer signature is BOTH indicators rising together: autocorrelation (AC1) AND variance.',7,'#226666'));
 panel.add(lbl('v10.90: AC1 is weighted as the PRIMARY indicator throughout, per Dakos et al. 2012 (Ecology 93:264-271), which found autocorrelation "relatively robust" while variance can rise OR fall near a real transition. A variance-only signal (AC1 not rising) is now explicitly flagged as weaker evidence than an AC1-confirmed one.',7,'#886600'));
 panel.add(lbl('v10.91: the reverse case - AC1 RISING while variance FALLS - is treated as a valid, still-meaningful signal, not a weak/contradicted one. Dakos et al. document this exact pattern (their Fig. 2c, Fig. 4): variance can decrease near a genuine transition while AC1 keeps rising regardless.',7,'#886600'));
@@ -5131,8 +5951,8 @@ panel.add(lbl('STEP 1: Enter the study location',7,'#115511'));
 panel.add(lbl('STEP 2: Run a BEFORE window (calm baseline), then an AFTER window (the suspect period)',7,'#aa3300'));
 panel.add(lbl('STEP 3: Click COMPARE - auto-picks a deep-water control site, then scores a TOOLKIT of independent indicators (temporal AC1, temporal variance, spatial variance, spatial autocorrelation, study-control synchronization) rather than trusting any single one, with a colour-coded verdict box',7,'#334466'));
 panel.add(lbl('v10.101 CAVEAT: the Study-Control Synchronization indicator and the core AC1 statistic both use RAW/linearly-detrended monthly SST, not deseasonalized anomalies. Two ocean points a short distance apart share a strong seasonal cycle (both warm in summer, cool in winter) regardless of any real dynamical change, which can push correlation and AC1 toward a high baseline for reasons unrelated to critical slowing down. Look at the DELTA (change vs BEFORE), not the absolute value, and treat these two indicators as lower-confidence until a deseasonalized version is built and tested.',7,'#aa3300'));
-panel.add(lbl('STEP 4 (optional): FIND SWEET SPOT auto-tests 6 AFTER window lengths (v10.158: 12, 24, 36, 48, 54, 60 - the four at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor are the ones that can support inference; 12 and 24 are shown for diagnostics only), compares LOCAL vs REGIONAL warming at each one, and tells you exactly which window shows the clearest - and Scheffer-validated - signal',7,'#334466'));
-panel.add(lbl('v10.95 CAUTION: testing 6 windows and picking the most dramatic one is a classic multiple-comparisons trap - some window will look "significant" by chance alone. The tool now flags an ISOLATED result (only 1 window leans local) vs a ROBUST one (several neighbouring windows agree). Best practice: pick your AFTER window from independent evidence (a documented event date), not by letting this scan choose for you.',7,'#886600'));
+panel.add(lbl('STEP 4 (optional): FIND SWEET SPOT auto-tests '+CSD_SWEET_SPOT_NWINDOWS+' AFTER window lengths ('+CSD_SWEET_SPOT_WINDOWS.join(', ')+' - the '+csdSweetSpotPoweredList().length+' at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor are the ones that can support inference; the rest are shown for diagnostics only), compares LOCAL vs REGIONAL warming at each one, and tells you exactly which window shows the clearest - and Scheffer-validated - signal. v10.159: a window whose REAL span repeats a shorter one (because the record ends first) is marked DUPLICATE and excluded from every tally.',7,'#334466'));
+panel.add(lbl('v10.95 CAUTION: testing '+CSD_SWEET_SPOT_NWINDOWS+' windows and picking the most dramatic one is a classic multiple-comparisons trap - some window will look "significant" by chance alone. The tool now flags an ISOLATED result (only 1 window leans local) vs a ROBUST one (several neighbouring windows agree). Best practice: pick your AFTER window from independent evidence (a documented event date), not by letting this scan choose for you.',7,'#886600'));
 panel.add(lbl('If any step shows a red box saying "TEMPORARY EARTH ENGINE HICCUP" - that is a server/connection blip, not a data problem. Your inputs are untouched; just wait a few seconds and press the same button again.',7,'#886600'));
 panel.add(legDiv());
 
@@ -5478,9 +6298,7 @@ var csdCompareBtn=ui.Button({
           var afterVals = (afterByNode['Study']||[]).map(function(s){return s.v;});
           var ac1Test = permutationTestDeltaFixed(beforeByNode['Study']||[], afterByNode['Study']||[], statAC1ForPerm, 500);
           var varTest = permutationTestDeltaFixed(beforeByNode['Study']||[], afterByNode['Study']||[], statVarRatioForPerm, 500);
-          function fmtP(v){ return v!==null?v.toFixed(3):'n/a'; }
           function fmtD(v){ return v!==null?(v>0?'+':'')+v.toFixed(3):'n/a'; }
-          var sigLabel=function(p){ return p===null?'':(p<0.05?' *** likely real (p<0.05)':p<0.10?' * borderline (p<0.10)':' not significant'); };
           var lines=['=== PERMUTATION TEST (real p-value, 500 shuffles) ==='];
           lines.push('This answers "would random relabeling of these same months produce a delta');
           lines.push('this big, just by chance?" - a genuine statistical test, unlike the >0.01/>0.15');
@@ -5491,12 +6309,12 @@ var csdCompareBtn=ui.Button({
           if(ac1Test.observedDelta===null){
             lines.push('AC1: '+(ac1Test.note||'unavailable'));
           } else {
-            lines.push('AC1 delta='+fmtD(ac1Test.observedDelta)+', p='+fmtP(ac1Test.pValue)+sigLabel(ac1Test.pValue)+' (n='+ac1Test.nPerm+' valid shuffles)');
+            lines.push('AC1 delta='+fmtD(ac1Test.observedDelta)+', '+permP(ac1Test)+permVerdictTag(ac1Test)+' (n='+ac1Test.nPerm+' valid shuffles)');
           }
           if(varTest.observedDelta===null){
             lines.push('Variance ratio delta='+(varTest.note||'unavailable'));
           } else {
-            lines.push('Variance ratio delta='+fmtD(varTest.observedDelta)+'x, p='+fmtP(varTest.pValue)+sigLabel(varTest.pValue)+' (n='+varTest.nPerm+' valid shuffles)');
+            lines.push('Variance ratio delta='+fmtD(varTest.observedDelta)+'x, '+permP(varTest)+permVerdictTag(varTest)+' (n='+varTest.nPerm+' valid shuffles)');
           }
           lines.push('');
           lines.push('p<0.05 means: fewer than 1 in 20 random relabelings of these months produced');
@@ -5504,9 +6322,17 @@ var csdCompareBtn=ui.Button({
           // v10.158 W-01: state which series the test actually ran on. Below the
           // 36-month floor it now runs on RAW values instead of returning null,
           // and the reader has to know which of the two produced these numbers.
-          if(ac1Test.deseasonNote){
-            lines.push('');
-            lines.push('SERIES USED: '+ac1Test.deseasonNote);
+          // v10.159 W-01: the p-values above are emitted ONLY on a properly
+          // deseasonalized series - permutationTestDeltaFixed() now returns no
+          // p-value at all rather than a raw-series one - and permP()/
+          // permVerdictTag() gate the significance wording on the machine-
+          // readable `deseasonalized` flag, not on prose.
+          lines.push('');
+          lines.push('SERIES USED: '+permSeriesNote(ac1Test));
+          if(!permUsable(ac1Test)||!permUsable(varTest)){
+            lines.push('WHY NO p-VALUE: a permutation p-value computed on a series whose seasonal cycle');
+            lines.push('has not been removed is not calibrated - measured false-positive rate 10.4-39.8%');
+            lines.push('against a nominal 5% (v10.159 W-01). Nothing is reported rather than that.');
           }
           csdPermTestV.setValue(lines.join('\n'));
           csdPermTestV.style().set('color','#552266');
@@ -5528,27 +6354,36 @@ var csdCompareBtn=ui.Button({
           // weighting philosophy already used throughout this tool (Dakos
           // et al. 2012), but driven by p<0.05 significance instead of the
           // old >0.01/>0.15 heuristic thresholds.
-          var ac1Sig = ac1Test.pValue!==null && ac1Test.pValue<0.05;
+          // v10.159 W-01 item 2: gated on permUsable(), the machine-readable
+          // deseasonalized flag, not on the p-value alone.
+          var ac1Sig = permUsable(ac1Test) && ac1Test.pValue<0.05;
           var ac1Rising = ac1Test.observedDelta!==null && ac1Test.observedDelta>0;
-          var varSig = varTest.pValue!==null && varTest.pValue<0.05;
+          var varSig = permUsable(varTest) && varTest.pValue<0.05;
           var varRising = varTest.observedDelta!==null && varTest.observedDelta>0;
           var statText, statCol, statBg;
-          if(ac1Test.observedDelta===null && varTest.observedDelta===null){
-            statText='PERMUTATION TEST UNAVAILABLE - insufficient valid months for a p-value.\nFalling back to the heuristic threshold verdict below.';
+          // v10.159 W-01 item 2: "NO SIGNIFICANT SIGNAL" and "NOT TESTABLE" are
+          // completely different statements and this box used to print the first
+          // in both cases. If neither test produced a usable p-value it now says
+          // so and gives the reason, instead of implying the data were tested and
+          // came back clean.
+          if(!permUsable(ac1Test) && !permUsable(varTest)){
+            statText='NOT TESTABLE - no p-value could be produced for this window, so this box\n'+
+              'is NOT saying "no signal". Reason: '+(ac1Test.permReason||varTest.permReason||ac1Test.note||'not recorded')+'\n'+
+              'Falling back to the heuristic threshold verdict below, which has no known false-positive rate.';
             statCol='#886600'; statBg='#fff4dd';
           } else if(ac1Sig && ac1Rising){
-            statText='STATISTICALLY SIGNIFICANT LOCAL CSD SIGNAL (AC1-confirmed, p='+ac1Test.pValue.toFixed(3)+')\n'+
+            statText='STATISTICALLY SIGNIFICANT LOCAL CSD SIGNAL (AC1-confirmed, '+permP(ac1Test)+')\n'+
               'AC1 rose by a margin fewer than 1 in 20 random reshuffles of these months would produce by chance -\n'+
               'the strongest evidence this tool can currently show for a genuine resilience-loss signal.';
             statCol='#880000'; statBg='#ffe0e0';
           } else if(varSig && varRising){
-            statText='SIGNIFICANT VARIANCE-ONLY SIGNAL (p='+varTest.pValue.toFixed(3)+') - AC1 not significant\n'+
-              '(p='+(ac1Test.pValue!==null?ac1Test.pValue.toFixed(3):'n/a')+'). Per Dakos et al. 2012, a variance-only rise is weaker\n'+
+            statText='SIGNIFICANT VARIANCE-ONLY SIGNAL ('+permP(varTest)+') - AC1 not significant\n'+
+              '('+permP(ac1Test)+'). Per Dakos et al. 2012, a variance-only rise is weaker\n'+
               'evidence than an AC1-confirmed one - worth noting, not yet a strong CSD signal.';
             statCol='#886600'; statBg='#fff4dd';
           } else {
-            statText='NO STATISTICALLY SIGNIFICANT SIGNAL (p>=0.05 for both AC1 and variance)\n'+
-              'AC1 p='+(ac1Test.pValue!==null?ac1Test.pValue.toFixed(3):'n/a')+' | Variance p='+(varTest.pValue!==null?varTest.pValue.toFixed(3):'n/a')+'\n'+
+            statText='NO STATISTICALLY SIGNIFICANT SIGNAL (p>=0.05 where a p-value exists)\n'+
+              'AC1 '+permP(ac1Test)+' | Variance '+permP(varTest)+'\n'+
               'Neither delta is large enough to rule out ordinary random noise.';
             statCol='#226644'; statBg='#e8f4ff';
           }
@@ -5577,7 +6412,14 @@ var csdCompareBtn=ui.Button({
             var studyBeforeTV = beforeByNode['Study']||[];
             var studyAfterTV = afterByNode['Study']||[];
             var pooledTV = studyBeforeTV.concat(studyAfterTV);
-            var climatology = computeMonthlyClimatology(pooledTV);
+            // v10.159 W-01/W-02: same imputing climatology the permutation test
+            // uses, so this panel and the p-value below cannot describe different
+            // series. computeUsableClimatology() falls back to the plain monthly
+            // means only for the display path, where showing SOMETHING labelled
+            // honestly beats blanking the panel.
+            var _climRes = computeUsableClimatology(pooledTV);
+            var climatology = _climRes.ok ? _climRes.climatology : computeMonthlyClimatology(pooledTV);
+            var climatologyUsable = _climRes.ok;
             var rawBeforeStats = jsNodeStats(beforeVals);
             var rawAfterStats = jsNodeStats(afterVals);
             var deseasonBeforeVals = deseasonalizeSeries(studyBeforeTV, climatology).map(function(s){return s.v;}).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);});
@@ -5588,22 +6430,19 @@ var csdCompareBtn=ui.Button({
             function fmtV(v){ return v!==null?v.toFixed(2)+'x':'n/a'; }
             function fmtDlt(a,b){ return (a!==null&&b!==null)?((a-b>0?'+':'')+(a-b).toFixed(3)):'n/a'; }
             function fmtDltV(a,b){ return (a!==null&&b!==null)?((a-b>0?'+':'')+(a-b).toFixed(2)+'x'):'n/a'; }
-            // v10.152 FIX 8: Object.keys() now counts the _meta key added in
-            // v10.151, which produced the impossible "13 of 12 calendar
-            // months" in a real run. Use the meta count when present.
-            var monthsUsedForClim = (climatology && climatology._meta)
-              ? climatology._meta.nUsableMonths
-              : Object.keys(climatology).length;
             var deseasonLines=['=== DESEASONALIZED AC1/VARIANCE (v10.127) ==='];
             deseasonLines.push('Removes each calendar month\'s average (this site\'s own climatology) before');
             deseasonLines.push('computing AC1/variance, instead of using raw monthly values - addresses the');
             deseasonLines.push('v10.101 disclosed caveat that shared seasonal cycling can inflate AC1');
             deseasonLines.push('independent of any real dynamics. Zero extra EE calls - reuses the same raw');
             deseasonLines.push('series already fetched for the permutation test above.');
-            deseasonLines.push('DISCLOSED LIMIT: climatology built from only '+monthsUsedForClim+' of 12 calendar');
-            deseasonLines.push('months cleared the >=3-samples-per-month floor added in v10.151'+
-              ((climatology&&climatology._meta&&climatology._meta.nRejectedMonths>0)?
-                (' ('+climatology._meta.nRejectedMonths+' month(s) rejected as too sparse)'):'')+'.');
+            // v10.159 W-02: the coverage line is now generated from the climatology
+            // itself, so an IMPUTED month is described as imputed rather than
+            // counted as "12/12 cleared the floor".
+            deseasonLines.push('CLIMATOLOGY: '+climatologyCoverageNote(climatology)+'.');
+            if(!climatologyUsable) deseasonLines.push('WARNING: this record could not support the v10.159 imputing climatology ('+
+              _climRes.reason+') - the rows below use the plain per-calendar-month means and DROP every reading '+
+              'whose calendar month missed the floor, so they are a half-deleted series. No p-value is reported for it.');
             deseasonLines.push('A climatology from few samples per month is still a noisy estimate, not a');
             deseasonLines.push('robust multi-decade seasonal average - treat as exploratory.');
             deseasonLines.push(repeatChar('\u2500',50));
@@ -5869,7 +6708,12 @@ function runControlCSD(bestCtrl, b, a) {
       // the toolkit and the p-values finally describe one quantity.
       var pairedB=b, pairedA=a, pooledClimNote='';
       if(b.seriesTV && a.seriesTV){
-        var pooledClim=computeMonthlyClimatology(b.seriesTV.concat(a.seriesTV));
+        // v10.159 W-01/W-02: the imputing climatology, so a gappy record is
+        // deseasonalized instead of silently falling back to raw inside
+        // jsNodeStatsFixed(). Falls back to the plain monthly means only so the
+        // display path still has something to show, labelled below.
+        var _pooledClimRes=computeUsableClimatology(b.seriesTV.concat(a.seriesTV));
+        var pooledClim=_pooledClimRes.ok?_pooledClimRes.climatology:computeMonthlyClimatology(b.seriesTV.concat(a.seriesTV));
         var pStatB=jsNodeStatsFixed(b.seriesTV, pooledClim);
         var pStatA=jsNodeStatsFixed(a.seriesTV, pooledClim);
         if(pStatB.realAC1!==null && pStatA.realAC1!==null){
@@ -5881,12 +6725,14 @@ function runControlCSD(bestCtrl, b, a) {
                    varFirst:pStatA.varFirstHalf, varSecond:pStatA.varSecondHalf,
                    nMonths:pStatA.nValidMonths, lat:a.lat, lon:a.lon,
                    startDate:a.startDate, months:a.months};
-          var cm=pooledClim._meta||{};
-          pooledClimNote='v10.151: BOTH windows recomputed against ONE pooled climatology '+
-            '('+(cm.nUsableMonths||0)+'/12 calendar months had >='+(cm.minSamples||3)+' samples'+
-            ((cm.nRejectedMonths||0)>0?', '+cm.nRejectedMonths+' month(s) rejected as too sparse':'')+
-            '). These numbers now match the permutation test below; STEP 2\'s own per-window '+
-            'figures above were computed separately and may differ.';
+          // v10.159 W-02: coverage described by climatologyCoverageNote(), which
+          // distinguishes observed months from imputed ones, and the two
+          // jsNodeStatsFixed disclosures are appended instead of discarded.
+          pooledClimNote='v10.151: BOTH windows recomputed against ONE pooled climatology ('+
+            climatologyCoverageNote(pooledClim)+'). These numbers now match the permutation test below; '+
+            'STEP 2\'s own per-window figures above were computed separately and may differ.';
+          var _pcDisc=nodeStatsDisclosureLines([{label:'BEFORE',st:pStatB},{label:'AFTER',st:pStatA}]);
+          if(_pcDisc.length>0) pooledClimNote+='\nSERIES QUALITY (v10.159 W-02):\n'+_pcDisc.join('\n');
         } else {
           pooledClimNote='v10.151: pooled-climatology recompute returned no usable value - '+
             'falling back to STEP 2\'s per-window figures, which may not be directly comparable.';
@@ -6435,7 +7281,7 @@ panel.add(lbl('Tests 6, 9, 12, 24, 36 and 48-month AFTER windows. For each one i
 // favour of 36 and 48, so the same 6 windows now include lengths at which a
 // real change can actually be detected.
 panel.add(lbl(CSD_POWER_TABLE_TXT,7,'#aa3300','#fff1e0'));
-panel.add(lbl('v10.158: the 12 and 24-month rows are shown for diagnostics ONLY (24 was the v10.156 floor; it is now '+CSD_MIN_WINDOW_MONTHS+', because at 24 months the permutation test returns no p-value at all). They are labelled UNDERPOWERED, excluded from the sweet-spot pick, excluded from the ROBUSTNESS tally and excluded from the significance counts. Any window whose first-half variance is near-zero is likewise flagged as a variance ARTIFACT (same rule as S7C/S7D) - but v10.157: that flag now excludes only the VARIANCE claims from that window, and only for the SITE that tripped it. AC1 is measured separately and survives it, exactly as it already did in STEP 3 COMPARE.',7,'#aa3300'));
+panel.add(lbl('v10.158: the 12 and 24-month rows are shown for diagnostics ONLY (24 was the v10.156 floor; it is now '+CSD_MIN_WINDOW_MONTHS+' on measured power grounds - see the power table in the results). v10.159 CORRECTION to what this label used to say: it claimed "at 24 months the permutation test returns no p-value at all". That was true of the v10.158 climatology rule and is NOT true now - the climatology is pooled across BEFORE+AFTER, so these rows do get a p-value; they are excluded because 24 months cannot support inference, not because the test cannot run. They are labelled UNDERPOWERED, excluded from the sweet-spot pick, excluded from the ROBUSTNESS tally and excluded from the significance counts. v10.159 also marks any row whose REAL span repeats a shorter row\'s (because the OISST record ends before the window does) as a DUPLICATE and excludes it from the same tallies and from the Bonferroni divisor. Any window whose first-half variance is near-zero is likewise flagged as a variance ARTIFACT (same rule as S7C/S7D) - but v10.157: that flag now excludes only the VARIANCE claims from that window, and only for the SITE that tripped it. AC1 is measured separately and survives it, exactly as it already did in STEP 3 COMPARE.',7,'#aa3300'));
 panel.add(lbl('This fires 17 Earth Engine calls in parallel (1 control-BEFORE + 6 study-AFTER + 6 control-AFTER + 4 for the real permutation-test p-values below) and can take 30-120 seconds - a live counter below shows progress so it never looks frozen.',7,'#886600'));
 panel.add(lbl('AFTER start date (YYYY-MM-DD):',7,'#334466'));
 var csdAfterStartInput=ui.Textbox({
@@ -6506,7 +7352,8 @@ var csdMultiWindowBtn=ui.Button({
     // The longest entry also sets the single AFTER fetch length (maxWindowLen
     // below), so 60 keeps that fetch inside the same 60-month ceiling STEP 2
     // enforces rather than asking EE for a record the user may not have.
-    var windowLengths=[12,24,36,48,54,60];
+    // v10.159 N2: one definition, at module scope, shared with the panel labels.
+    var windowLengths=CSD_SWEET_SPOT_WINDOWS.slice();
     var smartCtrl=getSmartControlSite(b.lat,b.lon);
 
     // Reset styling from any previous run
@@ -6585,7 +7432,13 @@ var csdMultiWindowBtn=ui.Button({
           if(!beforeTV || !afterTVFull) return null;
           var afterTV = afterTVFull.slice(0, w);
           if(beforeTV.length<4 || afterTV.length<4) return null;
-          var clim = computeMonthlyClimatology(beforeTV.concat(afterTV));
+          // v10.159 W-01/W-02: the imputing climatology. Under v10.158 this
+          // returned null on any record whose 12/12 climatology was incomplete,
+          // so on a gappy record STEP 4 silently stopped being comparable with
+          // STEP 3 COMPARE at every window length.
+          var _fssClimRes = computeUsableClimatology(beforeTV.concat(afterTV));
+          if(!_fssClimRes.ok) return null;
+          var clim = _fssClimRes.climatology;
           // v10.158 W-03: jsNodeStatsFixed now REFUSES an incomplete pooled
           // climatology and falls back to raw. That fallback is correct, but it
           // is NOT "recomputed against one pooled climatology", so it must not
@@ -6599,13 +7452,16 @@ var csdMultiWindowBtn=ui.Button({
           if(!sB.deseasonalized || !sA.deseasonalized) return null;
           return {before:sB, after:sA};
         }
-        var fssPooledUsed=0, fssPooledTried=0;
+        var fssPooledUsed=0, fssPooledTried=0, fssDisc=[];
 
         var rows=[], bestW=null, bestDiv=-Infinity, bestRow=null;
         var bestAc1W=null, bestAc1Rise=-Infinity, bestAc1Row=null;
         // v10.92: table now shows Study \u0394AC1 too - previously only \u0394Var
         // was visible per window, making it impossible to scan for the
         // AC1-rising / variance-falling pattern Dakos et al. 2012 documents.
+        // v10.159 W-03: "Window" is the nominal length; a bracketed number after
+        // it is the REAL count of valid months that window resolved to, shown
+        // whenever the record ends before the window does.
         var header='Window | Study \u0394Var | Study \u0394AC1 | Ctrl \u0394Var | Divergence | Verdict';
         rows.push(header);
         rows.push(repeatChar('\u2500',72));
@@ -6613,6 +7469,56 @@ var csdMultiWindowBtn=ui.Button({
         // v10.153 FIX 10: calibrated per tested window length below.
         var THRESH=getCalibratedThresholds(b.months||CSD_MIN_WINDOW_MONTHS).varr; // v10.158 W-01: fallback was the now-refused 24
         var allRows=[];
+
+        // ============================================================
+        // v10.159 W-03 FIX (BLOCKER) - THE 54- AND 60-MONTH ROWS WERE NOT
+        // INDEPENDENT TESTS, AND THE v10.158 RE-CUT IS WHAT MADE THEM SO.
+        // windowLengths is [12,24,36,48,54,60] and maxWindowLen is 60, but
+        // mkMoSSTRange() builds those months unconditionally: months past the
+        // end of OISST come back masked and are dropped. NOTHING validated that
+        // the AFTER start leaves 60 months of record - the date-box check only
+        // tests that the box is non-empty. With the AFTER start the sidebar's
+        // worked example tells users to type (2023-06-01) OISST runs to about
+        // 2026-08, i.e. 39 months, so the 48-, 54- and 60-month rows ALL
+        // resolve to the same 39 actual months:
+        //     nominal w | actual valid months
+        //        36     |  36
+        //        48     |  39
+        //        54     |  39
+        //        60     |  39
+        // rowUnderpowered tested the NOMINAL w, so all four counted as powered:
+        // nPoweredWindows=4 gave a Bonferroni alpha of 0.0125 for TWO distinct
+        // hypotheses, and testedRows / localLeaningRows / ac1TestedRows /
+        // uncorrectedLocalCount triple-counted one result into "3 of 4 windows
+        // lean LOCAL". Under v10.156's list the powered rows resolved to 24/36/39
+        // - genuinely distinct - so the re-cut made this strictly worse.
+        // FIX: the REAL valid month count is computed per row ONCE here, shared
+        // by the stats table and the permutation table below, and a row whose
+        // actual span equals a SHORTER row's actual span is marked a duplicate.
+        // Duplicates are excluded from nPoweredWindows, the Bonferroni divisor,
+        // uncorrectedLocalCount, testedRows, ac1TestedRows, bestW and bestAc1W,
+        // and are labelled on screen as a duplicate of the shorter row rather
+        // than silently dropped.
+        function fssActualAfterMonths(w){
+          if(poolStudyAfterFull) return Math.min(w, poolStudyAfterFull.length);
+          var _sr=multiRes['study_'+w];
+          return (_sr&&_sr.nValidMonths!==null&&_sr.nValidMonths!==undefined)?_sr.nValidMonths:0;
+        }
+        var fssWActual=[], fssDuplicateOf=[], _wi2, _wj2;
+        for(_wi2=0;_wi2<windowLengths.length;_wi2++){
+          var _wa=fssActualAfterMonths(windowLengths[_wi2]);
+          fssWActual.push(_wa);
+          var _dup=null;
+          for(_wj2=0;_wj2<_wi2;_wj2++){
+            if(_wa>0 && fssWActual[_wj2]===_wa){ _dup=windowLengths[_wj2]; break; }
+          }
+          fssDuplicateOf.push(_dup);
+        }
+        var nPoweredWindows=0;
+        for(_wi2=0;_wi2<windowLengths.length;_wi2++){
+          if(fssWActual[_wi2]>=CSD_MIN_WINDOW_MONTHS && fssDuplicateOf[_wi2]===null) nPoweredWindows++;
+        }
+        var fssShortAfter = (poolStudyAfterFull && poolStudyAfterFull.length < windowLengths[windowLengths.length-1]);
 
         for(var wi=0;wi<windowLengths.length;wi++){
           var w=windowLengths[wi];
@@ -6640,6 +7546,12 @@ var csdMultiWindowBtn=ui.Button({
           var rowPooled = !!(_ps && _pc);
           if(rowPooled){
             fssPooledUsed++;
+            // v10.159 W-02: jsNodeStatsFixed's five disclosure fields were computed
+            // for every one of these windows and read by nobody.
+            fssDisc.push({label:'study '+w+'mo BEFORE', st:_ps.before});
+            fssDisc.push({label:'study '+w+'mo AFTER',  st:_ps.after});
+            fssDisc.push({label:'ctrl '+w+'mo BEFORE',  st:_pc.before});
+            fssDisc.push({label:'ctrl '+w+'mo AFTER',   st:_pc.after});
             sVR=_ps.after.varTrendRatio;  sAC1=_ps.after.realAC1;  sVF=_ps.after.varFirstHalf;
             bVR=_ps.before.varTrendRatio; bAC1=_ps.before.realAC1; bVF=_ps.before.varFirstHalf;
             cVR=_pc.after.varTrendRatio;  cAC1=_pc.after.realAC1;  cVF=_pc.after.varFirstHalf;
@@ -6677,18 +7589,34 @@ var csdMultiWindowBtn=ui.Button({
           // rowUnderpowered is unchanged and still excludes the row from
           // EVERYTHING, AC1 included - a sub-24-month window cannot support
           // any inference, variance or autocorrelation.
-          var rowStudyVarArtifact = isVarRatioArtifact(bVF, sDVar) || isVarRatioArtifact(sVF, sVR) ||
-                                    isVarRatioArtifact(bVF, bVR);
-          var rowCtrlVarArtifact  = isVarRatioArtifact(cVF, cVR) || isVarRatioArtifact(cBVF, cDVar);
+          // v10.159 S3 FIX: STEP 3 COMPARE runs SIX checks - three per side, in the
+          // same shape on both: (BEFORE varFirst, BEFORE ratio), (AFTER varFirst,
+          // AFTER ratio) and (BEFORE varFirst, the delta). STEP 4 ran three on the
+          // study side and only TWO on the control side: the control's own
+          // BEFORE-window ratio check, isVarRatioArtifact(cBVF, cBVarW), was
+          // missing, so v10.157's "this mirrors STEP 3 exactly" was not true.
+          // Reproduced: cBVF=0.0005, cBVar=20.0x, cVF=0.58, cVR=18.0 gives
+          // cDVar=-2.0, no flag, divScored=+10.20 and a verdict of
+          // "LOCAL CSD + AC1 CONFIRMED" on a control baseline STEP 3 would have
+          // excluded outright. The sixth check is added; the two sides now run the
+          // identical three checks each, so the claim is true.
+          var rowStudyVarArtifact = isVarRatioArtifact(bVF, bVR) || isVarRatioArtifact(sVF, sVR) ||
+                                    isVarRatioArtifact(bVF, sDVar);
+          var rowCtrlVarArtifact  = isVarRatioArtifact(cBVF, cBVarW) || isVarRatioArtifact(cVF, cVR) ||
+                                    isVarRatioArtifact(cBVF, cDVar);
           var rowVarArtifact = rowStudyVarArtifact || rowCtrlVarArtifact;
           // v10.156 BUG-08: a window shorter than CSD_MIN_WINDOW_MONTHS cannot
           // support inference at all (measured power 5-28% even AT 24 months,
           // and v10.158 W-01: at 24-26 months there is no p-value at all).
-          var rowUnderpowered = (w < CSD_MIN_WINDOW_MONTHS);
+          // v10.159 W-03: the powered test is on the REAL number of valid months
+          // this row resolved to, not on the nominal w that was asked for.
+          var wActual = fssWActual[wi];
+          var rowDuplicateOf = fssDuplicateOf[wi];
+          var rowUnderpowered = (wActual < CSD_MIN_WINDOW_MONTHS);
           // rowExcluded now means "NOTHING about this row is usable".
           // rowVarExcluded means "no VARIANCE-based claim from this row".
-          var rowExcluded = rowUnderpowered;
-          var rowVarExcluded = rowUnderpowered || rowVarArtifact;
+          var rowExcluded = rowUnderpowered || rowDuplicateOf!==null;
+          var rowVarExcluded = rowExcluded || rowVarArtifact;
 
           var sDVarScored = rowStudyVarArtifact ? null : sDVar;
           var cDVarScored = rowCtrlVarArtifact  ? null : cDVar;
@@ -6698,13 +7626,16 @@ var csdMultiWindowBtn=ui.Button({
           // Scheffer needs BOTH variance and AC1, so a variance artifact does
           // legitimately kill it - but an AC1-only signal survives on its own.
           var scheffer = (!rowVarExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr&&sDAC1!==null&&sDAC1>_wthr.ac1);
-          var ac1Rose = (!rowUnderpowered&&sDAC1!==null&&sDAC1>_wthr.ac1);
+          var ac1Rose = (!rowExcluded&&sDAC1!==null&&sDAC1>_wthr.ac1);
           var varRose = (!rowVarExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr);
 
           var studyVarRose=varRose;
           var ctrlVarRose=(!rowVarExcluded&&cDVarScored!==null&&cDVarScored>_wthr.varr);
           var verdict='NO SIGNAL';
-          if(rowUnderpowered) verdict='UNDERPOWERED ('+w+'mo < '+CSD_MIN_WINDOW_MONTHS+'mo - cannot support inference, NOTHING usable)';
+          if(rowDuplicateOf!==null) verdict='DUPLICATE of the '+rowDuplicateOf+'mo row (both resolve to the same '+
+            wActual+' actual valid months - the record ends before '+w+'mo) - not an independent test, excluded from every tally';
+          else if(rowUnderpowered) verdict='UNDERPOWERED ('+wActual+' actual valid months'+
+            (wActual!==w?' from a nominal '+w+'mo window':'')+' < '+CSD_MIN_WINDOW_MONTHS+'mo - cannot support inference, NOTHING usable)';
           else if(rowVarArtifact) verdict='\u26A0VAR ARTIFACT ('+
             (rowStudyVarArtifact&&rowCtrlVarArtifact?'study AND control':rowStudyVarArtifact?'study site':'control site')+
             ' near-zero 1st-half variance - variance claims excluded, AC1 STILL USABLE)';
@@ -6726,14 +7657,15 @@ var csdMultiWindowBtn=ui.Button({
 
           // v10.157: the VARIANCE sweet spot needs usable variance on both
           // sides; the AC1 sweet spot only needs a powered window.
-          if(!rowVarExcluded&&divScored!==null&&divScored>bestDiv){bestDiv=divScored;bestW=w;}
+          if(!rowVarExcluded&&divScored!==null&&divScored>bestDiv){bestDiv=divScored;bestW=w;}  // rowVarExcluded now includes duplicates (v10.159 W-03)
           // v10.92: separate AC1-based ranking (primary indicator per Dakos
           // et al. 2012) alongside the existing variance-divergence ranking,
           // so a strong AC1 rise is never hidden just because variance did
           // something else. v10.157: nor because the CONTROL site's variance
           // was artifactual, which is what v10.156 accidentally did.
-          if(!rowUnderpowered&&sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}
-          var rowObj={w:w,sDVar:sDVar,cDVar:cDVar,div:div,divScored:divScored,verdict:verdict,
+          if(!rowExcluded&&sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}  // v10.159 W-03: rowExcluded, so a duplicate row can no longer win the AC1 sweet spot
+          var rowObj={w:w,wActual:wActual,duplicateOf:rowDuplicateOf,
+            sDVar:sDVar,cDVar:cDVar,div:div,divScored:divScored,verdict:verdict,
             sDAC1:sDAC1,cDAC1:cDAC1,scheffer:scheffer,ac1Rose:ac1Rose,
             excluded:rowExcluded, varExcluded:rowVarExcluded,
             artifact:rowVarArtifact, studyArtifact:rowStudyVarArtifact, ctrlArtifact:rowCtrlVarArtifact,
@@ -6746,7 +7678,7 @@ var csdMultiWindowBtn=ui.Button({
 
         for(var ri=0;ri<allRows.length;ri++){
           var ro=allRows[ri];
-          var row=ro.w+'mo   | '+
+          var row=ro.w+'mo'+(ro.wActual!==ro.w?'('+ro.wActual+')':'   ')+' | '+
             (ro.sDVar!==null?(ro.sDVar>0?'+':'')+ro.sDVar.toFixed(2)+'x':'n/a')+'   | '+
             (ro.sDAC1!==null?(ro.sDAC1>0?'+':'')+ro.sDAC1.toFixed(3):'n/a')+'    | '+
             (ro.cDVar!==null?(ro.cDVar>0?'+':'')+ro.cDVar.toFixed(2)+'x':'n/a')+'   | '+
@@ -6780,9 +7712,9 @@ var csdMultiWindowBtn=ui.Button({
           return !r.varExcluded && (r.verdict.indexOf('LOCAL CSD')===0 || r.verdict.indexOf('MARGINAL LOCAL')===0);
         });
         var testedRows = allRows.filter(function(r){ return !r.varExcluded && r.sDVar!==null && r.cDVar!==null; });
-        var ac1TestedRows = allRows.filter(function(r){ return !r.underpowered && r.sDAC1!==null; });
+        var ac1TestedRows = allRows.filter(function(r){ return !r.excluded && r.sDAC1!==null; });
         var ac1RisingRows = ac1TestedRows.filter(function(r){ return r.ac1Rose; });
-        var flaggedRows = allRows.filter(function(r){ return r.underpowered || r.artifact; });
+        var flaggedRows = allRows.filter(function(r){ return r.underpowered || r.artifact || r.duplicateOf!==null; });
         var robustNote;
         if(testedRows.length===0){
           robustNote='ROBUSTNESS: no windows had usable data - cannot assess.';
@@ -6815,10 +7747,14 @@ var csdMultiWindowBtn=ui.Button({
           rows.push('FLAGGED WINDOWS ('+flaggedRows.length+' of '+allRows.length+'):');
           flaggedRows.forEach(function(r){
             var why;
-            if(r.underpowered && r.artifact)
-              why='UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo) - NOTHING usable; also a variance artifact';
+            if(r.duplicateOf!==null)
+              why='DUPLICATE of the '+r.duplicateOf+'mo row - both resolve to '+r.wActual+' actual valid months, '+
+                  'so this is the SAME test run twice, not a second piece of evidence. Excluded from the Bonferroni '+
+                  'divisor, the LOCAL tally, the AC1 tally and both sweet-spot picks (v10.159 W-03).';
+            else if(r.underpowered && r.artifact)
+              why='UNDERPOWERED ('+r.wActual+' actual valid months < '+CSD_MIN_WINDOW_MONTHS+'mo) - NOTHING usable; also a variance artifact';
             else if(r.underpowered)
-              why='UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo) - excluded from EVERYTHING, AC1 included';
+              why='UNDERPOWERED ('+r.wActual+' actual valid months < '+CSD_MIN_WINDOW_MONTHS+'mo) - excluded from EVERYTHING, AC1 included';
             else
               why='VARIANCE ARTIFACT at the '+(r.studyArtifact&&r.ctrlArtifact?'STUDY AND CONTROL':r.studyArtifact?'STUDY':'CONTROL')+
                 ' site (study 1st-half var='+(r.varFirstBefore!==null&&r.varFirstBefore!==undefined?r.varFirstBefore.toFixed(5):'n/a')+
@@ -6842,19 +7778,44 @@ var csdMultiWindowBtn=ui.Button({
            'panels measured different things: a real Bocas del Toro run had COMPARE at\n'+
            '\u0394AC1=+0.524 and FIND SWEET SPOT at +0.198 for the SAME site and SAME window.\n'+
            'These numbers are now directly comparable with STEP 3. Costs no extra EE calls -\n'+
-           'it reuses the raw series the permutation test below already fetches.') :
+           'it reuses the raw series the permutation test below already fetches.'+
+           (nodeStatsDisclosureLines(fssDisc).length>0 ?
+             '\nSERIES QUALITY (v10.159 W-02):\n'+nodeStatsDisclosureLines(fssDisc).join('\n') : '')) :
           ('v10.156 BUG-07: pooled-climatology recompute UNAVAILABLE (the raw BEFORE/AFTER series\n'+
            'did not arrive). These numbers come from per-window climatologies and are therefore\n'+
            'NOT directly comparable with STEP 3 COMPARE, which pools. Re-run to try again.'));
         rows.push('');
         rows.push(CSD_POWER_TABLE_TXT);
         rows.push('');
+        // v10.159 N3: say plainly which rows used an EXTRAPOLATED cutoff.
+        var _extrapW=[];
+        for(var _ei=0;_ei<windowLengths.length;_ei++){
+          if(getCalibratedThresholds(windowLengths[_ei]).extrapolated) _extrapW.push(windowLengths[_ei]+'mo');
+        }
+        if(_extrapW.length>0){
+          rows.push('v10.159 N3: '+_extrapW.join(' and ')+' are NOT calibration keys - the measured');
+          rows.push('Scripps no-event null was cut at 24, 36 and 48 months only, so those rows reuse');
+          rows.push('the 48mo cutoff. The null spread narrows as the window lengthens, so a 48mo');
+          rows.push('cutoff is WIDER than the right one at 54/60 months: it fires LESS often. That is');
+          rows.push('conservative, not calibrated - a "no signal" on those rows is weaker evidence of');
+          rows.push('absence than it looks.');
+        }
         rows.push('v10.153 THRESHOLD CALIBRATION: cutoffs are now per-window, set at the 95th');
         rows.push('percentile of |delta| under a measured no-event null (Scripps Pier CTD, 13.6yr).');
         rows.push('The previous fixed 0.15x/0.01 cutoffs fired on 34-57% of no-event windows; the');
         rows.push('AC1-OR-variance rule fired on 80%. Expect far fewer LOCAL verdicts than before -');
-        rows.push('that is the correction, not a regression. The Bonferroni-corrected p-values below');
-        rows.push('remain the only figures here with a known false-positive rate.');
+        rows.push('that is the correction, not a regression.');
+        // v10.159 W-01 item 3: v10.158 asserted the Bonferroni-corrected p-values
+        // "remain the only figures here with a known false-positive rate". Where
+        // v10.158 could not build a 12/12 climatology it ran those same p-values
+        // on RAW values at a MEASURED 10.4-39.8% rate against a nominal 5%, so the
+        // sentence asserted the opposite of the truth. Corrected rather than
+        // deleted, because the underlying point is still the right one.
+        rows.push('The Bonferroni-corrected p-values below are the only figures here with a known');
+        rows.push('false-positive rate, AND ONLY WHERE ONE IS ACTUALLY REPORTED. v10.159 emits a');
+        rows.push('p-value only for a properly deseasonalized series (measured 4.5-6.2% against a');
+        rows.push('nominal 5%); elsewhere it reports NOT TESTABLE and why, instead of the');
+        rows.push('uncalibrated number v10.158 printed in that situation.');
         rows.push('\nControl BEFORE baseline (same '+b.startDate+', '+b.months+'mo window as STEP 2): AC1='+
           (cBAC1!==null?cBAC1.toFixed(3):'n/a')+', Var='+(cBVar!==null?cBVar.toFixed(2)+'x':'n/a'));
         rows.push('Control site: '+smartCtrl.label);
@@ -6891,13 +7852,19 @@ var csdMultiWindowBtn=ui.Button({
           // power with no stated justification. The divisor is now the SAME
           // number the line below reports as the denominator, computed once and
           // used in both places so they cannot disagree.
-          var nPoweredWindows=windowLengths.filter(function(w){return w>=CSD_MIN_WINDOW_MONTHS;}).length;
+          // v10.159 W-03: nPoweredWindows is computed ONCE above, from each row's
+          // REAL valid month count with duplicate spans removed - not from the
+          // nominal w. With an AFTER start that leaves 39 months of OISST the old
+          // expression returned 4 (36/48/54/60 all "powered") for what are only
+          // TWO distinct hypotheses, so the Bonferroni bar was 0.05/4 for a
+          // family of 2 and three of the rows were the same test.
           var bonferroniAlpha = 0.05/Math.max(1,nPoweredWindows);
           var nWindowsTested = windowLengths.length;
           var permLines=['=== REAL SIGNIFICANCE ACROSS ALL '+nWindowsTested+' WINDOWS (permutation test) ==='];
           permLines.push('Same engine as STEP 3 COMPARE, run at each window length (300 shuffles each,');
           permLines.push('reduced from 500 to keep '+(nWindowsTested*4)+' total tests fast). '+nPoweredWindows+' of those '+nWindowsTested+' windows are');
-          permLines.push('at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor and can support inference; testing '+nPoweredWindows+' windows means');
+          permLines.push('at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor ON THEIR REAL SPAN and are not a repeat of a shorter');
+          permLines.push('row (v10.159 W-03), so they can support inference; testing '+nPoweredWindows+' windows means');
           permLines.push('SOME window can look significant by pure chance - the CORRECTED bar below (0.05 /');
           permLines.push(nPoweredWindows+' POWERED windows = '+bonferroniAlpha.toFixed(4)+') accounts for that mathematically, and corrects for');
           permLines.push('exactly the family it counts (v10.158: it used to divide by all '+nWindowsTested+' while counting');
@@ -6907,38 +7874,62 @@ var csdMultiWindowBtn=ui.Button({
           permLines.push('Window | Study AC1 p | Study Var p | Ctrl AC1 p | Ctrl Var p | Local signal?');
           permLines.push(repeatChar('\u2500',72));
 
-          var anyCorrectedSig = false, uncorrectedLocalCount = 0;
-          windowLengths.forEach(function(w){
+          var anyCorrectedSig = false, uncorrectedLocalCount = 0, fssSeriesNotes = [];
+          windowLengths.forEach(function(w, wIdx){
             var sAfterW = pStudyAfterValsFull.slice(0, w);
             var cAfterW = pCtrlAfterValsFull.slice(0, w);
+            var wActual = fssWActual[wIdx], wDuplicateOf = fssDuplicateOf[wIdx];
             var sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, 300);
             var sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, 300);
             var cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, 300);
             var cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, 300);
-            function fp(t){ return t.pValue!==null?t.pValue.toFixed(3):'n/a'; }
+            fssSeriesNotes.push(w+'mo: '+permSeriesNote(sAC1Test));
+            // v10.159 W-01 item 2: was a bare p-value, with no indication of which
+            // series produced it. permP() prints NOT TESTABLE and why instead.
+            function fp(t){ return permP(t); }
             // "Local signal" = study significant (p<0.05, uncorrected) on
             // EITHER AC1 or variance, while control is NOT significant on
             // that same statistic - the same LOCAL-vs-REGIONAL logic used
             // throughout this tool, now grounded in real p-values instead
             // of the >0.01/>0.15 threshold.
-            var sAC1Sig = sAC1Test.pValue!==null && sAC1Test.pValue<0.05;
-            var sVarSig = sVarTest.pValue!==null && sVarTest.pValue<0.05;
-            var cAC1Sig = cAC1Test.pValue!==null && cAC1Test.pValue<0.05;
-            var cVarSig = cVarTest.pValue!==null && cVarTest.pValue<0.05;
+            // v10.159 W-01 item 2: permUsable() gates every one of these on the
+            // machine-readable deseasonalized flag, so a p-value from a series
+            // whose seasonal cycle was not removed can never count as a signal.
+            var sAC1Sig = permUsable(sAC1Test) && sAC1Test.pValue<0.05;
+            var sVarSig = permUsable(sVarTest) && sVarTest.pValue<0.05;
+            var cAC1Sig = permUsable(cAC1Test) && cAC1Test.pValue<0.05;
+            var cVarSig = permUsable(cVarTest) && cVarTest.pValue<0.05;
             var localSig = (sAC1Sig && !cAC1Sig) || (sVarSig && !cVarSig);
             // v10.156 BUG-08: a sub-floor window's p-value is uninterpretable
             // (measured power 5-28% AT 24 months, less below) - shown for
             // transparency, never counted as evidence for or against.
-            var wUnderpowered = (w < CSD_MIN_WINDOW_MONTHS);
-            if(localSig && !wUnderpowered) uncorrectedLocalCount++;
-            var minStudyP = Math.min(sAC1Test.pValue!==null?sAC1Test.pValue:1, sVarTest.pValue!==null?sVarTest.pValue:1);
-            if(localSig && !wUnderpowered && minStudyP<bonferroniAlpha) anyCorrectedSig=true;
-            permLines.push(w+'mo    | '+fp(sAC1Test)+'       | '+fp(sVarTest)+'       | '+fp(cAC1Test)+'      | '+fp(cVarTest)+
-              '      | '+(wUnderpowered?'UNDERPOWERED - not counted':
+            // v10.159 W-03: powered on the REAL span, and a row whose real span
+            // repeats a shorter row's is not counted at all - it is the same test.
+            var wUnderpowered = (wActual < CSD_MIN_WINDOW_MONTHS);
+            var wExcluded = wUnderpowered || wDuplicateOf!==null;
+            if(localSig && !wExcluded) uncorrectedLocalCount++;
+            var minStudyP = Math.min(permUsable(sAC1Test)?sAC1Test.pValue:1, permUsable(sVarTest)?sVarTest.pValue:1);
+            if(localSig && !wExcluded && minStudyP<bonferroniAlpha) anyCorrectedSig=true;
+            permLines.push(w+'mo'+(wActual!==w?'('+wActual+')':'  ')+' | '+fp(sAC1Test)+' | '+fp(sVarTest)+' | '+fp(cAC1Test)+' | '+fp(cVarTest)+
+              ' | '+(wDuplicateOf!==null?'DUPLICATE of '+wDuplicateOf+'mo - not counted':
+                     wUnderpowered?'UNDERPOWERED - not counted':
                           (localSig?(minStudyP<bonferroniAlpha?'YES (survives correction)':'YES (uncorrected only)'):'no')));
           });
           permLines.push(repeatChar('\u2500',72));
-          permLines.push(uncorrectedLocalCount+' of '+nPoweredWindows+' windows that can support inference (>='+CSD_MIN_WINDOW_MONTHS+'mo) show a local signal at the uncorrected p<0.05 level.');
+          permLines.push(uncorrectedLocalCount+' of '+nPoweredWindows+' DISTINCT windows that can support inference (>='+CSD_MIN_WINDOW_MONTHS+
+            ' actual valid months, duplicate spans removed) show a local signal at the uncorrected p<0.05 level.');
+          if(fssShortAfter){
+            permLines.push('NOTE (v10.159 W-03): the AFTER record is only '+poolStudyAfterFull.length+' valid months long, so the');
+            permLines.push('longer rows above do not all test different amounts of data - rows marked DUPLICATE');
+            permLines.push('resolve to the same months as a shorter row and are excluded from this count and from');
+            permLines.push('the Bonferroni divisor. To test '+windowLengths[windowLengths.length-1]+' months you need an AFTER start at least that far');
+            permLines.push('before the end of the OISST record.');
+          }
+          permLines.push('');
+          permLines.push('SERIES USED (v10.159 W-01 item 2 - every p-value above now says which series it');
+          permLines.push('came from, and no p-value is emitted at all for a series whose seasonal cycle');
+          permLines.push('could not be removed):');
+          fssSeriesNotes.forEach(function(n){ permLines.push('  '+n); });
           permLines.push('');
           permLines.push(CSD_POWER_TABLE_TXT);
           if(anyCorrectedSig){
@@ -7496,7 +8487,10 @@ var csdSlideRunBtn=ui.Button({
           }
           try {
             var studyTV = groupSeriesByLabel(rawFC, 'sst')['Study'] || [];
-            var climatology = computeMonthlyClimatology(studyTV);
+            // v10.159 W-01/W-02: imputing climatology, so this comparison is not
+            // silently computed on a half-deleted series when months are missing.
+            var _slideClimRes = computeUsableClimatology(studyTV);
+            var climatology = _slideClimRes.ok ? _slideClimRes.climatology : computeMonthlyClimatology(studyTV);
             var deseasonTV = deseasonalizeSeries(studyTV, climatology);
             var rawVals = studyTV.map(function(s){return s.v;});
             var deseasonVals = deseasonTV.map(function(s){return s.v;}).filter(function(v){return v!==null&&v!==undefined&&!isNaN(v);});
@@ -7887,6 +8881,16 @@ var s7cRunBtn = ui.Button({
         lines.push('  Center-North: r='+fmtN(coCN.corr,3)+' (n='+(coCN.n!==undefined?coCN.n:'n/a')+' paired months)');
         lines.push('  Center-East:  r='+fmtN(coCE.corr,3)+' (n='+(coCE.n!==undefined?coCE.n:'n/a')+' paired months)');
         lines.push('  North-East:   r='+fmtN(coNE.corr,3)+' (n='+(coNE.n!==undefined?coNE.n:'n/a')+' paired months)');
+        // v10.159 W-02: jsNodeStatsFixed's climatologySource / climatologyNote /
+        // ac1PairsUsed / ac1PairsDropped / ac1MaxGapMonths were produced for each
+        // of these three nodes and read by nobody. FAI is heavily cloud-masked, so
+        // this is exactly where they matter.
+        var _s7cDisc=nodeStatsDisclosureLines([{label:'Center',st:acC},{label:'North',st:acN},{label:'East',st:acE}]);
+        if(_s7cDisc.length>0){
+          lines.push('');
+          lines.push('SERIES QUALITY (v10.159 W-02 - computed since v10.158, never shown until now):');
+          _s7cDisc.forEach(function(d){ lines.push(d); });
+        }
         s7cResultV.setValue(lines.join('\n'));
 
         var headline, hCol, hBg;
@@ -8005,8 +9009,18 @@ var s7dRunBtn = ui.Button({
     var radiusKm=parseFloat(radiusTxt);
     if(isNaN(radiusKm)||radiusKm<0.3||radiusKm>3){s7dStatusV.setValue('Ring radius must be 0.3-3 km.'); s7dStatusV.style().set('color','#cc0000'); return;}
     var beforeMonths=parseInt(beforeMonthsTxt,10), afterMonths=parseInt(afterMonthsTxt,10);
-    if(isNaN(beforeMonths)||beforeMonths<4||beforeMonths>36||isNaN(afterMonths)||afterMonths<4||afterMonths>36){
-      s7dStatusV.setValue('BEFORE/AFTER months must each be 4-36.'); s7dStatusV.style().set('color','#cc0000'); return;
+    // v10.159 W-01 item 4: the floor was 4 months per box, which let the DEFAULT
+    // configuration land below CLIM_MIN_TOTAL_SAMPLES, where no p-value can be
+    // reported at all. The permutation test needs a seasonal cycle it can
+    // estimate and remove, and below one full annual cycle per window there is
+    // nothing to estimate it from; measured power below a 24-month pooled record
+    // is 7-34% against a REAL x5 variance change, versus 46% at 24 and 71% at 48.
+    // The floor is now 12 months per box, so the pooled record is always
+    // >= CLIM_MIN_TOTAL_SAMPLES and the shipped defaults always produce a
+    // properly deseasonalized, calibrated p-value.
+    if(isNaN(beforeMonths)||beforeMonths<12||beforeMonths>36||isNaN(afterMonths)||afterMonths<12||afterMonths>36){
+      s7dStatusV.setValue('BEFORE/AFTER months must each be 12-36 (v10.159: raised from 4 - below one full annual cycle per window there is nothing to estimate the seasonal cycle from, and below a 24-month pooled record the test catches a real five-fold rise in the AFTER window noise only 7-34% of the time, so no p-value is reported at all).');
+      s7dStatusV.style().set('color','#cc0000'); return;
     }
     recordStudySite(latIn, lonIn, 'S7D');
 
@@ -8135,8 +9149,10 @@ var s7dRunBtn = ui.Button({
                                                afterByNode[nd.label]||[],
                                                statAC1ForPerm, 500);
           s7dPerm[nd.label] = {ac1:ac1T};
-          var ac1PTxt = (ac1T.pValue!==null)?ac1T.pValue.toFixed(3):'n/a';
-          if(ac1T.pValue!==null){ nAc1Tested++; if(ac1T.pValue<0.05) nAc1Sig++; }
+          // v10.159 W-01 item 2: was a bare p-value. permP() prints NOT TESTABLE
+          // (or NOT CALIBRATED) instead whenever permUsable() is false.
+          var ac1PTxt = permP(ac1T);
+          if(permUsable(ac1T)){ nAc1Tested++; if(ac1T.pValue<0.05) nAc1Sig++; }
 
           var dCorrTxt='-', corrPTxt='-';
           if(idx>0){
@@ -8147,13 +9163,13 @@ var s7dRunBtn = ui.Button({
             var corrT = permutationTestCorrDelta(beforeByNode['Center'], beforeByNode[nd.label],
                                                  afterByNode['Center'], afterByNode[nd.label], 500);
             s7dPerm[nd.label].corr = corrT;
-            corrPTxt = (corrT.pValue!==null)?corrT.pValue.toFixed(3):'n/a';
+            corrPTxt = permP(corrT);
             if(onReef===true){
               nOnReefTotal++;
-              if(corrT.pValue!==null){
+              if(permUsable(corrT)){
                 nCorrTested++;
                 // SIGNIFICANT AND RISING - direction alone is no longer enough
-                if(corrT.pValue<0.05 && dCorr!==null && dCorr>0){ nCorrSig++; nOnReefRisingCorr++; }
+                if(permUsable(corrT) && corrT.pValue<0.05 && dCorr!==null && dCorr>0){ nCorrSig++; nOnReefRisingCorr++; }
               }
             }
           }
@@ -8169,9 +9185,9 @@ var s7dRunBtn = ui.Button({
           }
           rows.push(nd.label+repeatChar(' ',Math.max(1,7-nd.label.length))+'| '+
             onReefLabel+repeatChar(' ',Math.max(1,12-onReefLabel.length))+'| '+
-            (dAC1!==null?(dAC1>0?'+':'')+dAC1.toFixed(3):'n/a')+' (p='+ac1PTxt+') | '+
+            (dAC1!==null?(dAC1>0?'+':'')+dAC1.toFixed(3):'n/a')+' ('+ac1PTxt+') | '+
             (dVar!==null?(dVar>0?'+':'')+dVar.toFixed(2)+'x':'n/a')+artifactFlag+' | '+
-            dCorrTxt+' (p='+corrPTxt+')');
+            dCorrTxt+' ('+corrPTxt+')');
         }
         rows.push(repeatChar('\u2500',56));
         rows.push('\u26A0ARTIFACT flag: 1st-half FAI variance was near-zero (<0.001) and |\u0394Var|>5x - likely a division artifact (see S7C v10.105 note), not a genuine surge. Treat those \u0394Var values with real caution.');
@@ -8190,11 +9206,28 @@ var s7dRunBtn = ui.Button({
         var _bonfHits=0;
         nodes.forEach(function(nd){
           var e=s7dPerm[nd.label];
-          if(e&&e.corr&&e.corr.pValue!==null&&e.corr.pValue<BONF) _bonfHits++;
-          if(e&&e.ac1&&e.ac1.pValue!==null&&e.ac1.pValue<BONF) _bonfHits++;
+          if(e&&permUsable(e.corr)&&e.corr.pValue<BONF) _bonfHits++;
+          if(e&&permUsable(e.ac1)&&e.ac1.pValue<BONF) _bonfHits++;
         });
         rows.push('Tests surviving the corrected bar: '+_bonfHits+
           (_bonfHits===0?'  <- nothing here is distinguishable from noise':''));
+        // v10.159 W-01 item 2 + W-02: the two columns above used to print a bare
+        // p-value, and jsNodeStatsFixed()'s climatologySource / climatologyNote /
+        // ac1PairsUsed / ac1PairsDropped / ac1MaxGapMonths were computed for every
+        // node and read by nobody. Both are now on screen.
+        rows.push('SERIES USED (per-node AC1 p-values): '+permSeriesNote(s7dPerm[nodes[0].label]?s7dPerm[nodes[0].label].ac1:null));
+        var _s7dDisc=[];
+        nodes.forEach(function(nd){
+          _s7dDisc.push({label:nd.label+' BEFORE', st:perNodeStats[nd.label].before});
+          _s7dDisc.push({label:nd.label+' AFTER',  st:perNodeStats[nd.label].after});
+        });
+        var _s7dLines=nodeStatsDisclosureLines(_s7dDisc);
+        if(_s7dLines.length>0){
+          rows.push('SERIES QUALITY (v10.159 W-02 - computed since v10.158, never shown until now):');
+          _s7dLines.forEach(function(d){ rows.push(d); });
+        } else {
+          rows.push('SERIES QUALITY: every node deseasonalized against a complete climatology, no gapped lag-1 pairs.');
+        }
         // v10.108 NEW: raw feature counts visible on-screen, not just console
         // - if these are 0, the batched fetch itself returned nothing (a
         // real query/data problem); if they are >0 but the table above is
@@ -8359,8 +9392,18 @@ var s7eRunBtn = ui.Button({
     var latIn=parseCoordPart(rawParts[0]), lonIn=parseCoordPart(rawParts[1]);
     if(isNaN(latIn)||isNaN(lonIn)){s7eStatusV.setValue('Invalid format - use: lat, lon'); s7eStatusV.style().set('color','#cc0000'); return;}
     var beforeMonths=parseInt(beforeMonthsTxt,10), afterMonths=parseInt(afterMonthsTxt,10);
-    if(isNaN(beforeMonths)||beforeMonths<4||beforeMonths>36||isNaN(afterMonths)||afterMonths<4||afterMonths>36){
-      s7eStatusV.setValue('BEFORE/AFTER months must each be 4-36.'); s7eStatusV.style().set('color','#cc0000'); return;
+    // v10.159 W-01 item 4: the floor was 4 months per box, which let the DEFAULT
+    // configuration land below CLIM_MIN_TOTAL_SAMPLES, where no p-value can be
+    // reported at all. The permutation test needs a seasonal cycle it can
+    // estimate and remove, and below one full annual cycle per window there is
+    // nothing to estimate it from; measured power below a 24-month pooled record
+    // is 7-34% against a REAL x5 variance change, versus 46% at 24 and 71% at 48.
+    // The floor is now 12 months per box, so the pooled record is always
+    // >= CLIM_MIN_TOTAL_SAMPLES and the shipped defaults always produce a
+    // properly deseasonalized, calibrated p-value.
+    if(isNaN(beforeMonths)||beforeMonths<12||beforeMonths>36||isNaN(afterMonths)||afterMonths<12||afterMonths>36){
+      s7eStatusV.setValue('BEFORE/AFTER months must each be 12-36 (v10.159: raised from 4 - below one full annual cycle per window there is nothing to estimate the seasonal cycle from, and below a 24-month pooled record the test catches a real five-fold rise in the AFTER window noise only 7-34% of the time, so no p-value is reported at all).');
+      s7eStatusV.style().set('color','#cc0000'); return;
     }
     recordStudySite(latIn, lonIn, 'S7E');
 
@@ -8584,8 +9627,7 @@ var s7eRunBtn = ui.Button({
             var studyVarTest = permutationTestDeltaFixed(beforeByNode['Study']||[], afterByNode['Study']||[], statVarRatioForPerm, 500);
             var refAC1Test = permutationTestDeltaFixed(beforeByNode['Reference']||[], afterByNode['Reference']||[], statAC1ForPerm, 500);
             var refVarTest = permutationTestDeltaFixed(beforeByNode['Reference']||[], afterByNode['Reference']||[], statVarRatioForPerm, 500);
-            function fmtP(t){ return t.pValue!==null?t.pValue.toFixed(3):(t.note||'n/a'); }
-            function sigTag(t){ return t.pValue===null?'':(t.pValue<0.05?' *** likely real (p<0.05)':t.pValue<0.10?' * borderline (p<0.10)':' not significant'); }
+
 
             var lines=[];
             lines.push('Reference reef: '+best.lat.toFixed(4)+', '+best.lon.toFixed(4)+' ('+best.radiusKm+'km away, depth='+best.elev.toFixed(1)+'m), data density='+Math.round(refDataDensity*100)+'%'+
@@ -8602,8 +9644,18 @@ var s7eRunBtn = ui.Button({
               ' OR \u0394Var>'+_s7eVar.toFixed(2)+'x) vs reference signal, same cutoffs.');
             lines.push('These replace the old 0.01 / 0.15x values, which were MEASURED firing on 80% of');
             lines.push('windows at a site with no regime shift (Scripps Pier CTD, 13.6yr, 104-176 splits).');
-            lines.push('Expect far fewer LOCAL ANOMALY verdicts than before. The permutation p-values');
-            lines.push('below are the only figures here with a known false-positive rate.');
+            lines.push('Expect far fewer LOCAL ANOMALY verdicts than before.');
+            // v10.159 W-01 item 3: v10.158 said the p-values below were "the only
+            // figures here with a known false-positive rate". At the shipped 18+12
+            // month boxes v10.158 ran them on a RAW, non-deseasonalized series at a
+            // MEASURED 10.4-39.8% false-positive rate against a nominal 5%, so that
+            // sentence asserted the opposite of the truth. Corrected, not deleted:
+            // the claim is now true only for a p-value that says so.
+            lines.push('The permutation p-values below are the only figures here with a known false-');
+            lines.push('positive rate, AND ONLY WHERE ONE IS ACTUALLY REPORTED. v10.159 emits a p-value');
+            lines.push('only for a properly deseasonalized series (measured 4.5-6.2% against a nominal');
+            lines.push('5%); where the seasonal cycle cannot be removed it reports NOT TESTABLE and a');
+            lines.push('reason instead of the uncalibrated number v10.158 printed there.');
             if(s7eErrors>0) lines.push('NOTE: '+s7eErrors+' of 2 batched calls returned no usable data.');
             lines.push(repeatChar('\u2500',50));
             lines.push('=== PERMUTATION TEST (real p-value, 500 shuffles, algae/FAI) ===');
@@ -8611,10 +9663,22 @@ var s7eRunBtn = ui.Button({
             lines.push('answers whether the >0.01/>0.15 threshold verdict above reflects a genuinely rare');
             lines.push('pattern, or one ordinary random noise would produce anyway. Zero extra EE calls -');
             lines.push('reuses the raw FAI series already fetched for the classification above.');
-            lines.push('Study AC1 p='+fmtP(studyAC1Test)+sigTag(studyAC1Test));
-            lines.push('Study Var p='+fmtP(studyVarTest)+sigTag(studyVarTest));
-            lines.push('Reference AC1 p='+fmtP(refAC1Test)+sigTag(refAC1Test));
-            lines.push('Reference Var p='+fmtP(refVarTest)+sigTag(refVarTest));
+            // v10.159 W-01 item 2: these four went out bare. They now go through
+            // permP()/permVerdictTag(), which refuse to attach significance
+            // wording to anything that is not a p-value from a properly
+            // deseasonalized series, and the reason is printed underneath.
+            lines.push('Study AC1     '+permP(studyAC1Test)+permVerdictTag(studyAC1Test));
+            lines.push('Study Var     '+permP(studyVarTest)+permVerdictTag(studyVarTest));
+            lines.push('Reference AC1 '+permP(refAC1Test)+permVerdictTag(refAC1Test));
+            lines.push('Reference Var '+permP(refVarTest)+permVerdictTag(refVarTest));
+            lines.push('SERIES USED: '+permSeriesNote(studyAC1Test,'study')); 
+            lines.push('             '+permSeriesNote(refAC1Test,'reference'));
+            var _s7eDisc=nodeStatsDisclosureLines([{label:'study BEFORE',st:studyB},{label:'study AFTER',st:studyA},
+                                                   {label:'reference BEFORE',st:refB},{label:'reference AFTER',st:refA}]);
+            if(_s7eDisc.length>0){
+              lines.push('SERIES QUALITY (v10.159 W-02 - these were computed and never shown before):');
+              _s7eDisc.forEach(function(d){ lines.push(d); });
+            }
             s7eResultV.setValue(lines.join('\n'));
 
             s7eStatusV.setValue(verdict);
@@ -8716,7 +9780,12 @@ panel.add(s7fBeforeMonthsInput);
 panel.add(lbl('AFTER start date + months:',7,'#aa3300'));
 var s7fAfterStartInput = ui.Textbox({placeholder:'e.g. 2023-11-01',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7fAfterStartInput);
-var s7fAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 10',value:'10',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
+// v10.159 W-01 item 4: default raised 10 -> 12. At 12+10 the pooled record is 22
+// months, one under CLIM_MIN_TOTAL_SAMPLES, so the SHIPPED DEFAULT would have
+// produced no p-value at all. 12+12 pools 24 and is inside the measured-calibrated
+// region (variance-ratio false-positive rate 4.3-6.9% across every seasonal shape
+// tested, against a nominal 5%).
+var s7fAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7fAfterMonthsInput);
 var s7fStatusV = ui.Label('Fill in the fields above, then press RUN. 6 batched calls total, expect ~30-90 seconds.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
@@ -8742,8 +9811,18 @@ var s7fRunBtn = ui.Button({
     var radiusKm=parseFloat(radiusTxt);
     if(isNaN(radiusKm)||radiusKm<0.3||radiusKm>3){s7fStatusV.setValue('Ring radius must be 0.3-3 km.'); s7fStatusV.style().set('color','#cc0000'); return;}
     var beforeMonths=parseInt(beforeMonthsTxt,10), afterMonths=parseInt(afterMonthsTxt,10);
-    if(isNaN(beforeMonths)||beforeMonths<4||beforeMonths>36||isNaN(afterMonths)||afterMonths<4||afterMonths>36){
-      s7fStatusV.setValue('BEFORE/AFTER months must each be 4-36.'); s7fStatusV.style().set('color','#cc0000'); return;
+    // v10.159 W-01 item 4: the floor was 4 months per box, which let the DEFAULT
+    // configuration land below CLIM_MIN_TOTAL_SAMPLES, where no p-value can be
+    // reported at all. The permutation test needs a seasonal cycle it can
+    // estimate and remove, and below one full annual cycle per window there is
+    // nothing to estimate it from; measured power below a 24-month pooled record
+    // is 7-34% against a REAL x5 variance change, versus 46% at 24 and 71% at 48.
+    // The floor is now 12 months per box, so the pooled record is always
+    // >= CLIM_MIN_TOTAL_SAMPLES and the shipped defaults always produce a
+    // properly deseasonalized, calibrated p-value.
+    if(isNaN(beforeMonths)||beforeMonths<12||beforeMonths>36||isNaN(afterMonths)||afterMonths<12||afterMonths>36){
+      s7fStatusV.setValue('BEFORE/AFTER months must each be 12-36 (v10.159: raised from 4 - below one full annual cycle per window there is nothing to estimate the seasonal cycle from, and below a 24-month pooled record the test catches a real five-fold rise in the AFTER window noise only 7-34% of the time, so no p-value is reported at all).');
+      s7fStatusV.style().set('color','#cc0000'); return;
     }
     recordStudySite(latIn, lonIn, 'S7F');
 
@@ -8868,11 +9947,16 @@ var s7fRunBtn = ui.Button({
         });
       }
       var nOnReefRisingCorr=0, nOnReefTotal=0, nAc1Rising=0, nAc1Avail=0;
+      // v10.159 W-02: jsNodeStatsFixed's climatologySource / climatologyNote /
+      // ac1Pairs* were computed here and thrown away. Collected and returned.
+      var s7fDDisc=[];
       var centerBeforeVals=(beforeByNode['Center']||[]), centerAfterVals=(afterByNode['Center']||[]);
       for(var idx=0;idx<nodes.length;idx++){
         var nd=nodes[idx];
         var stB=jsNodeStatsFixed(beforeByNode[nd.label]||[]);
         var stA=jsNodeStatsFixed(afterByNode[nd.label]||[]);
+        s7fDDisc.push({label:nd.label+' BEFORE',st:stB});
+        s7fDDisc.push({label:nd.label+' AFTER',st:stA});
         var ndviV=(ndviByLabel[nd.label]!==undefined)?ndviByLabel[nd.label]:null;
         var onReef = ndviV!==null?(ndviV>-0.10):null;
         var dAC1=(stB.realAC1!==null&&stA.realAC1!==null)?(stA.realAC1-stB.realAC1):null;
@@ -8889,7 +9973,8 @@ var s7fRunBtn = ui.Button({
       else if(nOnReefRisingCorr>=Math.ceil(nOnReefTotal*0.5)) headline='S7D: HYPER-SYNCHRONIZATION ('+nOnReefRisingCorr+'/'+nOnReefTotal+' on-reef rising)';
       else if(nOnReefRisingCorr>0) headline='S7D: PARTIAL SIGNAL ('+nOnReefRisingCorr+'/'+nOnReefTotal+' on-reef rising)';
       else headline='S7D: NO SYNCHRONIZATION SIGNAL (0/'+nOnReefTotal+' on-reef rising)';
-      return {headline:headline, nAc1Rising:nAc1Rising, nAc1Avail:nAc1Avail};
+      return {headline:headline, nAc1Rising:nAc1Rising, nAc1Avail:nAc1Avail,
+              disclosureLines:nodeStatsDisclosureLines(s7fDDisc)};
     }
     function s7fFinishD_only(){
       try {
@@ -8897,6 +9982,10 @@ var s7fRunBtn = ui.Button({
         var lines=['=== COMBINED SUMMARY ==='];
         lines.push(dSum.headline+' | AC1 rising at '+dSum.nAc1Rising+'/'+dSum.nAc1Avail+' nodes');
         lines.push('S7E: not run this time (no usable reference site found)');
+        if(dSum.disclosureLines.length>0){
+          lines.push('SERIES QUALITY (v10.159 W-02):');
+          dSum.disclosureLines.forEach(function(d){ lines.push(d); });
+        }
         lines.push(repeatChar('\u2500',50));
         lines.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo | radius='+radiusKm+'km');
         s7fResultV.setValue(lines.join('\n'));
@@ -8928,7 +10017,8 @@ var s7fRunBtn = ui.Button({
         var sVarT=permutationTestDeltaFixed(eBeforeByNode['Study']||[], eAfterByNode['Study']||[], statVarRatioForPerm, 500);
         var rAC1T=permutationTestDeltaFixed(eBeforeByNode['Reference']||[], eAfterByNode['Reference']||[], statAC1ForPerm, 500);
         var rVarT=permutationTestDeltaFixed(eBeforeByNode['Reference']||[], eAfterByNode['Reference']||[], statVarRatioForPerm, 500);
-        function _sig(t, d){ return t.pValue!==null && t.pValue<0.05 && d!==null && d>0; }
+        // v10.159 W-01 item 2: permUsable() replaces the bare pValue!==null test.
+        function _sig(t, d){ return permUsable(t) && t.pValue<0.05 && d!==null && d>0; }
         // signal now requires SIGNIFICANCE AND a rising direction
         var studySignal=_sig(sAC1T, dAC1_study)||_sig(sVarT, dVar_study);
         var refSignal=_sig(rAC1T, dAC1_ref)||_sig(rVarT, dVar_ref);
@@ -8964,9 +10054,22 @@ var s7fRunBtn = ui.Button({
         lines.push('For full node-by-node / study-vs-reference detail, run S7D and S7E individually above with these same inputs.');
         lines.push('');
         lines.push('=== v10.154 SIGNIFICANCE (permutation, 500 shuffles) ===');
-        function _fp(t){ return t.pValue!==null?t.pValue.toFixed(3):(t.note||'n/a'); }
-        lines.push('Study     AC1 p='+_fp(sAC1T)+'  Var p='+_fp(sVarT));
-        lines.push('Reference AC1 p='+_fp(rAC1T)+'  Var p='+_fp(rVarT));
+        // v10.159 W-01 item 2: these four went out bare. permP()/permVerdictTag()
+        // now gate every one of them on the machine-readable deseasonalized flag.
+        lines.push('Study     AC1 '+permP(sAC1T)+permVerdictTag(sAC1T)+'  |  Var '+permP(sVarT)+permVerdictTag(sVarT));
+        lines.push('Reference AC1 '+permP(rAC1T)+permVerdictTag(rAC1T)+'  |  Var '+permP(rVarT)+permVerdictTag(rVarT));
+        lines.push('SERIES USED: '+permSeriesNote(sAC1T,'study'));
+        lines.push('             '+permSeriesNote(rAC1T,'reference'));
+        var _s7fDisc=nodeStatsDisclosureLines([{label:'study BEFORE',st:studyB},{label:'study AFTER',st:studyA},
+                                               {label:'reference BEFORE',st:refB},{label:'reference AFTER',st:refA}]);
+        if(dSum.disclosureLines && dSum.disclosureLines.length>0){
+          lines.push('SERIES QUALITY, S7D nodes (v10.159 W-02):');
+          dSum.disclosureLines.forEach(function(d){ lines.push(d); });
+        }
+        if(_s7fDisc.length>0){
+          lines.push('SERIES QUALITY (v10.159 W-02 - computed since v10.158, never shown until now):');
+          _s7fDisc.forEach(function(d){ lines.push(d); });
+        }
         lines.push('A site now counts as showing a signal only if a p-value is BELOW 0.05 AND the');
         lines.push('direction is rising. Under v10.153 the direction alone was enough, and those');
         lines.push('cutoffs were measured firing on up to 80% of no-event windows.');
@@ -9506,7 +10609,7 @@ panel.add(legRow('#ff00ff','Magenta dot','Recorded volcanic event'));
 panel.add(legDiv()); panel.add(sHead('Score color dot','#4a0000'));
 panel.add(legRow('#00cc44','Green','0-29: DEEP BASIN')); panel.add(legRow('#ffcc00','Yellow','30-54: WARNING'));
 panel.add(legRow('#ff6600','Orange','55-74: HIGH RISK')); panel.add(legRow('#ff0000','Red','75-100: CRITICAL'));
-panel.add(lbl('Scroll up for measurements | v10.158 + GEM',8,'#555555'));
+panel.add(lbl('Scroll up for measurements | v10.159 + GEM',8,'#555555'));
 ui.root.insert(0,panel);
 var floatP=ui.Panel({style:{position:'top-center',padding:'6px 14px',backgroundColor:'#001a00',border:'2px solid #00cc44',shown:false}});
 var fN=lbl('',13,'#00cc44','',true), fS=lbl('',12,'#ffffff','',true), fB=lbl('',10,'#aaffaa','',false), fC=lbl('',9,'#888888','',false);
@@ -9726,7 +10829,7 @@ function analyzeLocation(lat, lon) {
 
   function clip(col){ return col.map(function(img){ return img.clip(study); }); }
 
-  print(''); print('STEMGeoHS Marine v10.158 -- '+region);
+  print(''); print('STEMGeoHS Marine v10.159 -- '+region);
   print('=== MODELS ===');
   print('1. Waddington double-well: U(q;mu) = 0.25*q^4 - 0.5*mu*q^2');
   print('2. Langevin SDE: dx = -dU/dx*dt + sigma*dW (PNAS 2025)');
@@ -10003,7 +11106,18 @@ function analyzeLocation(lat, lon) {
     } else{dhwNoteV.setValue('');}
     depthWarnV.setValue(bv!==null&&bv<-200?'NOTE:'+classifyDepthLabel(bv)+' - click closer to shore':'');
     if(isEBUS(lat,lon)){ebusWarnV.setValue('EBUS ZONE: SST cooling trend may be upwelling artifact. B may be inflated.'); ebusWarnV.style().set('color','#885500');}else{ebusWarnV.setValue('');}
-    chlaV.setValue(fmt(cv,3)+' mg/m3 ('+chlSource+')'+(cv?(cv<0.1?' [oligotrophic]':cv<0.5?' [low]':cv<1?' [moderate]':cv<2?' [good]':' [high]'):''));
+    // v10.159 S5(ii) FIX: this label was still on the PRE-v10.158 direction, in
+    // which more chlorophyll was better. At 1.5 mg/m3 it printed "[good]" while
+    // computeScore's s2 - on the same screen - scored that same value 80/100
+    // STRESS. The bins now match s2's breakpoints and its direction, and use the
+    // 0.45 mg/m3 GBR annual-mean water-quality guideline (De'ath & Fabricius
+    // 2010) as the first real signal, exactly as s2 does.
+    chlaV.setValue(fmt(cv,3)+' mg/m3 ('+chlSource+')'+
+      (cv!==null&&cv!==undefined&&!isNaN(cv)?(cv<0.1?' [oligotrophic - reference reef state]':
+                      cv<0.2?' [very low]':
+                      cv<0.45?' [below the GBR guideline]':
+                      cv<1?' [above the 0.45 GBR guideline]':
+                      cv<2?' [enriched]':' [bloom]'):''));
     turbV.setValue(turv!==null?fmt(turv,3)+' NDTI (reef valid)':'n/a - open ocean');
     no2V.setValue(fmt(nv,8)+' mol/m2');
     // v10.158 W-05: fmtDepth(), not fmt() - a real 1,200 m GEBCO depth is not
@@ -10193,14 +11307,20 @@ function analyzeLocation(lat, lon) {
     // window) is actually a trend. Calling both "rising" was misleading
     // and could contradict S13's proper BEFORE/AFTER Scheffer test, which
     // computes a real AC1 delta against a stored baseline.
+    // v10.159 W-02: jsNodeStatsFixed() returns climatologySource, climatologyNote
+    // and the lag-1 pair audit for this window too, and S12 dropped all of them.
+    // Appended here, so "AC1 = 0.62" is never shown without saying whether the
+    // seasonal cycle was removed from the series it came from.
+    var _s12Disc = nodeStatsDisclosure(csdRes);
     if(s12VarArtifact){
-      realCsdNoteV.setValue(CSD_VAR_ARTIFACT_MSG);
+      realCsdNoteV.setValue(CSD_VAR_ARTIFACT_MSG+(_s12Disc?'\nSERIES: '+_s12Disc:''));
     } else if(realAC1!==null&&realAC1>0.5&&varTrendRatio!==null&&varTrendRatio>1.3){
       realCsdNoteV.setValue('AC1 is elevated AND variance is rising within this single window - worth watching.\n'+
         'NOTE: this is a one-window snapshot with no BEFORE baseline, not a validated before/after test.\n'+
-        'For a real Scheffer 2009 BEFORE-vs-AFTER check against a control site, use S13 below.');
+        'For a real Scheffer 2009 BEFORE-vs-AFTER check against a control site, use S13 below.'+
+        (_s12Disc?'\nSERIES: '+_s12Disc:''));
     } else {
-      realCsdNoteV.setValue('');
+      realCsdNoteV.setValue(_s12Disc?'SERIES: '+_s12Disc:'');
     }
 
     // S16 ECI from GEBCO
@@ -10337,7 +11457,19 @@ function analyzeLocation(lat, lon) {
     // extractSpatialAC1Detail - the reducer's output KEY is not verifiable
     // without a live GEE session, so read whatever numeric key is actually
     // there and report "unavailable" if none is.
-    function toeNum(obj, candidates, excludeSub){
+    // v10.159 S8 FIX: the blind fallback scan took ANY numeric property that did
+    // not contain excludeSub. The count call passes excludeSub=null, so on a
+    // dictionary whose real count key is present-but-null and which happens to
+    // carry any other number, it returned that other number as the valid-year
+    // count - with countSource:'actual' and no caveat. Verified on the shipped
+    // v10.158 code: toeNum({sst_count:null, other:7}, [...], null) returned 7,
+    // so TOE-01's whole point (the REAL valid-year count drives df and the t
+    // gate) was defeated by an unrelated property. The fallback now takes a
+    // REQUIRED SUFFIX: only a key ending in that suffix may be accepted blindly.
+    // The correlation probe passes no suffix and keeps its excludeSub behaviour,
+    // which was verified safe - its candidate list matches EE's actual output
+    // key and its excludeSub='value' keeps a p-value out.
+    function toeNum(obj, candidates, excludeSub, requireSuffix){
       if(obj===null||obj===undefined) return null;
       if(typeof obj==='number') return isNaN(obj)?null:obj;
       if(typeof obj!=='object') return null;
@@ -10350,6 +11482,7 @@ function analyzeLocation(lat, lon) {
         if(k==='_meta') continue;
         var kl=String(k).toLowerCase();
         if(excludeSub&&kl.indexOf(excludeSub)>=0) continue;
+        if(requireSuffix && kl.substring(kl.length-requireSuffix.length)!==requireSuffix) continue;
         if(typeof obj[k]==='number'&&!isNaN(obj[k])) return obj[k];
       }
       return null;
@@ -10365,8 +11498,12 @@ function analyzeLocation(lat, lon) {
       var signal=Math.abs(sl*nom), snr=ns>0?signal/ns:0;
 
       // ---- TOE-01: real valid-year count ----
+      // v10.159 S8: '_count' is now a REQUIRED suffix on the blind fallback, so an
+      // unrelated numeric property can no longer be read as the valid-year count.
+      // If nothing matches, rawCount stays null and countSource becomes
+      // 'nominal-fallback', which the verdict line already discloses.
       var rawCount=toeNum(r.count,['count','sst_count','chlor_a_count','salinity_0_count',
-        'tropospheric_NO2_column_number_density_count','ph_count','o2_count'],null);
+        'tropospheric_NO2_column_number_density_count','ph_count','o2_count'],null,'_count');
       if(rawCount!==null) rawCount=Math.floor(rawCount+0.5);
       var n, countSource;
       if(rawCount===null||rawCount<0){ n=nom; countSource='nominal-fallback'; rawCount=null; }
@@ -10696,7 +11833,130 @@ function analyzeLocation(lat, lon) {
 Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
-print('STEMGeoHS Marine v10.158 -- READY');
+print('STEMGeoHS Marine v10.159 -- READY');
+print('');
+print('v10.159 FIX 17: 3 blockers (one of them a CALIBRATION REGRESSION v10.158');
+print('  introduced), 8 should-fix defects, 4 nits. Every number below was produced');
+print('  in a Node harness this session against the extracted pure-JS functions at');
+print('  v10.158 (before) and v10.159 (after). EE was not run; see RESIDUAL RISK.');
+print('  W-01 BLOCKER, OUR OWN REGRESSION: v10.158 required a COMPLETE 12/12');
+print('    climatology before deseasonalizing and ran the permutation test on RAW');
+print('    values otherwise. S7D/S7E pool 30 months and S7F 22, all below the');
+print('    36-month floor, so all three took the raw path ALWAYS and printed');
+print('    "p=0.021 *** likely real" out of it. MEASURED variance-ratio false-');
+print('    positive rate on pure seasonality + white noise, NO real change, 3000');
+print('    reps/cell, phase and gap randomised, nominal 5% (Monte Carlo: an');
+print('    individual cell moves by up to about a point between runs):');
+print('      config          shape      v10.156   v10.158   v10.159');
+print('      18+12 (S7D/E)   smooth       4.8%     13.5%      4.8%');
+print('      18+12           sawtooth     4.7%     25.4%      5.6%');
+print('      12+12 (S7F new) smooth     no p-val   24.0%      6.2%');
+print('      12+12           sawtooth   no p-val   39.8%      6.0%');
+print('      36+12           smooth       4.8%      5.4%      5.0%');
+print('    FIX: computeUsableClimatology() IMPUTES the calendar months that cannot');
+print('    be estimated from their own samples, from an order-3 harmonic fit to the');
+print('    whole record blended in at 0.5 pseudo-observations per month - so the');
+print('    record is deseasonalized rather than refused, and no reading is dropped.');
+print('    Below 24 valid months or 9 distinct calendar months it emits NO p-value');
+print('    at all, with a reason. No PERMUTATION TEST in the file can now emit a');
+print('    p-value from a series whose seasonal cycle was not removed. (STEP 5\'s');
+print('    sliding-window Mann-Kendall still runs on a raw trajectory, but it shows');
+print('    the raw and deseasonalized rows side by side and labels both.)');
+print('    THAT FLOOR IS A POWER FLOOR, NOT A CALIBRATION ONE - measured with the');
+print('    floor lowered to 8, the false-positive rate at pooled 12-22 months is');
+print('    3.1-6.8%, about the same as above it. What collapses is power: a REAL');
+print('    x5 variance change is caught 7.3% / 19.8% / 34.3% of the time at pooled');
+print('    12 / 16 / 22, against 45.7% at 24 and 71.3% at 48.');
+print('    Prior weight and the trend term were SCANNED, not chosen: worst cell');
+print('    6.1% (w=0.3), 6.2% (0.5), 7.2% (0.75), 9.4% (1.0), 13.6% (2.0); adding a');
+print('    trend term was no better (6.5% vs 6.2%). POWER went UP, not calibration');
+print('    bought by suppression - a real x3 variance change at 18+12 is detected');
+print('    10.3% / 13.9% / 37.9% of the time (v156 / v158 / v159), and 36+12 and');
+print('    48+24 are unchanged at 46-72%.');
+print('    Also: deseasonNote was rendered at 1 of 6 sites. All 6 now go through');
+print('    permP()/permVerdictTag(), and permUsable() - the machine-readable flag,');
+print('    not prose - gates every significance decision. Two lines that claimed');
+print('    these p-values were "the only figures with a known false-positive rate"');
+print('    are corrected. S7D/E/F month boxes are 12-36 (was 4-36) and S7F defaults');
+print('    to 12+12, so the DEFAULT config cannot reach an uncalibrated path.');
+print('  W-02 BLOCKER: the 12/12 rule made deseasonalizing unreachable on gappy');
+print('    data. Pass rate of climatologyIsComplete(), 10000 draws/cell, by record');
+print('    length and per-month drop rate - v10.158 vs v10.159:');
+print('      N=36  0%/5%/10%/15%/20% : 100/15.9/2.1/0.3/0.0  vs 100/100/100/99.8/98.2');
+print('      N=48                    : 100/84.4/52.2/24.5/9.3 vs 100/100/100/100/100');
+print('    With seasonally CLUSTERED gaps at 20% - how cloud and ice behave - the');
+print('    old rule passed 0.0% of 36-month records; the new one passes 81.5%.');
+print('    OISST is gap-free so STEP 2/3/4 were fine; FAI (S7C-F) was on the raw');
+print('    path at every window length, always. AND: jsNodeStatsFixed wrote');
+print('    climatologySource, climatologyNote, ac1PairsUsed, ac1PairsDropped and');
+print('    ac1MaxGapMonths and NO CALLER READ ANY OF THEM - the file claimed the');
+print('    reason was "on screen" and that it "says so, loudly". BOTH WERE FALSE.');
+print('    Corrected in place, and all five fields are now rendered at every');
+print('    consumer (S7C, S7D, S7E, S7F, S12, STEP 3 COMPARE, STEP 4).');
+print('  W-03 BLOCKER: STEP 4 54mo and 60mo were not independent tests. Nothing');
+print('    validated that the AFTER start leaves 60 months of record; months past');
+print('    the end of OISST come back masked and are dropped, and rowUnderpowered');
+print('    tested the NOMINAL w. With a 39-month AFTER record 36/48/54/60 all');
+print('    counted as powered: alpha 0.05/4 = 0.0125 for TWO real hypotheses, and');
+print('    the tallies triple-counted one result into "3 of 4 windows lean LOCAL".');
+print('    FIXED: the real span is computed once per row; a row repeating a shorter');
+print('    row\'s span is marked DUPLICATE and excluded from nPoweredWindows, the');
+print('    Bonferroni divisor, uncorrectedLocalCount, testedRows, ac1TestedRows,');
+print('    bestW and bestAc1W. Verified: 39mo record -> 4 powered/0.0125 becomes');
+print('    2 powered/0.0250; 36mo -> 1 powered/0.0500; 60mo -> unchanged.');
+print('  S1: the displayed AC1 and the tested AC1 were different estimators. On the');
+print('    same raw gapped series at 12% masking, v10.158 disagreed on 949 of 960');
+print('    draws (worst 0.5447, e.g. -0.7187 shown vs -0.1739 tested); v10.159');
+print('    disagrees on 0 of 960. S2: passing times to the observed statistic alone');
+print('    would bias p DOWN - isolated on white noise at true AC1=0, n=30, the old');
+print('    rule gives 5.1/6.7/7.3/9.1% at 0/10/20/30% masking and the new one');
+print('    5.5/5.1/4.5/4.8%. PARTIAL: permutationTestAC1Fixed\'s ONE-SIDED null is');
+print('    still ~10.7% at n=48 for a different reason (deseasonalizing makes same-');
+print('    calendar-month readings dependent and a free shuffle can pair them).');
+print('    That needs a block permutation, NOT done here. It is dead code today.');
+print('  S3: STEP 4 ran 3 variance-artifact checks on the study side and 2 on the');
+print('    control side, so v10.157\'s "mirrors STEP 3 exactly" was untrue. With');
+print('    cBVF=0.0005, cBVar=20.0x, cVF=0.58, cVR=18.0 the old code scored');
+print('    divScored=+10.20 and reached "LOCAL CSD + AC1 CONFIRMED"; now flagged.');
+print('  S4: fmtDepth(-9999,0) returned "-9999", rendered "-9999 m (GEBCO) very deep');
+print('    ocean". Sentinel guards (-9999, 9999, -32768) added to fmtDepth AND');
+print('    classifyDepthLabel; -1500 still renders normally.');
+print('  S5: CCS was NON-MONOTONE in chlorophyll at exactly 0 (chl=0 -> CCS 34,');
+print('    chl=0.02 -> CCS 28), and the sidebar still said "[good]" at 1.5 mg/m3');
+print('    while s2 scored it 80/100 stress. Both fixed; monotone verified across');
+print('    15 chlorophyll values. S6: computeScore(28.5, 0, 0.02, 0, 0.02, 1) gave');
+print('    s2:50 s6:20 with nInputs:6 and completeness:100 - two no-data defaults');
+print('    inside a "100% complete" score. Now s2:5 s6:10.');
+print('  S7: TOE-02\'s reach was overstated. "binds at k=4,6,8,12,16, stops at 24"');
+print('    assumes the k valid years are CONSECUTIVE. Scattered across the nominal');
+print('    window - the real "8 of 32" case - Sxx is 10-20x larger and the gate');
+print('    stops binding at k=11 (even scatter) / k=14 (random draw). The honest');
+print('    statement is: it binds at k<=8. S8: toeNum({sst_count:null, other:7})');
+print('    returned 7 as the valid-year count with countSource:"actual"; the blind');
+print('    fallback now requires a key ending in "_count" and returns null there.');
+print('  N1: "13.17 -> 1.61" was credited to TOE-01 alone. TOE-01 alone gives 0.58;');
+print('    1.61 needs TOE-01 AND the measured r=0.550. N2: "the 6/13/24 strings are');
+print('    now derived too" was false - they are derived now, from');
+print('    CSD_SWEET_SPOT_WINDOWS. N3: 54 and 60 are not calibration keys and land');
+print('    on 48 - conservative, and the basis string now says so. N4:');
+print('    jsNodeStatsFixed gap-awareness is PARTIAL (AC1 only) and is documented as');
+print('    partial; the variance/skew estimators are left alone on purpose, because');
+print('    the v10.153 varr cutoffs were calibrated against them.');
+print('  RESIDUAL RISK - NEEDS A LIVE EE SESSION: all changes are client-side JS,');
+print('    unit-tested in Node; no ee.* call was touched and the per-button EE call');
+print('    count is unchanged. Unverified live: (1) where OISST actually ends, and');
+print('    so whether 54/60 really do collapse onto 48 for the suggested AFTER start');
+print('    - the DUPLICATE logic is correct for whatever the real span is, but the');
+print('    39 is an assumption; (2) whether real FAI masking resembles the clustered');
+print('    synthetic closely enough for the 81.5% imputation pass rate to transfer;');
+print('    (3) the on-screen layout of the new SERIES USED / SERIES QUALITY blocks.');
+print('    MEASURED RESIDUALS: at 12+12 - the shortest config that can produce a');
+print('    p-value at all - the rate sits a little high, 5.3-6.2% across the three');
+print('    seasonal shapes over repeated runs (against 10.4-39.8% in v10.158);');
+print('    at 25-35% seasonally-clustered masking most records are');
+print('    refused, so few p-values are emitted and the rate cannot be estimated');
+print('    from those that are; and permutationTestAC1Fixed stays at ~10.7% until');
+print('    its null is rebuilt.');
 print('');
 print('v10.158 FIX 16: two blockers created by the v10.156 BUG-08 fix + 8 smaller');
 print('  defects, found by a global coordinate sweep. All reproduced BEFORE and');
@@ -10720,7 +11980,10 @@ print('    FIND SWEET SPOT re-cut [6,9,12,24,36,48] -> [12,24,36,48,54,60]: four
 print('    POWERED rows instead of two, plus 12 and 24 kept as diagnostics-only (24');
 print('    because it was the v10.156 floor). EE call budget CHECKED - it does not');
 print('    depend on the literal 6 (multiTotal and the fire loop are both derived);');
-print('    only display strings said "6"/"13"/"24 tests", now derived too.');
+print('    only display strings said "6"/"13"/"24 tests". v10.159 N2 CORRECTION:');
+print('    "now derived too" was NOT true in v10.158 - three panel labels and one');
+print('    startup line still held the literals. They are derived in v10.159, from');
+print('    CSD_SWEET_SPOT_WINDOWS, which the onClick handler also reads.');
 print('    BONFERRONI: previous review CONFIRMED - alpha was 0.05/6 while only the');
 print('    POWERED windows were counted (3, now 4). Divisor is now nPoweredWindows,');
 print('    the same number the panel prints as its denominator.');
@@ -10828,7 +12091,10 @@ print('    fetched in the SAME dictionary already evaluated (zero extra EE calls
 print('    Verdicts read "n=8 of 32 nominal yr". Guards: count missing -> nominal');
 print('    fallback, SAID ON SCREEN; count<3 -> df<1, no test exists, cannot emerge;');
 print('    count>nominal -> clamped and noted. Tested: an 8-of-32 salinity pixel at');
-print('    snr=3.20 goes from EMERGED (t=13.17 vs 2.04) to not yet (t=1.61 vs 2.45).');
+print('    snr=3.20 goes from EMERGED (t=13.17 vs 2.04) to not yet. v10.159 N1');
+print('    CORRECTION: the landing t=1.61 needs TOE-01 AND TOE-02 together -');
+print('    TOE-01 alone gives t=0.58 (vs bar 2.447), and 1.61 is 0.550*sqrt(6/');
+print('    (1-0.550^2)), i.e. the MEASURED r. v10.158 credited it to TOE-01 alone.');
 print('  TOE-02 BLOCKER: the v10.156 t-gate was VACUOUS for 4 of 6 variables.');
 print('    SStot was ASSUMED as n*noise^2, so t was a deterministic function of snr');
 print('    and n: at snr=2, t ~= sqrt((n-2)/2). Measured on the shipped v10.156 code:');
@@ -10842,9 +12108,14 @@ print('    labelled fallback; |r|>=1 is marked unreliable, never printed as t=in
 print('    PARTIAL, stated plainly: on a COMPLETE gap-free record the identity');
 print('    r^2 = snr^2*(n^2-1)/(12n^2) still holds, so the gate is STILL vacuous at');
 print('    n=27/32/44 with 100% annual coverage. It binds exactly where the record');
-print('    is sparse - at nominal 32yr and snr=2 it binds at 4, 6, 8, 12 and 16');
-print('    valid years and stops binding at 24. Inherent to defining snr from the');
-print('    TOTAL SD; removing it would mean redefining snr, deliberately not done.');
+print('    is sparse. v10.159 S7 CORRECTION: v10.158 said it "binds at 4,6,8,12,16');
+print('    and stops at 24" - true only if the valid years are CONSECUTIVE, which is');
+print('    what Sxx=k(k^2-1)/12 assumes. Scattered across the nominal window (the');
+print('    real "8 of 32" case) Sxx is 10-20x larger at small k: at nominal 32 and');
+print('    snr=2, t at k=8 is 0.354 consecutive vs 2.009 scattered (tCrit 2.447),');
+print('    and the gate stops binding at k=11 (even scatter) / k=14 (random draw),');
+print('    not 24. The honest statement is: THE GATE BINDS AT k<=8. Inherent to');
+print('    defining snr from the TOTAL SD; removing it would mean redefining snr.');
 print('  REGRESSION from v10.156 BUG-03: a CONTROL-site variance artifact suppressed');
 print('    the STUDY AC1 signal in STEP 4. Five checks - study AND control - were');
 print('    collapsed into one flag that also gated AC1, so a near-zero first-half');
@@ -11686,7 +12957,7 @@ print('  none found elsewhere, so this was the only crash site.');
 print('');
 print('v10.82 NEW: FIND SWEET SPOT (S13 STEP 4) rebuilt');
 print('  - Control site "before" state now REAL (1 shared control-BEFORE test), not a fake 1.0 baseline');
-print('  - Live progress counter while 13 parallel EE calls run - never looks frozen');
+print('  - Live progress counter while '+CSD_SWEET_SPOT_NCALLS+' parallel EE calls run - never looks frozen');
 print('  - New LOCAL vs REGIONAL vs Scheffer-2009-validation breakdown for the winning window');
 print('  - try/catch around final analysis - shows a red error box instead of silently stalling');
 print('');
