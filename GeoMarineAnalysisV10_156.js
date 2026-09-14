@@ -1,6 +1,166 @@
 // ============================================================
-// STEMGeoHS Marine v10.156
+// STEMGeoHS Marine v10.157
 // Coastal Attractor Landscape + Cancer Score Pipeline
+//
+// v10.157 FIX 15: two ToE blockers and one v10.156 regression, found by an
+//   adversarial review. Every claim below was reproduced BEFORE and checked
+//   AFTER in standalone Node harnesses run against the extracted functions.
+//   Earth Engine cannot be run from that harness, so the EE-side assumptions
+//   are listed explicitly under RESIDUAL RISK at the end of this entry.
+//
+//   TOE-01 (BLOCKER) - the ToE sample-size penalty used a NOMINAL record
+//     length, not the actual valid-point count. Every caller of calcToE()
+//     passed a hardcoded constant (44/27/32/7/4/32) and that constant drove
+//     BOTH Sxx = n(n^2-1)/12 and df = n-2. This file's own S17b block already
+//     documented the constant as routinely wrong: "Salinity is nominally a
+//     32yr record (1993-2024) in S17 above, but only N years had real, valid
+//     HYCOM data at this exact point". At a pixel with 8 valid annual values
+//     an n of 32 inflates Sxx by 65x, understates se(slope) by 8.1x and gives
+//     the t-test df=30 instead of df=6 - BOTH anti-conservative, so the very
+//     gate v10.156 added to stop short records emerging could itself pass an
+//     8-point record. Fixed: ee.Reducer.count() on each annual band gives the
+//     REAL per-pixel valid-year count; it is fetched inside the SAME
+//     ee.Dictionary that was already being evaluated, so it costs ZERO extra
+//     .evaluate() round trips (the property v10.89/v10.141 built those split
+//     dictionaries to protect). Sxx, SStot and df now come from that count;
+//     the nominal length is kept only for display and for the amplitude term
+//     signal=|slope*nominal_years|, which is correctly a calendar-time
+//     quantity. Every verdict now reads "n=8 of 32 nominal yr". GUARDS:
+//     count missing -> fall back to nominal AND say so on screen (the df may
+//     then be far too generous); count<3 -> df<1, no slope test exists,
+//     CANNOT emerge; count>nominal -> clamped and noted. Unit-tested: the
+//     8-of-32 salinity pixel at snr=3.20 went from EMERGED (t=13.17 vs bar
+//     2.04) to "not yet" (t=1.61 vs bar 2.45).
+//     CONSERVATISM NOTE: Sxx=n(n^2-1)/12 assumes the n valid years are
+//     CONSECUTIVE. Scattered across a longer window the true Sxx is larger,
+//     so this understates Sxx, overstates se(slope) and understates the
+//     DERIVED t - the conservative direction. The measured-r path (TOE-02)
+//     does not make that assumption at all.
+//
+//   TOE-02 (BLOCKER) - the v10.156 t-gate was mathematically VACUOUS for 4 of
+//     the 6 ToE variables. Because SStot was ASSUMED as n*noise^2 rather than
+//     measured, t was a deterministic function of snr and n: with
+//     A = slope^2*Sxx/SStot, algebra gives A = snr^2*(n^2-1)/(12n^2) and
+//     t^2 = (n-2)A/(1-A), so at snr=2 exactly, t ~= sqrt((n-2)/2). Verified
+//     against the shipped v10.156 code: n=4 -> t=0.953 vs bar 4.303 (binds);
+//     n=7 -> 1.557 vs 2.571 (binds); n=12 -> 2.224 vs 2.228 (marginal);
+//     n=13 -> 2.335 vs 2.201, n=27 -> 3.532 vs 2.064, n=32 -> 3.870 vs 2.042,
+//     n=44 -> 4.581 vs 2.021 (all VACUOUS). So for SST(44), CHL(27), SAL(32)
+//     and DO(32) the condition snr>=2 ALREADY implied t>=t_crit and the new
+//     gate could never change a verdict; it bound only NO2(7) and pH(4). The
+//     t carried no information independent of snr because snr is itself built
+//     from the TOTAL SD, which already contains the signal.
+//     Fixed: ee.Reducer.pearsonsCorrelation() on the SAME (t, value) band
+//     pair already fed to linearFit gives the MEASURED per-pixel correlation,
+//     and the textbook exact slope t-test t = |r|*sqrt((n-2)/(1-r^2)) is used
+//     instead of re-deriving t from snr. Also fetched inside the SAME already-
+//     evaluated dictionary - no extra .evaluate(). The derived path is kept
+//     ONLY as a fallback when no measured r arrives, and every verdict says
+//     which produced it ("MEASURED r=0.550" vs "DERIVED from SNR"). |r|>=1
+//     (a perfect fit, infinite t) is marked unreliable and cannot emerge,
+//     exactly as the existing SSres<=0 branch is. EMERGED remains
+//     (snr>=2.0 && slopeSignificant), unchanged.
+//     HOW FAR THIS ACTUALLY GOES - stated plainly, because it is only a
+//     PARTIAL fix. The verdict now depends on a quantity the code measures
+//     rather than one it re-derives, and the minimum |r| the gate demands is
+//     0.950 at n=4, 0.755 at n=7, 0.576 at n=12, 0.382 at n=27, 0.349 at
+//     n=32 and 0.298 at n=44; at every one of those n there exist records
+//     with snr>=2 whose verdict the gate flips (checked numerically). BUT: on
+//     a record that is COMPLETE and gap-free (count == nominal, evenly spaced
+//     annual steps) and where EE's stdDev really is the population SD, the
+//     identity r^2 = snr^2*(n^2-1)/(12n^2) still holds EXACTLY, so r is not
+//     free, the measured-r t reproduces the derived t to the digit, and the
+//     gate is STILL VACUOUS for n=27, 32 and 44 (implied r at snr=2 is 0.577
+//     at every n, which clears the 0.382/0.349/0.298 bars). It stops being
+//     vacuous exactly where the record is INCOMPLETE - i.e. wherever TOE-01
+//     finds count < nominal, because then snr is measured over nominal
+//     calendar years while r and df come from the valid years, and the two
+//     decouple: at nominal=32 with snr=2, the gate binds at k=4, 6, 8, 12 and
+//     16 valid years and stops binding at k=24. This residual is inherent to
+//     defining snr from the TOTAL SD on a complete evenly-spaced series -
+//     there are only three numbers (slope, SD, n) and any statistic built
+//     from them is a function of the other two. Removing it entirely would
+//     mean redefining snr, which is deliberately NOT done here. So: for a
+//     100%-coverage SST/Chl/Salinity/DO pixel the gate still adds nothing;
+//     for a sparse pixel - the case that motivated both blockers - it binds.
+//
+//   REGRESSION (from v10.156 BUG-03) - a CONTROL-site variance artifact
+//     suppressed the study's AC1 signal in STEP 4 FIND SWEET SPOT. v10.156
+//     collapsed FIVE checks - study AND control - into one rowVarArtifact
+//     flag and then used that flag to gate AC1 as well, so a near-zero
+//     first-half variance at the open-ocean CONTROL discarded a genuine study
+//     dAC1 of e.g. +0.40 from bestAc1W, localLeaningRows, testedRows, the
+//     ROBUSTNESS tally and the headline - and the tool then reported "NO
+//     WINDOW COULD SUPPORT A VERDICT" on a real signal. STEP 3 COMPARE had
+//     always done this correctly (studyVarArtifact and ctrlVarArtifact
+//     separate, only the corresponding variance term nulled, AC1 never
+//     touched). STEP 4 now mirrors STEP 3 exactly: rowStudyVarArtifact nulls
+//     only sDVarScored, rowCtrlVarArtifact nulls only cDVarScored, divScored
+//     requires BOTH sides intact, and neither touches sDAC1 or ac1Rose. A
+//     variance artifact still excludes the row from all VARIANCE-based claims
+//     and from the Scheffer check (which needs BOTH indicators) - that part
+//     was right. rowUnderpowered is UNCHANGED and still excludes the row from
+//     everything, AC1 included. Every downstream consumer was re-checked:
+//     localLeaningRows and testedRows (variance verdicts) now use varExcluded;
+//     a new AC1 tally and a new AC1-only headline branch use underpowered
+//     only; the flagged-window list distinguishes "VARIANCE ARTIFACT ...
+//     dAC1 STILL USABLE" from "UNDERPOWERED ... NOTHING usable". The
+//     permutation local-signal count never consumed rowExcluded (it tests
+//     w < CSD_MIN_WINDOW_MONTHS directly) and so was already correct.
+//     Unit-tested against the LITERAL shipped block from both versions:
+//     control-only artifact - AC1 kept, study variance kept, control variance
+//     nulled; study-only artifact - the mirror image; underpowered - still
+//     excludes everything in both versions; a clean powered row - bit-
+//     identical output in both versions.
+//
+//   CHANGELOG HONESTY - the v10.156 BUG-02 entry claimed "across all 126,864
+//     untied orderings at n=4..10". That figure matched no enumeration; the
+//     sum of n! for n=4..10 is 4,037,904. Re-derived here by exact
+//     enumeration: over all 4,037,904 untied orderings, exactly 1,234
+//     verdicts change and every one LOSES significance (2 of 24 at n=4, 28 of
+//     720 at n=6, 1,204 of 40,320 at n=8; none at n=5, 7, 9 or 10). The 1,234
+//     and the directional claim were both correct - only the total was wrong.
+//     Corrected in the header entry and in the startup banner, with the error
+//     disclosed rather than silently overwritten. The other specific numbers
+//     in that entry were re-checked and DO hold: n=4 tau=+1 gives exactly
+//     0.083333 exact vs 0.041540 old; n=7 tau=+1 gives 0.000397 vs 0.001611;
+//     and mkExactTailP matches brute-force enumeration of all n! orderings
+//     for n=4..8 with max abs error 0.0e+0.
+//
+//   RESIDUAL RISK - what could NOT be verified without a live Earth Engine
+//     session, and is therefore a GUESS until someone opens this in the
+//     browser:
+//     (a) ee.Reducer.count() band naming. The new count images are reduced
+//         with .reduce(ee.Reducer.count()) on a single selected band, which
+//         should yield "<band>_count" by the same convention that already
+//         makes the working stdDev bands "sst_stdDev" etc. NOT confirmed.
+//     (b) ee.Reducer.pearsonsCorrelation() band naming. Expected to be
+//         "correlation" (plus a "p-value" band), unprefixed, by the same
+//         convention that already makes linearFit's outputs plain "scale"
+//         and "offset" in this file. NOT confirmed - and v10.88 recorded
+//         exactly this uncertainty for the same reducer.
+//     MITIGATION: because (a) and (b) are guesses, NEITHER new entry does
+//     .select() or .get() on a guessed band name. Both pass the WHOLE
+//     reduceRegion dictionary through and the value is extracted CLIENT-side
+//     by toeNum(), which tries the expected keys, then any other numeric key
+//     (skipping p-value), then returns null. A wrong band name therefore
+//     degrades to "count unavailable -> nominal fallback, stated on screen"
+//     or "no measured r -> derived fallback, stated on screen", instead of
+//     throwing the hard server-side error that would blank all four core
+//     indicators. That is the same defensive pattern v10.88 adopted for
+//     computeSpatialEWS/extractSpatialAC1Detail.
+//     (c) Whether ee.Reducer.count(), stdDev, linearFit and
+//         pearsonsCorrelation all see the IDENTICAL set of valid pixels at a
+//         point. The code assumes they do. If they do not, the existing
+//         "reducers disagree" unreliable branch catches the derived path, and
+//         the measured-r path would use a slightly wrong n in (n-2).
+//     (d) Whether EE's stdDev is the population or sample SD. The file
+//         asserts population; if it is the sample form, SStot is overstated,
+//         the derived t is understated (conservative), and the r-implied
+//         algebra above shifts by under 2% at n=44.
+//     (e) None of the STEP 4 or ToE display strings have been rendered in a
+//         real ui.Panel - only their construction was exercised in Node.
+//
 //
 // v10.156 FIX 14: eight statistical bugs found by an external, unit-tested
 //   audit. Every fix below was reproduced BEFORE and corrected AFTER in
@@ -34,9 +194,15 @@
 //     correction to the normal branch it falls back to. Validated against
 //     brute-force enumeration of all n! orderings for n=4..8: exact match,
 //     max abs error 0.0e+0. n=4 tau=+1 now returns 0.0833 (was 0.0416) and
-//     n=7 tau=+1 returns 0.000397 (was 0.0016). Across all 126,864 untied
-//     orderings at n=4..10, 1,234 significance verdicts change and every one
-//     LOSES significance - none gains it. Return shape preserved; method,
+//     n=7 tau=+1 returns 0.000397 (was 0.0016). (v10.157 CORRECTION: this
+//     entry originally said "across all 126,864 untied orderings at n=4..10".
+//     That figure was wrong and matched no enumeration - the sum of n! for
+//     n=4..10 is 4,037,904. Re-derived by exact enumeration in v10.157: over
+//     all 4,037,904 untied orderings at n=4..10, exactly 1,234 significance
+//     verdicts change and every one LOSES significance - none gains it. The
+//     1,234 and the directional claim were both correct; only the total was
+//     not. Per-n: 2 of 24 at n=4, 28 of 720 at n=6, 1,204 of 40,320 at n=8,
+//     and none at n=5, 7, 9 or 10.) Return shape preserved; method,
 //     nTieGroups added, and every on-screen verdict now says which null
 //     produced its p-value.
 //
@@ -3183,9 +3349,36 @@ var _makeAnnSST = function() {
   });
   return ee.ImageCollection(list);
 };
+// v10.157 TOE-01/TOE-02: two extra per-pixel reductions per variable, built
+// alongside the existing fit/noise images and folded into the SAME dictionary
+// that is already evaluated - so they cost ZERO additional .evaluate() round
+// trips.
+//   *Count - ee.Reducer.count() over the annual band gives the REAL number of
+//     years that had a valid pixel here. calcToE() previously used a hardcoded
+//     nominal record length (44/27/32/7/4/32) for BOTH Sxx=n(n^2-1)/12 and
+//     df=n-2, and the tool's own S17b block already documents that the nominal
+//     figure is routinely wrong ("nominally a 32yr record ... but only N years
+//     had real, valid HYCOM data at this exact point"). Both errors ran
+//     ANTI-conservative: at 8 valid years an n of 32 inflates Sxx ~65x,
+//     understates se(slope) ~8x and hands the t-test df=30 instead of df=6.
+//   *Corr - ee.Reducer.pearsonsCorrelation() over the SAME (t, value) band
+//     pair already fed to linearFit gives the real per-pixel correlation, so
+//     the slope t-test can be computed from MEASURED fit quality instead of
+//     being re-derived from snr (which made the gate vacuous - see calcToE).
+// SAFETY: the output band names of a COMBINED-input reducer cannot be
+// confirmed without a live GEE session, and this file already learned that
+// lesson in v10.88 (see computeSpatialEWS / extractSpatialAC1Detail). A
+// .select() or .get() on a guessed key throws a HARD server-side error, which
+// here would blank all four core indicators - exactly the failure v10.89 split
+// these dictionaries to prevent. So neither of the new reductions selects or
+// gets a guessed key: the WHOLE reduceRegion dictionary is passed through and
+// the value is pulled out client-side by toeNum() below, which degrades to
+// "unavailable" instead of crashing.
 var _annSSTColl=_makeAnnSST();
 var toeSSTFit=_annSSTColl.select(['t','sst']).reduce(ee.Reducer.linearFit());
 var toeSSTNoise=_annSSTColl.select('sst').reduce(ee.Reducer.stdDev());
+var toeSSTCount=_annSSTColl.select('sst').reduce(ee.Reducer.count());
+var toeSSTCorr=_annSSTColl.select(['t','sst']).reduce(ee.Reducer.pearsonsCorrelation());
 
 var _makeAnnCHL = function() {
   var list = ee.List.sequence(1998,2024).map(function(yr){
@@ -3198,6 +3391,8 @@ var _makeAnnCHL = function() {
 var _annCHLColl=_makeAnnCHL();
 var toeCHLFit=_annCHLColl.select(['t','chlor_a']).reduce(ee.Reducer.linearFit());
 var toeCHLNoise=_annCHLColl.select('chlor_a').reduce(ee.Reducer.stdDev());
+var toeCHLCount=_annCHLColl.select('chlor_a').reduce(ee.Reducer.count());
+var toeCHLCorr=_annCHLColl.select(['t','chlor_a']).reduce(ee.Reducer.pearsonsCorrelation());
 
 var _makeAnnSAL = function() {
   var list = ee.List.sequence(1993,2024).map(function(yr){
@@ -3210,6 +3405,8 @@ var _makeAnnSAL = function() {
 var _annSALColl=_makeAnnSAL();
 var toeSALFit=_annSALColl.select(['t','salinity_0']).reduce(ee.Reducer.linearFit());
 var toeSALNoise=_annSALColl.select('salinity_0').reduce(ee.Reducer.stdDev());
+var toeSALCount=_annSALColl.select('salinity_0').reduce(ee.Reducer.count());
+var toeSALCorr=_annSALColl.select(['t','salinity_0']).reduce(ee.Reducer.pearsonsCorrelation());
 
 var _makeAnnNO2 = function() {
   var list = ee.List.sequence(2019,2025).map(function(yr){
@@ -3222,6 +3419,8 @@ var _makeAnnNO2 = function() {
 var _annNO2Coll=_makeAnnNO2();
 var toeNO2Fit=_annNO2Coll.select(['t','tropospheric_NO2_column_number_density']).reduce(ee.Reducer.linearFit());
 var toeNO2Noise=_annNO2Coll.select('tropospheric_NO2_column_number_density').reduce(ee.Reducer.stdDev());
+var toeNO2Count=_annNO2Coll.select('tropospheric_NO2_column_number_density').reduce(ee.Reducer.count());
+var toeNO2Corr=_annNO2Coll.select(['t','tropospheric_NO2_column_number_density']).reduce(ee.Reducer.pearsonsCorrelation());
 
 // v10.141 FIX: pH source replaced with a REAL, CONFIRMED, current
 // Copernicus asset - the old asset ID (COPERNICUS/MARINE/GLOBAL_OCEAN_BGC/
@@ -3253,6 +3452,8 @@ var _makeAnnPH = function() {
 var _annPHColl=_makeAnnPH();
 var toePHFit=_annPHColl.select(['t','ph']).reduce(ee.Reducer.linearFit());
 var toePHNoise=_annPHColl.select('ph').reduce(ee.Reducer.stdDev());
+var toePHCount=_annPHColl.select('ph').reduce(ee.Reducer.count());
+var toePHCorr=_annPHColl.select(['t','ph']).reduce(ee.Reducer.pearsonsCorrelation());
 
 // DO (dissolved oxygen) - STILL UNAVAILABLE. See v10.141 note above the
 // pH fix: no confirmed working sub-collection/band name found this
@@ -3270,6 +3471,8 @@ var _makeAnnDO = function() {
 var _annDOColl=_makeAnnDO();
 var toeDOFit=_annDOColl.select(['t','o2']).reduce(ee.Reducer.linearFit());
 var toeDONoise=_annDOColl.select('o2').reduce(ee.Reducer.stdDev());
+var toeDOCount=_annDOColl.select('o2').reduce(ee.Reducer.count());
+var toeDOCorr=_annDOColl.select(['t','o2']).reduce(ee.Reducer.pearsonsCorrelation());
 
 function getWaveCelerity(depthMeters) { return depthMeters.multiply(9.81).sqrt().rename('wave_celerity'); }
 function getEnergyConcentrationIndex(depthMeters) {
@@ -3915,7 +4118,7 @@ function legRow(hex,main,sub){
 }
 function legDiv(){return ui.Label('',{margin:'3px 0 1px 0',backgroundColor:'#cccccc',height:'1px',stretch:'horizontal'});}
 
-panel.add(lbl('STEMGeoHS Marine v10.156',12,'#ffffff','#1a4a2a',true));
+panel.add(lbl('STEMGeoHS Marine v10.157',12,'#ffffff','#1a4a2a',true));
 var clickLbl = lbl('CLICK coastal reef/shallow water to analyze',10,'#ffffff','#1a5a2a',true);
 panel.add(clickLbl);
 
@@ -5598,7 +5801,7 @@ panel.add(lbl('Tests 6, 9, 12, 24, 36 and 48-month AFTER windows. For each one i
 // favour of 36 and 48, so the same 6 windows now include lengths at which a
 // real change can actually be detected.
 panel.add(lbl(CSD_POWER_TABLE_TXT,7,'#aa3300','#fff1e0'));
-panel.add(lbl('v10.156: the 6, 9 and 12-month rows are shown for diagnostics ONLY. They are labelled UNDERPOWERED, excluded from the sweet-spot pick, excluded from the ROBUSTNESS tally and excluded from the significance counts. Any window whose first-half variance is near-zero is likewise flagged as a variance ARTIFACT and excluded (same rule as S7C/S7D).',7,'#aa3300'));
+panel.add(lbl('v10.156: the 6, 9 and 12-month rows are shown for diagnostics ONLY. They are labelled UNDERPOWERED, excluded from the sweet-spot pick, excluded from the ROBUSTNESS tally and excluded from the significance counts. Any window whose first-half variance is near-zero is likewise flagged as a variance ARTIFACT (same rule as S7C/S7D) - but v10.157: that flag now excludes only the VARIANCE claims from that window, and only for the SITE that tripped it. AC1 is measured separately and survives it, exactly as it already did in STEP 3 COMPARE.',7,'#aa3300'));
 panel.add(lbl('This fires 17 Earth Engine calls in parallel (1 control-BEFORE + 6 study-AFTER + 6 control-AFTER + 4 for the real permutation-test p-values below) and can take 30-120 seconds - a live counter below shows progress so it never looks frozen.',7,'#886600'));
 panel.add(lbl('AFTER start date (YYYY-MM-DD):',7,'#334466'));
 var csdAfterStartInput=ui.Textbox({
@@ -5793,54 +5996,85 @@ var csdMultiWindowBtn=ui.Button({
           // vs 0.166 at 48mo), so one fixed number cannot serve all six.
           var _wthr = getCalibratedThresholds(w);
 
-          // v10.156 BUG-03: near-zero-denominator guard, same rule as S7C/S7D
-          // and as COMPARE above. A window whose BEFORE or AFTER half-variance
-          // is near-zero has an inflated Var ratio; its variance delta is
-          // excluded from the verdict, the sweet-spot ranking and the tally.
-          var rowVarArtifact = isVarRatioArtifact(bVF, sDVar) || isVarRatioArtifact(sVF, sVR) ||
-                               isVarRatioArtifact(bVF, bVR) || isVarRatioArtifact(cVF, cVR) ||
-                               isVarRatioArtifact(cBVF, cDVar);
+          // v10.157 REGRESSION FIX: v10.156 BUG-03 collapsed FIVE checks -
+          // study AND control - into ONE rowVarArtifact flag, and then used
+          // that flag to gate AC1 as well. A near-zero first-half variance at
+          // the OPEN-OCEAN CONTROL therefore discarded a genuine STUDY dAC1 of
+          // e.g. +0.4 from bestAc1W, localLeaningRows, testedRows and the
+          // headline, so the tool reported "NO WINDOW COULD SUPPORT A VERDICT"
+          // on a real signal. A variance artifact is evidence about VARIANCE;
+          // it says nothing about autocorrelation.
+          // STEP 3 COMPARE already does this correctly (studyVarArtifact and
+          // ctrlVarArtifact are separate, only the CORRESPONDING variance term
+          // is nulled, and AC1 is never touched). This mirrors STEP 3 exactly.
+          //   rowStudyVarArtifact -> nulls sDVarScored only
+          //   rowCtrlVarArtifact  -> nulls cDVarScored only
+          //   neither  -> touches sDAC1 / ac1Rose at all
+          // rowUnderpowered is unchanged and still excludes the row from
+          // EVERYTHING, AC1 included - a sub-24-month window cannot support
+          // any inference, variance or autocorrelation.
+          var rowStudyVarArtifact = isVarRatioArtifact(bVF, sDVar) || isVarRatioArtifact(sVF, sVR) ||
+                                    isVarRatioArtifact(bVF, bVR);
+          var rowCtrlVarArtifact  = isVarRatioArtifact(cVF, cVR) || isVarRatioArtifact(cBVF, cDVar);
+          var rowVarArtifact = rowStudyVarArtifact || rowCtrlVarArtifact;
           // v10.156 BUG-08: a window shorter than CSD_MIN_WINDOW_MONTHS cannot
           // support inference at all (measured power 5-28% even AT 24 months).
           var rowUnderpowered = (w < CSD_MIN_WINDOW_MONTHS);
-          var rowExcluded = rowVarArtifact || rowUnderpowered;
+          // rowExcluded now means "NOTHING about this row is usable".
+          // rowVarExcluded means "no VARIANCE-based claim from this row".
+          var rowExcluded = rowUnderpowered;
+          var rowVarExcluded = rowUnderpowered || rowVarArtifact;
 
-          var sDVarScored = rowVarArtifact ? null : sDVar;
-          var cDVarScored = rowVarArtifact ? null : cDVar;
-          var divScored   = rowVarArtifact ? null : div;
+          var sDVarScored = rowStudyVarArtifact ? null : sDVar;
+          var cDVarScored = rowCtrlVarArtifact  ? null : cDVar;
+          // Same construction COMPARE uses: divergence needs BOTH sides intact.
+          var divScored   = (sDVarScored!==null&&cDVarScored!==null)?(sDVarScored-cDVarScored):null;
 
-          var scheffer = (!rowExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr&&sDAC1!==null&&sDAC1>_wthr.ac1);
-          var ac1Rose = (!rowExcluded&&sDAC1!==null&&sDAC1>_wthr.ac1);
-          var varRose = (sDVarScored!==null&&sDVarScored>_wthr.varr);
+          // Scheffer needs BOTH variance and AC1, so a variance artifact does
+          // legitimately kill it - but an AC1-only signal survives on its own.
+          var scheffer = (!rowVarExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr&&sDAC1!==null&&sDAC1>_wthr.ac1);
+          var ac1Rose = (!rowUnderpowered&&sDAC1!==null&&sDAC1>_wthr.ac1);
+          var varRose = (!rowVarExcluded&&sDVarScored!==null&&sDVarScored>_wthr.varr);
 
-          var studyVarRose=(sDVarScored!==null&&sDVarScored>_wthr.varr);
-          var ctrlVarRose=(cDVarScored!==null&&cDVarScored>_wthr.varr);
+          var studyVarRose=varRose;
+          var ctrlVarRose=(!rowVarExcluded&&cDVarScored!==null&&cDVarScored>_wthr.varr);
           var verdict='NO SIGNAL';
-          if(rowUnderpowered) verdict='UNDERPOWERED ('+w+'mo < '+CSD_MIN_WINDOW_MONTHS+'mo - cannot support inference, excluded)';
-          else if(rowVarArtifact) verdict='\u26A0ARTIFACT (near-zero 1st-half variance - excluded)';
+          if(rowUnderpowered) verdict='UNDERPOWERED ('+w+'mo < '+CSD_MIN_WINDOW_MONTHS+'mo - cannot support inference, NOTHING usable)';
+          else if(rowVarArtifact) verdict='\u26A0VAR ARTIFACT ('+
+            (rowStudyVarArtifact&&rowCtrlVarArtifact?'study AND control':rowStudyVarArtifact?'study site':'control site')+
+            ' near-zero 1st-half variance - variance claims excluded, AC1 STILL USABLE)';
           else if(sDVar===null||cDVar===null) verdict='n/a (missing data)';
           else if(studyVarRose&&ctrlVarRose) verdict='GLOBAL';
           else if(studyVarRose&&!ctrlVarRose) verdict='LOCAL CSD';
-          else if(!studyVarRose&&div!==null&&div>_wthr.varr) verdict='MARGINAL LOCAL';
+          else if(!studyVarRose&&divScored!==null&&divScored>_wthr.varr) verdict='MARGINAL LOCAL';
           else if(!studyVarRose&&ctrlVarRose) verdict='ANOMALOUS (study more stable)';
           else verdict='NO SIGNAL';
           // v10.92: tag AC1-driven signal separately from the variance-driven
           // verdict above, so an "AC1 up / variance down" window is labelled
           // accurately instead of silently falling into "NO SIGNAL" just
           // because the variance-based verdict logic didn't rise.
-          if(ac1Rose && !varRose) verdict += ' + AC1 CONFIRMED (var down)';
-          else if(ac1Rose && varRose) verdict += ' + AC1 CONFIRMED';
+          // v10.157: on a variance-artifact row the variance is UNUSABLE, not
+          // "down" - say so instead of mislabelling it.
+          if(ac1Rose && varRose) verdict += ' + AC1 CONFIRMED';
+          else if(ac1Rose && rowVarArtifact) verdict += ' + AC1 RISING (AC1 alone - variance unusable at this window)';
+          else if(ac1Rose) verdict += ' + AC1 CONFIRMED (var down)';
 
-          // v10.156 BUG-03/BUG-08: excluded rows can never win either ranking.
-          if(!rowExcluded&&divScored!==null&&divScored>bestDiv){bestDiv=divScored;bestW=w;}
+          // v10.157: the VARIANCE sweet spot needs usable variance on both
+          // sides; the AC1 sweet spot only needs a powered window.
+          if(!rowVarExcluded&&divScored!==null&&divScored>bestDiv){bestDiv=divScored;bestW=w;}
           // v10.92: separate AC1-based ranking (primary indicator per Dakos
           // et al. 2012) alongside the existing variance-divergence ranking,
           // so a strong AC1 rise is never hidden just because variance did
-          // something else.
-          if(!rowExcluded&&sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}
-          var rowObj={w:w,sDVar:sDVar,cDVar:cDVar,div:div,verdict:verdict,sDAC1:sDAC1,cDAC1:cDAC1,scheffer:scheffer,
-            excluded:rowExcluded, artifact:rowVarArtifact, underpowered:rowUnderpowered,
-            varFirstBefore:bVF, varFirstAfter:sVF, pooled:rowPooled};
+          // something else. v10.157: nor because the CONTROL site's variance
+          // was artifactual, which is what v10.156 accidentally did.
+          if(!rowUnderpowered&&sDAC1!==null&&sDAC1>bestAc1Rise){bestAc1Rise=sDAC1;bestAc1W=w;}
+          var rowObj={w:w,sDVar:sDVar,cDVar:cDVar,div:div,divScored:divScored,verdict:verdict,
+            sDAC1:sDAC1,cDAC1:cDAC1,scheffer:scheffer,ac1Rose:ac1Rose,
+            excluded:rowExcluded, varExcluded:rowVarExcluded,
+            artifact:rowVarArtifact, studyArtifact:rowStudyVarArtifact, ctrlArtifact:rowCtrlVarArtifact,
+            underpowered:rowUnderpowered,
+            varFirstBefore:bVF, varFirstAfter:sVF, ctrlVarFirstBefore:cBVF, ctrlVarFirstAfter:cVF,
+            pooled:rowPooled};
           allRows.push(rowObj);
           if(w===bestAc1W) bestAc1Row=rowObj;
         }
@@ -5872,11 +6106,18 @@ var csdMultiWindowBtn=ui.Button({
         // v10.156 BUG-03/BUG-08: excluded rows (artifact or underpowered) are
         // out of BOTH the numerator and the denominator - counting them in the
         // denominator would silently understate how isolated a result is.
+        // v10.157: LOCAL CSD / MARGINAL LOCAL are VARIANCE-based verdicts, so
+        // this tally is gated on varExcluded (underpowered OR variance
+        // artifact). The separate AC1 tally below is gated on underpowered
+        // ONLY, so a control-site variance artifact can no longer erase a real
+        // study-site AC1 signal from the robustness picture.
         var localLeaningRows = allRows.filter(function(r){
-          return !r.excluded && (r.verdict.indexOf('LOCAL CSD')===0 || r.verdict.indexOf('MARGINAL LOCAL')===0);
+          return !r.varExcluded && (r.verdict.indexOf('LOCAL CSD')===0 || r.verdict.indexOf('MARGINAL LOCAL')===0);
         });
-        var testedRows = allRows.filter(function(r){ return !r.excluded && r.sDVar!==null && r.cDVar!==null; });
-        var excludedRows = allRows.filter(function(r){ return r.excluded; });
+        var testedRows = allRows.filter(function(r){ return !r.varExcluded && r.sDVar!==null && r.cDVar!==null; });
+        var ac1TestedRows = allRows.filter(function(r){ return !r.underpowered && r.sDAC1!==null; });
+        var ac1RisingRows = ac1TestedRows.filter(function(r){ return r.ac1Rose; });
+        var flaggedRows = allRows.filter(function(r){ return r.underpowered || r.artifact; });
         var robustNote;
         if(testedRows.length===0){
           robustNote='ROBUSTNESS: no windows had usable data - cannot assess.';
@@ -5896,14 +6137,37 @@ var csdMultiWindowBtn=ui.Button({
             'as a stronger hypothesis to validate with field data, not a confirmed result.';
         }
         rows.push(robustNote);
-        if(excludedRows.length>0){
-          rows.push('EXCLUDED FROM EVERY TALLY AND FROM THE SWEET-SPOT PICK ('+excludedRows.length+' of '+allRows.length+' windows):');
-          excludedRows.forEach(function(r){
-            rows.push('  '+r.w+'mo: '+(r.underpowered?'UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo)':'')+
-              (r.underpowered&&r.artifact?' + ':'')+
-              (r.artifact?'VARIANCE ARTIFACT (1st-half var='+(r.varFirstBefore!==null&&r.varFirstBefore!==undefined?r.varFirstBefore.toFixed(5):'n/a')+')':''));
+        // v10.157: AC1 is reported on its own tally, because it survives a
+        // variance artifact. Only an underpowered window removes it.
+        if(ac1TestedRows.length===0){
+          rows.push('AC1 TALLY: no powered window produced a usable \u0394AC1.');
+        } else {
+          rows.push('AC1 TALLY (independent of the variance artifact rule): '+ac1RisingRows.length+' of '+
+            ac1TestedRows.length+' powered windows show study \u0394AC1 above its calibrated cutoff'+
+            (ac1RisingRows.length>0?' ('+ac1RisingRows.map(function(r){return r.w+'mo';}).join(', ')+')':'')+'.');
+        }
+        if(flaggedRows.length>0){
+          rows.push('FLAGGED WINDOWS ('+flaggedRows.length+' of '+allRows.length+'):');
+          flaggedRows.forEach(function(r){
+            var why;
+            if(r.underpowered && r.artifact)
+              why='UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo) - NOTHING usable; also a variance artifact';
+            else if(r.underpowered)
+              why='UNDERPOWERED (<'+CSD_MIN_WINDOW_MONTHS+'mo) - excluded from EVERYTHING, AC1 included';
+            else
+              why='VARIANCE ARTIFACT at the '+(r.studyArtifact&&r.ctrlArtifact?'STUDY AND CONTROL':r.studyArtifact?'STUDY':'CONTROL')+
+                ' site (study 1st-half var='+(r.varFirstBefore!==null&&r.varFirstBefore!==undefined?r.varFirstBefore.toFixed(5):'n/a')+
+                ', control 1st-half var='+(r.ctrlVarFirstBefore!==null&&r.ctrlVarFirstBefore!==undefined?r.ctrlVarFirstBefore.toFixed(5):'n/a')+
+                ') - variance claims excluded, \u0394AC1 STILL USABLE'+
+                (r.sDAC1!==null?' (\u0394AC1='+(r.sDAC1>0?'+':'')+r.sDAC1.toFixed(3)+')':'');
+            rows.push('  '+r.w+'mo: '+why);
           });
           rows.push('v10.156: sub-'+CSD_MIN_WINDOW_MONTHS+'-month windows are shown for diagnostics only. '+CSD_VAR_ARTIFACT_MSG);
+          rows.push('v10.157 REGRESSION FIX: a variance artifact no longer removes a window\'s AC1 signal. '+
+            'v10.156 collapsed the study AND control variance checks into one flag that also gated AC1, so a '+
+            'near-zero first-half variance at the OPEN-OCEAN CONTROL discarded a genuine study \u0394AC1 from the '+
+            'sweet-spot pick, the robustness tally and the headline. STEP 3 COMPARE always kept them separate; '+
+            'STEP 4 now matches it.');
         }
         rows.push('');
         rows.push(fssPooledUsed>0 ?
@@ -6072,8 +6336,31 @@ var csdMultiWindowBtn=ui.Button({
             print('At '+bestAc1W+'mo: \u0394Var='+(bestAc1Row.sDVar!==null?(bestAc1Row.sDVar>0?'+':'')+bestAc1Row.sDVar.toFixed(2)+'x':'n/a')+
               (ac1AltVarRose?' (also rising)':' (NOT rising - this is the AC1-up/variance-down pattern per Dakos et al. 2012, Fig. 2c & 4)'));
           }
+        } else if(bestAc1Row){
+          // v10.157: a usable AC1 sweet spot with no usable VARIANCE sweet spot
+          // is a real, reportable finding - v10.156 threw it away because the
+          // control site's variance artifact excluded the row from everything.
+          csdMultiSweetSpotV.setValue(
+            'NO USABLE VARIANCE SWEET SPOT - but AC1 IS usable.\n'+
+            '\n'+
+            'No window produced a trustworthy variance divergence (every window was either\n'+
+            'underpowered or hit the near-zero first-half-variance artifact rule). AC1 is a\n'+
+            'separate measurement and is NOT affected by that rule, so it is reported here.\n'+
+            '\n'+
+            'AC1 SWEET SPOT WINDOW: '+bestAc1W+' months (AFTER start '+afterStartTxt+')\n'+
+            '  \u0394 AC1 vs BEFORE (study): '+(bestAc1Row.sDAC1!==null?(bestAc1Row.sDAC1>0?'+':'')+bestAc1Row.sDAC1.toFixed(3):'n/a')+
+              (bestAc1Row.ac1Rose?'  RISING (warning sign)':'  not rising')+'\n'+
+            '  \u0394 AC1 vs BEFORE (control): '+(bestAc1Row.cDAC1!==null?(bestAc1Row.cDAC1>0?'+':'')+bestAc1Row.cDAC1.toFixed(3):'n/a')+'\n'+
+            '\n'+
+            'SCHEFFER 2009 VALIDATION: NOT ASSESSABLE - it requires BOTH variance and AC1,\n'+
+            'and variance is unusable at every window here. AC1 alone is the weaker (but per\n'+
+            'Dakos et al. 2012 the more robust of the two) indicator - treat as a hypothesis.\n'+
+            '\n'+
+            'STABILITY / ANOMALY READ:\n'+
+            '  '+bestAc1Row.verdict);
+          csdMultiSweetSpotV.style().set('whiteSpace','pre');
         } else {
-          csdMultiSweetSpotV.setValue('No window produced a usable divergence value - check that SST data exists for both the study and control sites in this date range.');
+          csdMultiSweetSpotV.setValue('No window produced a usable divergence value or a usable \u0394AC1 - check that SST data exists for both the study and control sites in this date range.');
         }
 
         // --- Short, bold, colour-coded VERDICT box - shown FIRST, above the table ---
@@ -6088,15 +6375,34 @@ var csdMultiWindowBtn=ui.Button({
         // from the control - so the headline can never contradict the
         // detail below it again.
         var vBoxColor, vBoxBg, vBoxText;
-        if(!bestRow){
+        var flaggedTxt = flaggedRows.length>0 ?
+          ('Flagged: '+flaggedRows.map(function(r){return r.w+'mo ('+(r.underpowered?'underpowered':'variance artifact - AC1 still usable')+')';}).join(', ')+'\n') : '';
+        if(!bestRow && bestAc1Row && bestAc1Row.ac1Rose){
+          // v10.157 REGRESSION FIX: this branch did not exist in v10.156. A
+          // control-site variance artifact excluded the row from EVERYTHING,
+          // including AC1, so a genuine study \u0394AC1 of e.g. +0.4 fell through to
+          // "NO WINDOW COULD SUPPORT A VERDICT". AC1 is a separate measurement
+          // and a variance artifact says nothing about it.
+          vBoxColor='#aa3300'; vBoxBg='#ffe8cc';
+          vBoxText='AC1 SIGNAL ONLY - VARIANCE UNUSABLE\n'+
+            'AC1 sweet spot: '+bestAc1W+'-month AFTER window (study \u0394AC1='+
+              (bestAc1Row.sDAC1>0?'+':'')+bestAc1Row.sDAC1.toFixed(3)+').\n'+
+            'No window produced a trustworthy VARIANCE divergence, so the Scheffer\n'+
+            'check (which needs both) cannot be assessed - but AC1 is measured\n'+
+            'independently and is NOT affected by the near-zero-variance rule.\n'+
+            flaggedTxt+
+            '('+ac1RisingRows.length+' of '+ac1TestedRows.length+' powered windows show a rising study \u0394AC1.)\n'+
+            'Treat as a hypothesis: AC1 alone is weaker than AC1+variance together.\n'+
+            '\n'+CSD_POWER_TABLE_TXT;
+        } else if(!bestRow){
           vBoxColor='#cc0000'; vBoxBg='#ffd0d0';
           // v10.156 BUG-03/BUG-08: "no usable data" and "every window was
           // excluded as underpowered or as a variance artifact" are different
           // findings, and the old text asserted the first for both.
           vBoxText='NO WINDOW COULD SUPPORT A VERDICT\n'+
-            'None of the 6 windows produced a usable, trustworthy divergence value.\n'+
-            (excludedRows.length>0?
-              ('Excluded: '+excludedRows.map(function(r){return r.w+'mo ('+(r.underpowered?'underpowered':'variance artifact')+')';}).join(', ')+'\n') : '')+
+            'None of the 6 windows produced a usable, trustworthy divergence value,\n'+
+            'and no powered window showed a rising study \u0394AC1 either.\n'+
+            flaggedTxt+
             (testedRows.length===0?
               'Check that both the study and control coordinates have SST coverage\nfor these dates, then try again with a longer AFTER window.\n' : '')+
             '\n'+CSD_POWER_TABLE_TXT;
@@ -6112,8 +6418,9 @@ var csdMultiWindowBtn=ui.Button({
           // v10.156 BUG-08: say the power of the winning window on the headline.
           if(bestRow.w<CSD_RECOMMENDED_WINDOW_MONTHS)
             isolatedWarning += '\n\u26A0 UNDERPOWERED SWEET SPOT ('+bestRow.w+'mo < '+CSD_RECOMMENDED_WINDOW_MONTHS+'mo): see the power table in the data panel below.';
-          if(excludedRows.length>0)
-            isolatedWarning += '\n('+excludedRows.length+' window(s) excluded as underpowered or variance-artifact - listed in the table below.)';
+          if(flaggedRows.length>0)
+            isolatedWarning += '\n('+flaggedRows.length+' window(s) flagged as underpowered or variance-artifact - listed in the table below. '+
+              'v10.157: a variance artifact excludes only the VARIANCE claims from that window, not its AC1.)';
           if(bestRow.verdict.indexOf('LOCAL CSD')===0){
             vBoxColor='#880000'; vBoxBg='#ffd0d0';
             vBoxText='LOCAL CSD SIGNAL DETECTED\n'+
@@ -8255,6 +8562,8 @@ panel.add(row('+1.0m SLR scenario',eciSLR10V)); panel.add(row('vs ecological B s
 panel.add(sHead('S17 - TIME OF EMERGENCE (ToE)','#2a1a3a'));
 panel.add(lbl('SNR = |trend x record_years| / noise | threshold SNR >= 2.0',7,'#553377'));
 panel.add(lbl('v10.145 DIAGNOSTIC: investigated why S17b (Mann-Kendall) sometimes disagrees with SNR above - e.g. a real Bocas del Toro test showed NO2/Salinity "EMERGED" here but NOT significant in S17b. Root cause found in the SNR formula itself: it multiplies slope by record_years with NO correction for how uncertain a slope estimate becomes with FEW data points (unlike a real p-value, which accounts for sample size directly). This means SNR structurally over-triggers on short records (pH ~4yr, NO2 7yr) - it is not calibrated to any known false-positive rate, unlike Mann-Kendall p<0.05. Treat SNR "EMERGED" on short-record variables with real caution; S17b is the more trustworthy check where it can compute one.',7,'#aa5533'));
+panel.add(lbl('v10.157 TOE-01: the row labels below give the NOMINAL record length. The verdict now uses the REAL number of years that had a valid pixel AT YOUR CLICKED POINT (shown inline as "n=8 of 32 nominal") for Sxx and for the degrees of freedom. v10.156 used the nominal constant for both, which at a sparse pixel inflated Sxx and df in the ANTI-conservative direction.',7,'#aa3300'));
+panel.add(lbl('v10.157 TOE-02: the slope significance test now uses the MEASURED (year, value) Pearson correlation at that pixel, t=|r|*sqrt((n-2)/(1-r^2)). v10.156 derived t from the fitted slope and the total SD, which made t a deterministic function of SNR and n - so for SST/Chl/Salinity/DO the condition SNR>=2 ALREADY implied t>=t_crit and the gate could never change a verdict. It bound only NO2 and pH. Verdicts now say which statistic produced them.',7,'#aa3300'));
 panel.add(lbl('Surface only. Inspired by Tan et al. 2026 NCC compound CID approach.',7,'#888888'));
 panel.add(lbl('v10.141: pH now uses a REAL, confirmed Copernicus asset (~4yr record, 2022-2025, LOW confidence given the short record) - not measured, model surface only, no depth zones. DO is still unavailable (dead asset, no working replacement confirmed yet).',7,'#aa6600'));
 panel.add(lbl('v10.89: pH/DO are computed and shown separately from SST/Chl/Salinity/NO2, so if the BGC dataset is unavailable it only affects pH/DO below, not the other 4.',7,'#886600'));
@@ -8737,7 +9046,7 @@ function analyzeLocation(lat, lon) {
 
   function clip(col){ return col.map(function(img){ return img.clip(study); }); }
 
-  print(''); print('STEMGeoHS Marine v10.156 -- '+region);
+  print(''); print('STEMGeoHS Marine v10.157 -- '+region);
   print('=== MODELS ===');
   print('1. Waddington double-well: U(q;mu) = 0.25*q^4 - 0.5*mu*q^2');
   print('2. Langevin SDE: dx = -dU/dx*dt + sigma*dW (PNAS 2025)');
@@ -8783,18 +9092,37 @@ function analyzeLocation(lat, lon) {
   // S17 ToE precomputed images at clicked point
   var toePt=ee.Geometry.Point([lon,lat]);
   var toeScale=27750;
+  // v10.157 TOE-01/TOE-02: 'count' (the REAL number of valid annual values at
+  // this exact pixel) and 'corr' (the measured (t,value) Pearson correlation)
+  // join 'scale' and 'noise' INSIDE THE SAME ee.Dictionary that was already
+  // being evaluated - so this adds NO new .evaluate() round trip, the property
+  // v10.89 and v10.141 built these split dictionaries to protect.
+  // Both new entries deliberately pass the WHOLE reduceRegion dictionary
+  // through rather than .select()/.get()-ing a band name that cannot be
+  // confirmed without a live GEE session. A wrong key in .get() is a hard
+  // server-side failure that would blank every indicator in the dictionary;
+  // a wrong key in a plain dictionary is just a missing client-side value that
+  // toeNum() reports as unavailable. Same defensive pattern as v10.88's
+  // computeSpatialEWS/extractSpatialAC1Detail.
+  function _toeRR(img){ return img.reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}); }
   var rToeSST=ee.Dictionary({scale:toeSSTFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeSSTNoise.select('sst_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('sst_stdDev')});
+    noise:toeSSTNoise.select('sst_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('sst_stdDev'),
+    count:_toeRR(toeSSTCount), corr:_toeRR(toeSSTCorr)});
   var rToeCHL=ee.Dictionary({scale:toeCHLFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeCHLNoise.select('chlor_a_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('chlor_a_stdDev')});
+    noise:toeCHLNoise.select('chlor_a_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('chlor_a_stdDev'),
+    count:_toeRR(toeCHLCount), corr:_toeRR(toeCHLCorr)});
   var rToeSAL=ee.Dictionary({scale:toeSALFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeSALNoise.select('salinity_0_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('salinity_0_stdDev')});
+    noise:toeSALNoise.select('salinity_0_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('salinity_0_stdDev'),
+    count:_toeRR(toeSALCount), corr:_toeRR(toeSALCorr)});
   var rToeNO2=ee.Dictionary({scale:toeNO2Fit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeNO2Noise.select('tropospheric_NO2_column_number_density_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('tropospheric_NO2_column_number_density_stdDev')});
+    noise:toeNO2Noise.select('tropospheric_NO2_column_number_density_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('tropospheric_NO2_column_number_density_stdDev'),
+    count:_toeRR(toeNO2Count), corr:_toeRR(toeNO2Corr)});
   var rToePH=ee.Dictionary({scale:toePHFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toePHNoise.select('ph_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('ph_stdDev')});
+    noise:toePHNoise.select('ph_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('ph_stdDev'),
+    count:_toeRR(toePHCount), corr:_toeRR(toePHCorr)});
   var rToeDO=ee.Dictionary({scale:toeDOFit.select('scale').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('scale'),
-    noise:toeDONoise.select('o2_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('o2_stdDev')});
+    noise:toeDONoise.select('o2_stdDev').reduceRegion({reducer:ee.Reducer.mean(),geometry:toePt,scale:toeScale,maxPixels:1e9}).get('o2_stdDev'),
+    count:_toeRR(toeDOCount), corr:_toeRR(toeDOCorr)});
   // v10.89 FIX: previously bundled into ONE rToeAll dictionary and evaluated
   // together - since pH/DO both depend on COPERNICUS/MARINE/GLOBAL_OCEAN_BGC/
   // MFC_001_028 (currently returns "asset not found" in the GEE catalog),
@@ -9262,52 +9590,169 @@ function analyzeLocation(lat, lon) {
     // No extra Earth Engine call, no new asset - pure arithmetic on values
     // already fetched. EMERGED now requires the amplitude criterion (snr>=2,
     // unchanged) AND |slope|/se_slope >= t_crit(df=n-2).
-    function calcToE(r, nYears){
+    // v10.157 TOE-01 FIX: the sample-size penalty now uses the REAL per-pixel
+    // valid-year count, not a hardcoded nominal record length.
+    //   Before: every caller passed a constant (44/27/32/7/4/32) and that
+    //   constant drove BOTH Sxx=n(n^2-1)/12 and df=n-2. The file's own S17b
+    //   block already documents that the constant is routinely wrong -
+    //   "nominally a 32yr record (1993-2024) in S17 above, but only N years had
+    //   real, valid HYCOM data at this exact point". At a pixel with 8 valid
+    //   annual values an n of 32 inflates Sxx by ~65x, understates se(slope)
+    //   by ~8x and gives the t-test df=30 instead of df=6. BOTH errors are
+    //   anti-conservative, so the v10.156 gate that exists to stop short
+    //   records from emerging could itself pass an 8-point record.
+    //   Now: r.count (ee.Reducer.count() on the same annual band, fetched in
+    //   the same dictionary, no extra evaluate) drives Sxx, SStot and df.
+    //   nNominal is kept purely for DISPLAY ("n=8 of 32 nominal") and for the
+    //   amplitude term signal=|slope*nNominal|, which is a change-over-the-
+    //   record-PERIOD quantity and is correctly measured in calendar years,
+    //   not in valid-sample count.
+    //   Sxx=n(n^2-1)/12 assumes the n valid years are CONSECUTIVE. When they
+    //   are scattered across a longer window the true Sxx is LARGER, so this
+    //   understates Sxx, overstates se(slope) and understates t - the
+    //   conservative direction, and therefore cannot manufacture an EMERGED
+    //   verdict. Guarded: count missing -> fall back to nominal AND say so;
+    //   count<3 -> df<1, no test exists, cannot emerge; count>nominal ->
+    //   clamped and noted.
+    //
+    // v10.157 TOE-02 FIX: the t-gate was mathematically vacuous for 4 of the 6
+    // variables. Because SStot was ASSUMED as n*noise^2 rather than measured,
+    // t was a deterministic function of snr and n: with A=slope^2*Sxx/SStot,
+    // A = snr^2*(n^2-1)/(12n^2) and t^2=(n-2)A/(1-A), so at snr=2 exactly,
+    // t ~= sqrt((n-2)/2) - which already clears t_crit(n-2) for every n>=13.
+    // SST(44), CHL(27), SAL(32) and DO(32) could therefore NEVER have their
+    // verdict changed by the gate; it bound only NO2(7) and pH(4). The
+    // t-statistic carried no information independent of snr because snr is
+    // built from the TOTAL SD, which already contains the signal.
+    //   Now: r.corr supplies the MEASURED (t,value) Pearson correlation at
+    //   this pixel and the textbook exact slope t-test is used,
+    //     t = |r| * sqrt((n-2)/(1-r^2)),
+    //   which is genuinely independent of snr. The derived path is kept ONLY
+    //   as a fallback for when no measured r arrives, and every verdict says
+    //   which one produced its t. |r|>=1 (a perfect fit, infinite t) is marked
+    //   unreliable exactly as the existing SSres<=0 branch is, rather than
+    //   printing an absurd t.
+    //
+    // toeNum: defensive client-side extraction, same reasoning as v10.88's
+    // extractSpatialAC1Detail - the reducer's output KEY is not verifiable
+    // without a live GEE session, so read whatever numeric key is actually
+    // there and report "unavailable" if none is.
+    function toeNum(obj, candidates, excludeSub){
+      if(obj===null||obj===undefined) return null;
+      if(typeof obj==='number') return isNaN(obj)?null:obj;
+      if(typeof obj!=='object') return null;
+      var i, v;
+      for(i=0;i<candidates.length;i++){
+        v=obj[candidates[i]];
+        if(v!==null&&v!==undefined&&typeof v==='number'&&!isNaN(v)) return v;
+      }
+      for(var k in obj){
+        if(k==='_meta') continue;
+        var kl=String(k).toLowerCase();
+        if(excludeSub&&kl.indexOf(excludeSub)>=0) continue;
+        if(typeof obj[k]==='number'&&!isNaN(obj[k])) return obj[k];
+      }
+      return null;
+    }
+    function calcToE(r, nNominal){
       if(!r||r.scale===null||r.scale===undefined||r.noise===null||r.noise===undefined)
-        return {snr:null,emerged:false,n:null,df:null,tStat:null,tCrit:null,slopeSignificant:false,error:'no data'};
-      var sl=r.scale, ns=r.noise, n=nYears;
-      var signal=Math.abs(sl*nYears), snr=ns>0?signal/ns:0;
+        return {snr:null,emerged:false,n:null,nNominal:nNominal,nActual:null,countSource:null,
+          df:null,tStat:null,tCrit:null,tMethod:null,slopeSignificant:false,error:'no data'};
+      var sl=r.scale, ns=r.noise, nom=nNominal;
+      // AMPLITUDE criterion - unchanged. The signal is the modelled change over
+      // the record PERIOD, which is nominal calendar years regardless of how
+      // many of those years produced a valid pixel.
+      var signal=Math.abs(sl*nom), snr=ns>0?signal/ns:0;
+
+      // ---- TOE-01: real valid-year count ----
+      var rawCount=toeNum(r.count,['count','sst_count','chlor_a_count','salinity_0_count',
+        'tropospheric_NO2_column_number_density_count','ph_count','o2_count'],null);
+      if(rawCount!==null) rawCount=Math.floor(rawCount+0.5);
+      var n, countSource;
+      if(rawCount===null||rawCount<0){ n=nom; countSource='nominal-fallback'; rawCount=null; }
+      else if(rawCount>nom){ n=nom; countSource='clamped'; }
+      else { n=rawCount; countSource='actual'; }
+      // df<1 means no slope test exists at all - not "not significant", but
+      // "untestable". Must never carry an EMERGED verdict.
+      var countTooShort=(n<3);
+
       var Sxx=(n>=2)?(n*(n*n-1)/12):0;
       // ee.Reducer.stdDev() is the POPULATION SD in Earth Engine (the sample
-      // form is sampleStdDev()), so SStotal = n*sd^2. If EE's convention were
-      // the sample form this overstates SStotal slightly, which overstates the
-      // residual and therefore UNDERSTATES t - the conservative direction, so
-      // the assumption cannot manufacture an EMERGED verdict.
+      // form is sampleStdDev()), so SStotal = n*sd^2 over the n VALID values -
+      // the same n the count reducer returns, since both reducers skip the
+      // same masked pixels. If EE's convention were the sample form this
+      // overstates SStotal slightly, which overstates the residual and
+      // therefore UNDERSTATES the derived t - the conservative direction.
       var SStot=(n>=2)?(n*ns*ns):0;
-      // SSres can only go non-positive if the two reducers (linearFit vs
-      // stdDev) saw different valid-pixel counts at this point, or if the
-      // series is a pure trend with no scatter at all. Floored rather than
-      // allowed to produce an infinite t.
       var SSresRaw=SStot - sl*sl*Sxx;
       // For one consistent series SSres is non-negative by construction, so a
       // non-positive value means linearFit and stdDev did not see the same
       // valid pixels at this point. Rather than divide by a floored residual
       // and print an absurd t (a real test produced t=100000 on a 4-point
-      // record - precisely the failure mode this fix exists to stop), that
+      // record - precisely the failure mode this gate exists to stop), that
       // case is marked unreliable and CANNOT carry an EMERGED verdict.
-      var tUnreliable = !(SSresRaw>0);
+      var derivedUnreliable=!(SSresRaw>0);
       var SSres=Math.max(SStot*1e-9, SSresRaw);
       var df=n-2;
       var residSD=(df>0)?Math.sqrt(SSres/df):null;
       var seSlope=(residSD!==null&&Sxx>0)?(residSD/Math.sqrt(Sxx)):null;
-      var tStat=(!tUnreliable&&seSlope!==null&&seSlope>0)?Math.abs(sl)/seSlope:null;
+
+      // ---- TOE-02: measured-r t, with the derived path as fallback ----
+      // 'p-value' is excluded from the fallback key scan so a correlation is
+      // never confused with its own p-value if the band names differ.
+      var corr=toeNum(r.corr,['correlation','t_sst_correlation','t_chlor_a_correlation',
+        'pearsonsCorrelation'],'value');
+      if(corr!==null&&(corr<-1.0000001||corr>1.0000001)) corr=null; // not a correlation - refuse it
+      var rSq=(corr!==null)?corr*corr:null;
+      var tMethod, tStat, tUnreliable;
+      if(countTooShort){
+        tMethod=(corr!==null)?'measured-r':'derived';
+        tStat=null; tUnreliable=true;
+      } else if(corr!==null){
+        tMethod='measured-r';
+        if(!(rSq<1)){ tStat=null; tUnreliable=true; }   // |r|>=1 -> infinite t
+        else { tStat=Math.abs(corr)*Math.sqrt(df/(1-rSq)); tUnreliable=!isFinite(tStat); }
+      } else {
+        tMethod='derived';
+        tUnreliable=derivedUnreliable;
+        tStat=(!tUnreliable&&seSlope!==null&&seSlope>0)?Math.abs(sl)/seSlope:null;
+        if(tStat===null||!isFinite(tStat)) { tStat=null; tUnreliable=true; }
+      }
       var tc=tCrit95(df);
-      var slopeSignificant=(!tUnreliable&&tStat!==null&&isFinite(tc)&&tStat>=tc);
+      var slopeSignificant=(!tUnreliable&&!countTooShort&&tStat!==null&&isFinite(tc)&&tStat>=tc);
       return {slope:sl,noise:ns,signal:signal,snr:snr,
-        n:n, df:df, seSlope:seSlope, tStat:tStat, tCrit:tc, tUnreliable:tUnreliable, slopeSignificant:slopeSignificant,
+        n:n, nNominal:nom, nActual:rawCount, countSource:countSource, countTooShort:countTooShort,
+        df:df, seSlope:seSlope, corr:corr, tStat:tStat, tCrit:tc, tMethod:tMethod,
+        tUnreliable:tUnreliable, slopeSignificant:slopeSignificant,
         emerged:(snr>=2.0 && slopeSignificant),
         direction:sl>0?'RISING':'FALLING',error:null};
     }
-    // v10.156 BUG-06: the n / df / t caveat is surfaced INLINE next to every
-    // verdict, so a short-record "not yet" is visibly different from a
-    // long-record one, and an EMERGED verdict always shows what carried it.
+    // v10.156 BUG-06 / v10.157 TOE-01+TOE-02: the n / df / t caveat is
+    // surfaced INLINE next to every verdict, and now always states the REAL
+    // valid-year count against the nominal record length ("n=8 of 32 nominal")
+    // and WHICH t-statistic produced the verdict.
     function toeNTxt(t){
       if(!t||t.error||t.df===null||t.df===undefined) return '';
+      var nTxt='n='+t.n+' of '+t.nNominal+' nominal yr';
+      if(t.countSource==='nominal-fallback')
+        nTxt+=' \u26A0 (valid-year COUNT UNAVAILABLE at this pixel - the NOMINAL record length was '+
+          'assumed, so df and Sxx here may be far too generous; treat this t as an upper bound)';
+      else if(t.countSource==='clamped')
+        nTxt+=' (raw count '+t.nActual+' exceeded the nominal record length and was clamped to it)';
+      if(t.countTooShort)
+        return '  '+nTxt+' - fewer than 3 usable annual values here, so df<1 and NO slope test '+
+          'exists. Emergence CANNOT be established at this pixel. v10.157.';
       if(t.tUnreliable)
-        return '  n='+t.n+'yr (df='+t.df+') - slope standard error NOT computable here (the trend and '+
-          'scatter reducers disagree at this pixel), so emergence cannot be established. v10.156.';
-      return '  n='+t.n+'yr (df='+t.df+'), t='+(t.tStat!==null?t.tStat.toFixed(2):'n/a')+
+        return '  '+nTxt+' (df='+t.df+') - slope t NOT computable here ('+
+          (t.tMethod==='measured-r'?'|r|=1, a perfect fit, which gives an infinite t':
+           'the trend and scatter reducers disagree at this pixel')+
+          '), so emergence cannot be established. v10.157.';
+      return '  '+nTxt+' (df='+t.df+'), t='+(t.tStat!==null?t.tStat.toFixed(2):'n/a')+
         ' vs 95% bar t='+(isFinite(t.tCrit)?t.tCrit.toFixed(2):'n/a')+
+        ' ['+(t.tMethod==='measured-r'?
+              'MEASURED r='+t.corr.toFixed(3)+' - independent of SNR':
+              'DERIVED from SNR - no measured r at this pixel, and this fallback gate is '+
+              'near-vacuous for long records (it can only bind below n~13)')+']'+
         (t.slopeSignificant?'':'  \u2190 slope NOT distinguishable from zero')+
         (t.df<10?'  \u26A0 SHORT RECORD (df<10) - the 95% bar is well above 1.96 here; trend size alone cannot establish emergence':'');
     }
@@ -9327,7 +9772,7 @@ function analyzeLocation(lat, lon) {
         (toePhAvailable===false && toeDoAvailable===false) ? ' (pH excluded - see row below; DO excluded - dataset unavailable)' :
         toeDoAvailable===false ? ' (DO excluded - dataset unavailable, see row below)' :
         toePhAvailable===false ? ' (pH excluded - see row below)' : '';
-      toeCompoundV.setValue(nEmerged+'/'+nTotal+' available variables emerged (v10.156: SNR >= 2.0 AND slope significant at its own df)'+pendingNote+
+      toeCompoundV.setValue(nEmerged+'/'+nTotal+' available variables emerged (v10.157: SNR >= 2.0 AND the MEASURED-r slope t-test significant at the pixel\'s REAL valid-year df)'+pendingNote+
         (nTotal===0?'':nEmerged>=4?' | COMPOUND CID DETECTED':nEmerged>=2?' | MULTIPLE CIDs':nEmerged===1?' | SINGLE CID detected':' | No emergence yet'));
       toeCompoundV.style().set('color',nEmerged>=4?'#880000':nEmerged>=2?'#aa3300':nEmerged>=1?'#664400':'#115511');
     }
@@ -9340,6 +9785,9 @@ function analyzeLocation(lat, lon) {
         renderToeCompound();
         return;
       }
+      // v10.157 TOE-01: the second argument is now the NOMINAL record length,
+      // used only for display and for the amplitude term. Sxx, SStot and df
+      // come from the real per-pixel valid-year count carried in *.count.
       var tSST=calcToE(coreRes.sst,44), tCHL=calcToE(coreRes.chl,27), tSAL=calcToE(coreRes.sal,32), tNO2=calcToE(coreRes.no2,7);
       toeResults.sst=tSST; toeResults.chl=tCHL; toeResults.sal=tSAL; toeResults.no2=tNO2;
       toeSSTv.setValue(toeTxt(tSST,'HIGH conf - 44yr OISST, v10.54 fix applied'));
@@ -9352,10 +9800,10 @@ function analyzeLocation(lat, lon) {
       toeNO2v.style().set('color',tNO2&&tNO2.emerged?'#664400':'#888888');
       renderToeCompound();
       print('=== S17 ToE core (SST/CHL/SAL/NO2) ===');
-      print('SST (44yr): SNR='+(tSST.snr!==null?tSST.snr.toFixed(3):'n/a')+' -> '+(tSST.emerged?'EMERGED':'not yet')+toeNTxt(tSST));
-      print('CHL (27yr): SNR='+(tCHL.snr!==null?tCHL.snr.toFixed(3):'n/a')+' -> '+(tCHL.emerged?'EMERGED':'not yet')+toeNTxt(tCHL));
-      print('SAL (32yr): SNR='+(tSAL.snr!==null?tSAL.snr.toFixed(3):'n/a')+' -> '+(tSAL.emerged?'EMERGED':'not yet')+toeNTxt(tSAL));
-      print('NO2 (7yr):  SNR='+(tNO2.snr!==null?tNO2.snr.toFixed(3):'n/a')+' -> '+(tNO2.emerged?'EMERGED':'not yet')+toeNTxt(tNO2));
+      print('SST (nominal 44yr): SNR='+(tSST.snr!==null?tSST.snr.toFixed(3):'n/a')+' -> '+(tSST.emerged?'EMERGED':'not yet')+toeNTxt(tSST));
+      print('CHL (nominal 27yr): SNR='+(tCHL.snr!==null?tCHL.snr.toFixed(3):'n/a')+' -> '+(tCHL.emerged?'EMERGED':'not yet')+toeNTxt(tCHL));
+      print('SAL (nominal 32yr): SNR='+(tSAL.snr!==null?tSAL.snr.toFixed(3):'n/a')+' -> '+(tSAL.emerged?'EMERGED':'not yet')+toeNTxt(tSAL));
+      print('NO2 (nominal 7yr):  SNR='+(tNO2.snr!==null?tNO2.snr.toFixed(3):'n/a')+' -> '+(tNO2.emerged?'EMERGED':'not yet')+toeNTxt(tNO2));
     });
 
     rToeBGC_PH.evaluate(function(phRes,ePh){
@@ -9377,7 +9825,7 @@ function analyzeLocation(lat, lon) {
         toePHv.setValue(toeTxt(tPH,'REAL asset (COPERNICUS CAR/ph_depth1), surface only, ~4yr record (2022-2025) - LOW confidence, short record'));
         toePHv.style().set('color',tPH&&tPH.emerged?'#880000':'#226644');
         print('=== S17 ToE pH (v10.141: real asset, ~4yr record) ===');
-        print('pH (~4yr, LOW conf): SNR='+(tPH.snr!==null?tPH.snr.toFixed(3):'n/a')+' -> '+(tPH.emerged?'EMERGED':'not yet')+toeNTxt(tPH));
+        print('pH (nominal ~4yr, LOW conf): SNR='+(tPH.snr!==null?tPH.snr.toFixed(3):'n/a')+' -> '+(tPH.emerged?'EMERGED':'not yet')+toeNTxt(tPH));
       }
       renderToeCompound();
     });
@@ -9398,7 +9846,7 @@ function analyzeLocation(lat, lon) {
       toeDOv.style().set('color',tDO&&tDO.emerged?'#880000':'#226644');
       renderToeCompound();
       print('=== S17 ToE DO ===');
-      print('DO  (32yr): SNR='+(tDO.snr!==null?tDO.snr.toFixed(3):'n/a')+' -> '+(tDO.emerged?'EMERGED':'not yet')+toeNTxt(tDO)+' [BGC model surface]');
+      print('DO  (nominal 32yr): SNR='+(tDO.snr!==null?tDO.snr.toFixed(3):'n/a')+' -> '+(tDO.emerged?'EMERGED':'not yet')+toeNTxt(tDO)+' [BGC model surface]');
     });
 
     ee.Dictionary({ph:rBGC_PH.get('ph_depth1'), pco2Pa:rBGC_CO2.get('spco2_depth1'), sal:rBGC_SAL.get('salinity_0')}).evaluate(function(bgcData,eBGC){
@@ -9548,7 +9996,59 @@ function analyzeLocation(lat, lon) {
 Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
-print('STEMGeoHS Marine v10.156 -- READY');
+print('STEMGeoHS Marine v10.157 -- READY');
+print('');
+print('v10.157 FIX 15: two ToE blockers + one v10.156 regression (adversarial review).');
+print('  TOE-01 BLOCKER: the ToE sample-size penalty used a NOMINAL record length');
+print('    (44/27/32/7/4/32 hardcoded at every call site) for BOTH Sxx=n(n^2-1)/12');
+print('    and df=n-2. S17b already documented that constant as routinely wrong');
+print('    ("nominally 32yr ... but only N years had real valid HYCOM data here").');
+print('    At 8 valid years an n of 32 inflates Sxx 65x, understates se(slope) 8.1x');
+print('    and gives df=30 instead of 6 - both ANTI-conservative, so the v10.156');
+print('    gate meant to stop short records could itself pass an 8-point record.');
+print('    ee.Reducer.count() now supplies the REAL per-pixel valid-year count,');
+print('    fetched in the SAME dictionary already evaluated (zero extra EE calls).');
+print('    Verdicts read "n=8 of 32 nominal yr". Guards: count missing -> nominal');
+print('    fallback, SAID ON SCREEN; count<3 -> df<1, no test exists, cannot emerge;');
+print('    count>nominal -> clamped and noted. Tested: an 8-of-32 salinity pixel at');
+print('    snr=3.20 goes from EMERGED (t=13.17 vs 2.04) to not yet (t=1.61 vs 2.45).');
+print('  TOE-02 BLOCKER: the v10.156 t-gate was VACUOUS for 4 of 6 variables.');
+print('    SStot was ASSUMED as n*noise^2, so t was a deterministic function of snr');
+print('    and n: at snr=2, t ~= sqrt((n-2)/2). Measured on the shipped v10.156 code:');
+print('    n=4 t=0.95 vs bar 4.30 (binds), n=7 1.56 vs 2.57 (binds), n=12 2.22 vs');
+print('    2.23 (marginal), n=13 2.34 vs 2.20, n=27 3.53 vs 2.06, n=32 3.87 vs 2.04,');
+print('    n=44 4.58 vs 2.02 - all VACUOUS. snr>=2 already implied t>=t_crit for');
+print('    SST/Chl/Salinity/DO; the gate bound only NO2 and pH. Now the MEASURED');
+print('    pearsonsCorrelation on the same (t,value) pair drives the exact slope');
+print('    test t=|r|*sqrt((n-2)/(1-r^2)); the derived path is kept only as a');
+print('    labelled fallback; |r|>=1 is marked unreliable, never printed as t=inf.');
+print('    PARTIAL, stated plainly: on a COMPLETE gap-free record the identity');
+print('    r^2 = snr^2*(n^2-1)/(12n^2) still holds, so the gate is STILL vacuous at');
+print('    n=27/32/44 with 100% annual coverage. It binds exactly where the record');
+print('    is sparse - at nominal 32yr and snr=2 it binds at 4, 6, 8, 12 and 16');
+print('    valid years and stops binding at 24. Inherent to defining snr from the');
+print('    TOTAL SD; removing it would mean redefining snr, deliberately not done.');
+print('  REGRESSION from v10.156 BUG-03: a CONTROL-site variance artifact suppressed');
+print('    the STUDY AC1 signal in STEP 4. Five checks - study AND control - were');
+print('    collapsed into one flag that also gated AC1, so a near-zero first-half');
+print('    variance at the open-ocean control discarded a real study dAC1=+0.40 from');
+print('    bestAc1W, the robustness tally and the headline, and the tool said "NO');
+print('    WINDOW COULD SUPPORT A VERDICT" on a genuine signal. STEP 3 COMPARE always');
+print('    kept them separate; STEP 4 now mirrors it exactly - study/control flags');
+print('    split, only the matching variance term nulled, AC1 untouched. Underpowered');
+print('    windows still exclude everything. A new AC1 tally and AC1-only headline');
+print('    branch report the signal that used to vanish.');
+print('  CHANGELOG HONESTY: the v10.156 BUG-02 entry said "126,864 untied orderings');
+print('    at n=4..10". Sum of n! for n=4..10 is 4,037,904 - the figure matched no');
+print('    enumeration. Re-derived exactly: of all 4,037,904 orderings, 1,234 verdicts');
+print('    change and ALL lose significance (2/24 at n=4, 28/720 at n=6, 1204/40320');
+print('    at n=8, none elsewhere). The 1,234 and the direction were right; only the');
+print('    total was fabricated. Corrected in place, error disclosed not overwritten.');
+print('  NOT VERIFIABLE WITHOUT A LIVE EE SESSION: the output band names of');
+print('    ee.Reducer.count() and ee.Reducer.pearsonsCorrelation() are GUESSES.');
+print('    Neither new fetch .select()s or .get()s a guessed key - both pass the whole');
+print('    reduceRegion dictionary through and extract client-side, so a wrong name');
+print('    degrades to a stated fallback instead of blanking every S17 indicator.');
 print('');
 print('v10.156 FIX 14: eight statistical bugs from an external unit-tested audit.');
 print('  BUG-01 CRITICAL: the regime-shift index was INVERTED - computeScore fed');
@@ -9566,8 +10066,9 @@ print('    significance is arithmetically impossible. Exact null distribution of
 print('    now used for n<=10 without ties (Mahonian inversion-count recursion),');
 print('    validated against brute-force enumeration of all n! orderings for n=4..8');
 print('    (max abs error 0.0e+0). n=4 -> 0.0833, n=7 -> 0.0004. Tie correction and');
-print('    continuity correction added to the normal branch. Of 126,864 untied');
-print('    orderings at n=4..10, 1,234 verdicts change and ALL lose significance.');
+print('    continuity correction added to the normal branch. Of all 4,037,904 untied');
+print('    orderings at n=4..10, 1,234 verdicts change and ALL lose significance');
+print('    (v10.157 corrected the total from a wrong 126,864 - the 1,234 was right).');
 print('  BUG-03 HIGH: S13 had no near-zero-denominator guard on varTrendRatio.');
 print('    Real runs gave +1276%, +2876% and +34.22x, feeding a false LOCAL CSD');
 print('    banner. S7C (v10.105) / S7D (v10.109) already had the rule; it is now');
