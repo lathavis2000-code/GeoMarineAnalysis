@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.163';
+var TOOL_VERSION = 'v10.164';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -3887,6 +3887,23 @@ var CSD_PERM_N_DIAGNOSTIC = 300;     // first pass for every row, and final for 
 // a row which would have crossed after escalation is not missed, narrow enough
 // that a p of 0.3 or 0.9 never pays for precision it cannot use.
 var CSD_PERM_ESCALATE_SE = 4;
+// v10.163: with adaptive escalation the four tests in one row can each carry a
+// different shuffle count, so the row cannot print a single `nShuffles` any more
+// - that variable is gone, and reading it is what threw
+// "ReferenceError: nShuffles is not defined" in a live run. Report the counts
+// actually used, from the test objects themselves.
+function rowShuffleTxt(tests){
+  var seen=[], i, n;
+  for(i=0;i<tests.length;i++){
+    n = (tests[i] && tests[i].nPerm) ? tests[i].nPerm : null;
+    if(n===null) continue;
+    if(seen.indexOf(n)===-1) seen.push(n);
+  }
+  if(seen.length===0) return 'n/a';
+  seen.sort(function(a,b){return a-b;});
+  if(seen.length===1) return String(seen[0]);
+  return seen[0]+'-'+seen[seen.length-1]+' (escalated)';
+}
 // True when p is close enough to a boundary that 300 shuffles cannot settle it.
 function permNeedsPrecision(t, bar){
   if(!t || t.pValue===null || t.pValue===undefined) return false;
@@ -6826,7 +6843,7 @@ var csdMultiWindowBtn=ui.Button({
                           (localSig?(minStudyP<bonferroniAlpha?
                             (permClaimIsSeedFragile(minStudyTest,bonferroniAlpha)?'YES but WITHIN MC NOISE of the bar':'YES (survives correction)')
                             :'YES (uncorrected only)'):'no'))+
-              ' | '+nShuffles+(wExcluded?' (diagnostic)':''));
+              ' | '+rowShuffleTxt([sAC1Test,sVarTest,cAC1Test,cVarTest])+(wExcluded?' (diagnostic)':''));
           });
           permLines.push(repeatChar('\u2500',72));
           // v10.161 S6b: "0 of 0 DISTINCT windows" when nothing was powered.
@@ -9869,8 +9886,28 @@ var toeMkBtn=ui.Button({
       lines.push('(SST/Chl/Salinity/NO2 '+TOE_SAMPLE_SCALE.sst+'m, pH '+TOE_SAMPLE_SCALE.ph+'m). The n below and the n in S17 above are');
       lines.push('therefore the same quantity by construction, not two different footprints being compared.');
       // Is S17's published result for the SAME point we just sampled?
+      // v10.163: the tolerance was 1e-6 degrees - about 0.1 m - which is far
+      // tighter than anything physical and tight enough that any float drift
+      // between the two separately-maintained copies of the coordinate makes
+      // this false. A live run at 9.175,-81.986 showed S17 rendering real
+      // results for all five variables while EVERY S17b row said S17 "has not
+      // been run at THIS point", which is the failure this produces.
+      // 1e-4 degrees is ~11 m: far inside any pixel either panel samples
+      // (4000 m for the core variables), so it cannot merge two genuinely
+      // different points, and float noise cannot trip it.
+      var _toeSameTol = 1e-4;
       var _sameClick = (toeLastLat!==null && toeLastLon!==null &&
-                        Math.abs(toeLastLat-latM)<1e-6 && Math.abs(toeLastLon-lonM)<1e-6);
+                        Math.abs(toeLastLat-latM)<_toeSameTol && Math.abs(toeLastLon-lonM)<_toeSameTol);
+      // If it is still false, SAY WHAT THE TWO COORDINATES ACTUALLY ARE rather
+      // than asserting S17 was never run - the panel cannot know that, and the
+      // numbers make the real cause visible in one more run instead of guessed.
+      var _toeWhyNot = '';
+      if(!_sameClick){
+        _toeWhyNot = (toeLastLat===null||toeLastLon===null)
+          ? 'S17 has not published a result yet in this session'
+          : ('S17 last published at '+toeLastLat.toFixed(5)+','+toeLastLon.toFixed(5)+
+             ' and this panel sampled '+latM.toFixed(5)+','+lonM.toFixed(5));
+      }
       lines.push(repeatChar('\u2500',50));
       var nSig=0, nTotal=0, nMismatch=0, nDirConflict=0;
       vars.forEach(function(vconf){
@@ -9895,7 +9932,7 @@ var toeMkBtn=ui.Button({
         } else if(_sameClick){
           recon = '  [S17 has no usable result for this variable at this point]';
         } else {
-          recon = '  [S17 has not been run at THIS point in this session - click the map, then re-check]';
+          recon = '  [not cross-checked against S17: '+_toeWhyNot+']';
         }
         if(res.mk.error){
           lines.push(res.name+': n/a - '+res.mk.error+' (n='+res.n+' annual points, needs 4+)'+recon);
