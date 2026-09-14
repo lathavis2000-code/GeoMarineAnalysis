@@ -3444,7 +3444,7 @@
 // annotations like "(v10.160, Monte Carlo)" or "S7D - ... (v10.106)", which
 // record WHEN a figure was measured or a module was introduced and are wrong
 // if they move, or (c) the file name, which is deliberately stale (see README).
-var TOOL_VERSION = 'v10.162';
+var TOOL_VERSION = 'v10.163';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -7287,8 +7287,44 @@ function repeatChar(ch, n) {
 // 48-month numbers (p=0.023, bar 0.0250, B=10000) SE=0.0015 and p+2SE=0.0260,
 // which is ABOVE the bar - so that exact row would now be reported as too close
 // to call rather than as a survivor.
-var CSD_PERM_N_COUNTED = 10000;      // rows that reach a tally or a corrected-significance claim
-var CSD_PERM_N_DIAGNOSTIC = 300;     // sub-floor / DUPLICATE rows, shown for transparency only
+// v10.163 REGRESSION FIX: v10.162 ran EVERY countable row at 10000 shuffles.
+// The permutation loop is CLIENT-SIDE JS on the browser's single main thread,
+// and the GEE sandbox has no Web Worker and no setTimeout, so there is no way
+// to yield mid-loop. OBSERVED in a real browser run at Bocas del Toro: STEP 4
+// with two countable rows fired 2 rows x 4 tests x 10000 = 80000 statistic
+// evaluations on top of 4 excluded rows x 4 x 300, and Chrome showed
+// "Page Unresponsive". v10.161 did 6 x 4 x 300 = 7200, about 12x less.
+// FIX: spend shuffles only where they can change a decision. Every row runs
+// first at the diagnostic count; a row is RE-RUN at the high count only if its
+// p-value lands near a decision boundary, where the extra precision is the
+// difference between a claim and a coin flip. Typically that is zero or one
+// row per scan, so the cost returns to roughly the v10.161 level while the
+// precision lands exactly where the Bonferroni claim needed it.
+// 3000, not 10000. RE-DERIVED this session against the shipped function: at the
+// live 48-month figures (p=0.023, bar 0.0250) the SE is 0.0027 at B=3000 and
+// 0.0015 at B=10000, and p+2SE is ABOVE the bar either way - so both report TOO
+// CLOSE TO CALL and 10000 buys no different VERDICT, only a tighter number on a
+// question it still cannot settle (that would take about B=100000). 3000 is the
+// point where escalation still changes verdicts that are genuinely settleable
+// without paying for ones that are not.
+var CSD_PERM_N_COUNTED = 3000;       // escalation count - only for tests near a decision boundary
+var CSD_PERM_N_DIAGNOSTIC = 300;     // first pass for every row, and final for excluded rows
+// A row is escalated when its first-pass p-value sits within this many
+// first-pass standard errors of either decision boundary (the uncorrected 0.05
+// or the Bonferroni-corrected bar). At B=300 the SE near p=0.05 is about 0.013,
+// so 4 SE is a window of roughly +/-0.05 around each boundary - wide enough that
+// a row which would have crossed after escalation is not missed, narrow enough
+// that a p of 0.3 or 0.9 never pays for precision it cannot use.
+var CSD_PERM_ESCALATE_SE = 4;
+// True when p is close enough to a boundary that 300 shuffles cannot settle it.
+function permNeedsPrecision(t, bar){
+  if(!t || t.pValue===null || t.pValue===undefined) return false;
+  if(!t.nPerm || t.nPerm<=0) return false;
+  var p=t.pValue, se=Math.sqrt(Math.max(p*(1-p),1e-9)/t.nPerm), w=CSD_PERM_ESCALATE_SE*se;
+  if(Math.abs(p-0.05)<=w) return true;
+  if(bar!==null && bar!==undefined && isFinite(bar) && Math.abs(p-bar)<=w) return true;
+  return false;
+}
 // Monte Carlo standard error of an estimated permutation p-value, and whether a
 // claim that it clears `bar` could be reversed by re-running with another seed.
 function permMonteCarloSE(t){
@@ -10068,6 +10104,13 @@ var csdMultiWindowBtn=ui.Button({
           permLines.push('7/300. Each row below prints the shuffle count and the Monte Carlo SE its p-value carries.');
           permLines.push('This panel fires at most '+CSD_SWEET_SPOT_NPERMTESTS+' permutation tests ('+CSD_SWEET_SPOT_NWINDOWS+' windows x 4), all client-side JS on');
           permLines.push('series already fetched - the shuffle count adds no Earth Engine work at all.');
+          // v10.163: report what the adaptive escalation actually cost this scan.
+          // v10.162 ran every countable row at the high count and froze the tab;
+          // this line makes the trade visible rather than implicit.
+          permLines.push('SHUFFLE BUDGET (v10.163): every row runs at '+CSD_PERM_N_DIAGNOSTIC+' shuffles first. '+
+            fssEscalatedTotal+' test(s) landed near a decision boundary and were re-run at '+CSD_PERM_N_COUNTED+
+            '. Precision is spent only where it can change a verdict - running every row at the high count is what made');
+          permLines.push('  this panel freeze the browser tab in v10.162 (the permutation loop is client-side JS on the main thread, and this sandbox has no worker to move it to).');
           permLines.push('v10.161 ran every row at a flat 300, justified only as');
           // v10.161 S6c (same class as S7F's hardcoded "4 tests / p<0.0125"): when
           // nPoweredWindows is 0 this block used to read "0 of those 6 windows are
@@ -10097,6 +10140,10 @@ var csdMultiWindowBtn=ui.Button({
           permLines.push(repeatChar('\u2500',72));
 
           var anyCorrectedSig = false, uncorrectedLocalCount = 0, fssSeriesNotes = [];
+          // v10.163: how many individual tests were re-run at CSD_PERM_N_COUNTED
+          // because their first-pass p landed near a decision boundary. Reported
+          // on screen so the shuffle cost of a scan is visible, not hidden.
+          var fssEscalatedTotal = 0;
           // v10.162 S3: rows whose claim could still flip on another seed.
           var fssFragileRows = [];
           // v10.162 S5: windows where the CONTROL site itself changed significantly.
@@ -10112,11 +10159,36 @@ var csdMultiWindowBtn=ui.Button({
             // shuffles is all the precision they can ever need.
             var wUnderpowered = (wActual < CSD_MIN_WINDOW_MONTHS);
             var wExcluded = wUnderpowered || wDuplicateOf!==null;
-            var nShuffles = wExcluded ? CSD_PERM_N_DIAGNOSTIC : CSD_PERM_N_COUNTED;
-            var sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, nShuffles);
-            var sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, nShuffles);
-            var cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, nShuffles);
-            var cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, nShuffles);
+            // v10.163: first pass at the diagnostic count for EVERY row. An
+            // excluded row stops here - it is out of every tally, so 300 is all
+            // the precision it can ever use. A countable row is re-run at the
+            // high count ONLY if its p landed near a decision boundary. See the
+            // CSD_PERM_N_COUNTED comment for why this matters: at 10000 for
+            // every row this loop froze the browser tab.
+            var sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, CSD_PERM_N_DIAGNOSTIC);
+            var sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, CSD_PERM_N_DIAGNOSTIC);
+            var cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, CSD_PERM_N_DIAGNOSTIC);
+            var cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, CSD_PERM_N_DIAGNOSTIC);
+            var nEscalatedThisRow = 0;
+            if(!wExcluded){
+              if(permNeedsPrecision(sAC1Test, bonferroniAlpha)){
+                sAC1Test = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statAC1ForPerm, CSD_PERM_N_COUNTED);
+                nEscalatedThisRow++;
+              }
+              if(permNeedsPrecision(sVarTest, bonferroniAlpha)){
+                sVarTest = permutationTestDeltaFixed(pStudyBeforeVals, sAfterW, statVarRatioForPerm, CSD_PERM_N_COUNTED);
+                nEscalatedThisRow++;
+              }
+              if(permNeedsPrecision(cAC1Test, bonferroniAlpha)){
+                cAC1Test = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statAC1ForPerm, CSD_PERM_N_COUNTED);
+                nEscalatedThisRow++;
+              }
+              if(permNeedsPrecision(cVarTest, bonferroniAlpha)){
+                cVarTest = permutationTestDeltaFixed(pCtrlBeforeVals, cAfterW, statVarRatioForPerm, CSD_PERM_N_COUNTED);
+                nEscalatedThisRow++;
+              }
+            }
+            fssEscalatedTotal += nEscalatedThisRow;
             fssSeriesNotes.push(w+'mo: '+permSeriesNote(sAC1Test));
             // v10.159 W-01 item 2: was a bare p-value, with no indication of which
             // series produced it. permP() prints NOT TESTABLE and why instead.
