@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.164';
+var TOOL_VERSION = 'v10.166';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -5914,7 +5914,23 @@ function runControlCSD(bestCtrl, b, a) {
                   combinedCol='#555577'; combinedBg='#eeeef6';
                 }
               } else {
-                combinedTitle='NO RELIABLE CSD SIGNAL - primary indicator (AC1) not rising';
+                // v10.166: this arm is the catch-all for "the permutation test
+                // ran and found nothing significant". It used to assert
+                // "primary indicator (AC1) not rising" unconditionally - a
+                // claim about DIRECTION made by a branch that only knows about
+                // SIGNIFICANCE. A live run showed it printing "AC1 not rising"
+                // directly above "AC1 (primary): direction rising, but NOT
+                // significant", on a delta of +0.377. AC1 was rising; it just
+                // was not significant. Those are different statements and the
+                // headline now makes whichever one is true.
+                var _ac1Rose = (csdRegionalStudyDAC1!==null && csdRegionalStudyDAC1!==undefined &&
+                                !isNaN(csdRegionalStudyDAC1) && csdRegionalStudyDAC1>0);
+                combinedTitle = _ac1Rose
+                  ? ('NO STATISTICALLY SIGNIFICANT CSD SIGNAL - AC1 IS rising (\u0394='+
+                     (csdRegionalStudyDAC1>0?'+':'')+csdRegionalStudyDAC1.toFixed(3)+
+                     ') but the permutation test cannot separate that rise from ordinary noise. '+
+                     'Direction is not evidence on its own.')
+                  : 'NO RELIABLE CSD SIGNAL - primary indicator (AC1) did not rise, and nothing significant was found';
                 combinedCol='#226644'; combinedBg='#e8f4ff';
               }
               // v10.119 FIX: "Regional context: "+vTitle used to paste the
@@ -6695,10 +6711,11 @@ var csdMultiWindowBtn=ui.Button({
           // v10.163: report what the adaptive escalation actually cost this scan.
           // v10.162 ran every countable row at the high count and froze the tab;
           // this line makes the trade visible rather than implicit.
-          permLines.push('SHUFFLE BUDGET (v10.163): every row runs at '+CSD_PERM_N_DIAGNOSTIC+' shuffles first. '+
-            fssEscalatedTotal+' test(s) landed near a decision boundary and were re-run at '+CSD_PERM_N_COUNTED+
-            '. Precision is spent only where it can change a verdict - running every row at the high count is what made');
-          permLines.push('  this panel freeze the browser tab in v10.162 (the permutation loop is client-side JS on the main thread, and this sandbox has no worker to move it to).');
+          // v10.165: the budget line MOVED to after the loop. It was pushed here,
+          // before the loop that counts escalations had run, so it read a hoisted
+          // but unassigned var and printed "undefined test(s) landed near a
+          // decision boundary" in a live run. A count cannot be reported before
+          // the thing being counted has happened.
           permLines.push('v10.161 ran every row at a flat 300, justified only as');
           // v10.161 S6c (same class as S7F's hardcoded "4 tests / p<0.0125"): when
           // nPoweredWindows is 0 this block used to read "0 of those 6 windows are
@@ -6846,6 +6863,13 @@ var csdMultiWindowBtn=ui.Button({
               ' | '+rowShuffleTxt([sAC1Test,sVarTest,cAC1Test,cVarTest])+(wExcluded?' (diagnostic)':''));
           });
           permLines.push(repeatChar('\u2500',72));
+          // v10.165: reported HERE, after the loop, so the number is real.
+          permLines.push('SHUFFLE BUDGET: every row ran at '+CSD_PERM_N_DIAGNOSTIC+' shuffles first; '+
+            fssEscalatedTotal+' of the countable tests landed near a decision boundary (the uncorrected 0.05 or the '+
+            'corrected bar) and were re-run at '+CSD_PERM_N_COUNTED+'.'+
+            (fssEscalatedTotal===0?' NONE did here, which is the expected result when every p-value is far from both boundaries - it is not a failure to escalate.':''));
+          permLines.push('  Precision is spent only where it can change a verdict. Running EVERY row at the high count is what froze the browser tab in v10.162:');
+          permLines.push('  the permutation loop is client-side JS on the main thread and this sandbox has no worker to move it to.');
           // v10.161 S6b: "0 of 0 DISTINCT windows" when nothing was powered.
           permLines.push(nPoweredWindows===0?
             ('NO window here is a DISTINCT span at or above the '+CSD_MIN_WINDOW_MONTHS+'-month floor, so no row above '+
