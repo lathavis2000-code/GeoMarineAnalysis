@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.170';
+var TOOL_VERSION = 'v10.171';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -10708,6 +10708,46 @@ panel.add(lbl('Replaces S17\'s fixed SNR>=2.0 threshold with a genuine Kendall t
 var toeMkVerdictV=ui.Label('Click a location above, then press CHECK.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var toeMkDetailsV=ui.Label('',{fontSize:'7px',color:'#553377',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+// v10.171 S17B-01: S17b is BUTTON-DRIVEN and had NO staleness guard - the only
+// one in the file was STEP 3 COMPARE's. OBSERVED live: CHECK was pressed at
+// Bocas del Toro, then GO moved the click to Hawaii (19.711,-156.053). S17
+// above re-rendered with Hawaii's values; S17b kept Bocas's, including its own
+// "S17 last published at 9.17055,-81.98221" line - two sites' results stacked
+// in one report, 8,000 km apart. That is worse than an ordinary stale panel
+// because S17b's headline literally says "compare vs S17's SNR-based count
+// above": it INVITES the comparison that has just become wrong.
+// A fresh page load is fine (the panel starts blank); the trap needs the
+// sequence press-CHECK-at-A then move-to-B, which is the normal workflow.
+// These remember the point the CURRENT rendered result belongs to; null means
+// nothing has been computed yet, so there is nothing that could go stale.
+var _s17bComputedLat=null, _s17bComputedLon=null;
+// Same tolerance S17/S17b already use to decide whether two clicks are "the
+// same point" (see _sameClick), so the guard cannot disagree with the
+// cross-check note printed inside the panel about whether the click moved.
+var S17B_SAME_POINT_KM = 0.05;
+function s17bInvalidateIfMoved(newLat, newLon){
+  if(_s17bComputedLat===null || _s17bComputedLon===null) return;   // never run - nothing stale
+  if(newLat===null || newLat===undefined || newLon===null || newLon===undefined) return;
+  var movedKm = haversineKm(_s17bComputedLat, _s17bComputedLon, newLat, newLon);
+  if(movedKm <= S17B_SAME_POINT_KM) return;                        // same pixel, result still valid
+  // BLANK the numbers rather than greying them: a stale tau/p-value left on
+  // screen in any colour is still a number a reader can quote. The detail block
+  // goes too - it carries the per-variable p-values and the old coordinates.
+  toeMkVerdictV.setValue('\u26A0 CLEARED - THIS PANEL\'S RESULT WAS FOR A DIFFERENT PLACE.\n' +
+    'It was computed at '+_s17bComputedLat.toFixed(5)+', '+_s17bComputedLon.toFixed(5)+
+    ' and the click has since moved '+(movedKm<1?(Math.round(movedKm*1000)+' m'):(movedKm.toFixed(1)+' km'))+
+    ' to '+newLat.toFixed(5)+', '+newLon.toFixed(5)+'.\n' +
+    'Mann-Kendall does not re-run on a map click - press CHECK again for this location.\n' +
+    'The old numbers are removed rather than greyed out, because a stale tau or p-value is still\n' +
+    'quotable, and S17 directly above HAS refreshed - leaving both on screen would put two sites\n' +
+    'in one report and invite exactly the S17-vs-S17b comparison this panel asks you to make.');
+  toeMkVerdictV.style().set('color','#aa3300');
+  toeMkVerdictV.style().set('backgroundColor','#fff0e0');
+  toeMkVerdictV.style().set('border','2px solid #aa3300');
+  toeMkVerdictV.style().set('whiteSpace','pre');
+  toeMkDetailsV.setValue('');
+  _s17bComputedLat=null; _s17bComputedLon=null;   // cleared; nothing left to invalidate
+}
 var toeMkBtn=ui.Button({
   label:'CHECK REAL TREND SIGNIFICANCE',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#e8d9f5',color:'#4a1a6a',stretch:'horizontal',padding:'6px 4px',border:'2px solid #663399'},
@@ -10877,6 +10917,13 @@ var toeMkBtn=ui.Button({
       toeMkVerdictV.style().set('color',(nMismatch>0||nDirConflict>0)?'#aa3300':nSig>=2?'#880000':nSig>=1?'#886600':'#115511');
       toeMkVerdictV.style().set('whiteSpace','pre');
       toeMkDetailsV.setValue(lines.join('\n'));
+      // v10.171 S17B-01: stamp the point THIS result belongs to. latM/lonM are
+      // the coordinates the fetch actually used, captured when CHECK was
+      // pressed - not lastClickLat/Lon, which may already have moved on by the
+      // time these callbacks return.
+      _s17bComputedLat=latM; _s17bComputedLon=lonM;
+      toeMkVerdictV.style().set('backgroundColor','#eeeeee');
+      toeMkVerdictV.style().set('border','2px solid #aaaaaa');
       print(lines.join('\n'));
     }
   }
@@ -11204,6 +11251,15 @@ function recordStudySite(lat, lon, label){
 }
 
 function analyzeLocation(lat, lon) {
+  // v10.171 S17B-01: invalidate S17b BEFORE lastClickLat/Lon move, and before
+  // anything else re-renders. S17b does not re-run on a click - it only runs
+  // when its own CHECK button is pressed - so without this the panel keeps
+  // showing the previous site's Mann-Kendall result while S17 directly above
+  // refreshes to this one. Deliberately NOT inside resetSidebarToComputing():
+  // that blanks rows this click is about to refill, whereas this panel is not
+  // going to be refilled by this click at all. It must therefore say CLEARED
+  // and why, not "computing...", which would be a promise nothing keeps.
+  s17bInvalidateIfMoved(lat, lon);
   lastClickLat = lat; lastClickLon = lon;
   startPipelineWatchdog(lat, lon);
   resetSidebarToComputing();
@@ -12466,6 +12522,31 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.171 S17B-01: S17b kept showing the PREVIOUS site\'s Mann-Kendall result.');
+print('');
+print('  OBSERVED live: CHECK was pressed at Bocas del Toro, then GO moved the click');
+print('    to Hawaii (19.711, -156.053). S17 re-rendered with Hawaii\'s values; S17b');
+print('    kept Bocas\'s - tau=+0.607 SST, tau=-0.368 Chl-a, and its own line reading');
+print('    "S17 last published at 9.17055,-81.98221". Two sites 8,000 km apart, stacked');
+print('    in one report, adjacent on screen.');
+print('    TRACED: S17b is BUTTON-DRIVEN and had NO staleness guard - the only one in');
+print('    the whole file was STEP 3 COMPARE\'s. A fresh page load is fine (the panel');
+print('    starts blank); the trap needs press-CHECK-at-A then move-to-B, which is the');
+print('    ordinary workflow. Worse than a plain stale panel because S17b\'s own');
+print('    headline says "compare vs S17\'s SNR-based count above" - it INVITES the');
+print('    comparison that has just silently become wrong.');
+print('    FIXED: the panel now records the point each result was computed at, and a');
+print('    map click more than '+S17B_SAME_POINT_KM+' km away CLEARS it with a message naming the old');
+print('    point, the distance moved, and the fact that CHECK must be pressed again.');
+print('    The numbers are BLANKED, not greyed: a stale tau or p-value is still');
+print('    quotable in any colour. Same tolerance the panel\'s own S17 cross-check');
+print('    already uses to decide whether two clicks are the same point, so the guard');
+print('    and that note cannot disagree about whether the click moved.');
+print('    The stamp uses the coordinates the FETCH used, not lastClickLat/Lon, which');
+print('    can already have moved on by the time the callbacks return.');
+print('    NOT CHANGED: S17b still does not auto-run on a click. Making it re-run would');
+print('    spend 5 Earth Engine calls on every click of a panel most runs never open.');
 print('');
 print('v10.170 FAI-01/FAI-01b: the variance-artifact threshold had UNITS, so on');
 print('  FAI it fired on every row ever tested - and in S7E it silently decided a');
