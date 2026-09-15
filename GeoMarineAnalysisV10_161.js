@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.168';
+var TOOL_VERSION = 'v10.169';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -11171,6 +11171,20 @@ function analyzeLocation(lat, lon) {
     s19StatusV.setValue('No in-situ station within range of this click');
     s19StatusV.style().set('color','#888888');
     s19PhV.setValue('n/a'); s19TempV.setValue('n/a'); s19SalV.setValue('n/a'); s19DoV.setValue('n/a');
+    // v10.169 S19-01: these three were MISSING from this branch. The reset a few
+    // hundred lines up blanks every S19 row to 'computing...', the IF branch
+    // above fills all seven, but this ELSE branch only ever cleared the
+    // ORIGINAL four - Fluorescence, Pressure and Turbidity were added later
+    // (v10.68) to the IF branch and nobody came back here. Result: at any click
+    // outside the five stations - which is nearly every click - those three
+    // rows sat on 'computing...' FOREVER, indistinguishable from a hung fetch.
+    // Caught in a live Hawaii run of v10.168. Nothing is actually pending: the
+    // whole S19 lookup is synchronous JS with no evaluate() at all, so there is
+    // no call to wait for and never was.
+    s19FluorV.setValue('n/a'); s19PressV.setValue('n/a'); s19TurbV.setValue('n/a');
+    s19FluorV.style().set('color','#888888');
+    s19PressV.style().set('color','#888888');
+    s19TurbV.style().set('color','#888888');
     s19NoteV.setValue('Not within radius of Looe Key FL, Agua Hedionda CA, Scripps Pier CA,\nMarineBasis Nuuk GF3 (40km), or Zackenberg Young Sound (30km).');
   }
 
@@ -12359,6 +12373,22 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.169 S19-01: three S19 rows that said "computing..." forever.');
+print('');
+print('  REPORTED from a live Hawaii run of v10.168: S19 showed "No in-situ station');
+print('    within range of this click", pH/Temp/Salinity/DO all correctly "n/a", and');
+print('    Fluorescence, Pressure and Turbidity all still reading "computing...".');
+print('    TRACED: the click handler blanks all seven S19 rows to "computing..." up');
+print('    front. The station-FOUND branch fills all seven. The station-NOT-FOUND');
+print('    branch only ever cleared the original FOUR - the other three were added');
+print('    to the found-branch in v10.68 and this branch was never updated to match.');
+print('    Since almost every click on Earth is outside the five stations, those three');
+print('    rows were stuck on "computing..." on almost every run, which is exactly what');
+print('    a HUNG FETCH looks like. FIXED: the else branch now clears all seven.');
+print('    NOTHING WAS EVER PENDING: getInSituBaseline() is synchronous JS against a');
+print('    baked-in table - S19 makes no Earth Engine call at all, so there was never');
+print('    a request to wait for. The label was lying about the state, not reporting it.');
 print('');
 print('v10.168 DEPTH-01/DEPTH-02/S7E-01: one GEBCO depth instead of two that');
 print('  disagreed by 90 m on the same screen, depth-zone names that do not claim a');
