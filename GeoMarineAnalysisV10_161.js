@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.166';
+var TOOL_VERSION = 'v10.167';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -2151,10 +2151,258 @@ function extractMultiNodeSeries(monthlyColl, ptsFC, bandName, scale) {
   var perImageList = ee.List.sequence(0, n.subtract(1)).map(function(i){
     var img = ee.Image(imgList.get(i));
     var t = img.get('system:time_start');
-    var reduced = img.select([bandName]).reduceRegions({collection:ptsFC, reducer:ee.Reducer.mean(), scale:scale});
+    // v10.167 FIX 20 / S1: tileScale:4 added. The standard Earth Engine remedy
+    // for the per-graph memory pressure inferred from the empty returns above;
+    // it costs nothing when it is not needed. UNTESTED against live EE.
+    var reduced = img.select([bandName]).reduceRegions({collection:ptsFC, reducer:ee.Reducer.mean(), scale:scale, tileScale:4});
     return reduced.map(function(f){ return f.set('t', t); });
   });
   return ee.FeatureCollection(perImageList).flatten();
+}
+
+// ============================================================
+// v10.167 FIX 20 / S1 - THE FAI MULTI-NODE FETCH, DIAGNOSED AND CHUNKED.
+//
+// WHAT WAS OBSERVED (live browser runs at Bocas del Toro, 9.175 -81.986 -
+// these are real observations, not simulations):
+//   S7C  3 nodes, 24 months (2023-01 +24)                  WORKS, 8 valid months/node
+//   S7D  9 nodes, 25-month union (2022-01+24 / 2023-01+12) returns, 0 raw features
+//   S7D  9 nodes, 32-month union (2021-06+24 / 2023-01+12) returns, 0 raw features
+//   S7E/S7F 2 sites, 36-month union (2021-01+24 / 2023-01+12) NEVER RETURNS
+//   (earlier, v10.162-era) 9 nodes x 12-month AFTER window   returned all 108 features
+// In every S7D case the FAI pre-check reported scenes DO exist at this exact
+// point (BEFORE 9 of 24 months | AFTER 4 of 12 months), and S7C proves FAI
+// genuinely resolves here.
+//
+// WHAT THE EVIDENCE ACTUALLY SAYS - three hypotheses ruled OUT first:
+//  1. NOT span length. S7C works at 24 months and S7D fails at 25, but those
+//     two numbers are not comparable: S7C and S7D do not share a fetch path.
+//     Comparing them is comparing two different functions, not two spans.
+//  2. NOT node count. S7E fails with TWO sites. A 9-vs-3 explanation cannot
+//     cover a 2-site failure.
+//  3. NOT a labelling/grouping bug. groupSeriesByLabel() does silently drop a
+//     feature with no `label` - but S7D's own diagnostic counts RAW features
+//     BEFORE grouping (combinedFeatCount), and the live run reported 0 there.
+//     The features never arrived; there was nothing for the grouper to drop.
+//     TRACED, not run: ptsFC sets `label` on every feature, reduceRegions
+//     carries non-reducer properties through untouched, f.set('t',t) preserves
+//     them, flatten() preserves them, and groupSeriesByLabel() buckets on
+//     exactly that key. There is no path here that produces an unlabelled
+//     feature.
+//
+// WHAT DOES SEPARATE EVERY FAILURE FROM EVERY SUCCESS: the code path.
+// EVERY failing FAI fetch goes through extractMultiNodeSeries(); EVERY
+// succeeding one goes through computeRealCSDDeseasonalized()/
+// computeZonalSyncCSD(). Line by line, that is the only structural
+// difference - the two paths agree on the collection builder (mkMoFAIRange),
+// the band ('fai'), the scale (20 m), the buffer (150 m) and the site:
+//
+//   WORKING (S7C)                        FAILING (S7D/S7E/S7F)
+//   monthlyColl.map(img => ...)          toList() + ee.List.sequence().map()
+//   img.reduceRegion(ONE geometry)       img.select([b]).reduceRegions(ptsFC)
+//   maxPixels: 1e9 set                   no maxPixels, no tileScale
+//   output = nMonths features            output = nMonths x nRegions features
+//   one region per graph                 2 or 9 regions per graph
+//   no label (positional {t,v})          label carried through flatten()
+//
+// So the failing path asks ONE .evaluate() to build nMonths Sentinel-2 monthly
+// median composites AND materialize nMonths x nRegions features out of them,
+// unchunked and unbounded. Ordering the observations by that per-call work:
+//   12 mo x 9 = 108 elements   -> returned, fully populated
+//   24 mo x 9 = 216            -> returned EMPTY
+//   25 mo x 9 = 225            -> returned EMPTY
+//   32 mo x 9 = 288            -> returned EMPTY
+//   36 mo x 9 = 324 (+36 x 2)  -> never returned
+// The two failure MODES are ordered by that number; the failure itself is not.
+// HONEST LIMIT ON THIS CLAIM: what happens server-side between "216 elements"
+// and "empty result with no error" cannot be observed from here - there is no
+// Earth Engine access from this session. The mechanism is INFERRED (a memory /
+// element / payload ceiling on one graph, which EE has been seen to surface as
+// an empty table rather than an error). What is NOT inferred is which code
+// path fails and which does not: that is 5 for 5 in the observations above.
+//
+// THE FIX: stop sending one unbounded graph. The span is cut into chunks whose
+// per-call work never exceeds the LARGEST CONFIGURATION EVER OBSERVED TO
+// RETURN DATA ON THIS PATH - 12 months x 9 nodes = 108 features. Both bounds
+// are taken from that same observation and nothing else; neither is a guess at
+// where the real ceiling sits, because the real ceiling has not been measured.
+// The chunks are fetched SEQUENTIALLY (bounded concurrency - this file has hit
+// the account concurrency quota before) and merged client-side by label and
+// timestamp, which is the same fetch-once-and-slice arithmetic v10.162 already
+// established. tileScale:4 is added to the reduceRegions call as well: it is
+// the standard EE remedy for exactly the memory pressure inferred above, it
+// costs nothing when it is not needed, and it is UNTESTED here.
+//
+// WHICH FAILURE EACH CHANGE ADDRESSES:
+//   - chunking + tileScale  -> the "returns 0 raw features" failure (S7D)
+//   - chunking + the per-call deadline below -> the "never returns" failure
+//     (S7E/S7F). Chunking alone cannot fix a hang; it only makes each call
+//     small enough that hanging is less likely and names WHICH chunk stalled.
+//     The deadline is what turns a stall into a visible refusal.
+//   - S7C is NOT changed. It is the one configuration observed to work, and
+//     nothing here is worth risking it on.
+var S7_FAI_MAX_ELEMENTS_PER_CALL = 108;  // 12 months x 9 nodes - the largest OBSERVED to return
+var S7_FAI_MAX_MONTHS_PER_CALL   = 12;   // the month count of that same observation
+
+// How many months one chunked call may cover, given how many regions ride
+// along in it. Pure - unit tested in Node.
+function s7FaiChunkMonths(nRegions){
+  var r = Math.max(1, nRegions||1);
+  var byElements = Math.floor(S7_FAI_MAX_ELEMENTS_PER_CALL / r);
+  return Math.max(1, Math.min(S7_FAI_MAX_MONTHS_PER_CALL, byElements));
+}
+// The calendar-month grid ONE fetch must cover to serve both windows. Anchored
+// on the first of the month (not the user's day-of-month) so every chunk after
+// the first sits on the SAME grid - a grid that shifted between chunks would
+// duplicate or skip months when the halves were merged. Window slicing is
+// unaffected: sliceSeriesByWindow() takes the half-open interval
+// [start, start+n months), which contains exactly one point of a monthly grid
+// per month wherever the grid is anchored.
+function s7FaiGridSpan(beforeStart, beforeMonths, afterStart, afterMonths){
+  var bS=ymdToUTCms(beforeStart), aS=ymdToUTCms(afterStart);
+  if(bS===null||aS===null) return null;
+  var bE=addMonthsUTCms(bS,beforeMonths), aE=addMonthsUTCms(aS,afterMonths);
+  var sD=new Date(Math.min(bS,aS)), eD=new Date(Math.max(bE,aE));
+  var sY=sD.getUTCFullYear(), sM=sD.getUTCMonth();
+  // The window end is EXCLUSIVE, so the last month the grid must carry is the
+  // month of (end - 1 ms). A window ending exactly on the 1st does not need
+  // that month's composite.
+  var eD2=new Date(Math.max(bE,aE)-1);
+  var nMonths=(eD2.getUTCFullYear()-sY)*12 + (eD2.getUTCMonth()-sM) + 1;
+  return {startDateStr: sY+'-'+((sM+1<10?'0':'')+(sM+1))+'-01',
+          nMonths: Math.max(1, nMonths), endExclusiveMs: eD.getTime()};
+}
+// Cut a grid into chunks. Returns [{start,months,index,expected}, ...]. Pure.
+function s7FaiChunkPlan(gridStartStr, nMonths, nRegions){
+  var per=s7FaiChunkMonths(nRegions), out=[], done=0;
+  if(!gridStartStr || !(nMonths>0)) return out;
+  while(done<nMonths){
+    var take=Math.min(per, nMonths-done);
+    var st=faiAddMonthsStr(gridStartStr, done);
+    if(st===null) return [];
+    out.push({start:st, months:take, index:out.length, expected:take*Math.max(1,nRegions||1)});
+    done+=take;
+  }
+  return out;
+}
+// Merge the chunk payloads into one reduceRegions-shaped result, de-duplicated
+// on (label, t) so an overlapping grid could never double-count a month. Pure.
+function mergeFaiChunkResults(parts){
+  var feats=[], seen={};
+  (parts||[]).forEach(function(fc){
+    if(!fc||!fc.features) return;
+    fc.features.forEach(function(f){
+      var p=(f&&f.properties)||{};
+      var k=String(p.label)+'|'+String(p.t);
+      if(seen[k]) return;
+      seen[k]=1; feats.push(f);
+    });
+  });
+  return {type:'FeatureCollection', features:feats};
+}
+// How many EE calls a module's series fetch will cost, so every on-screen
+// string can be DERIVED from the plan instead of quoting a stale literal.
+function s7FaiCallCount(gridStartStr, nMonths, nRegions){
+  return s7FaiChunkPlan(gridStartStr, nMonths, nRegions).length;
+}
+
+// ---- the per-call deadline -------------------------------------------------
+// v10.161 S6a said plainly: "a callback that never fires still never fires.
+// Without a timer this cannot be turned into an automatic failure." That was
+// true of the GLOBAL setTimeout, which the GEE sandbox does not expose. The
+// Code Editor's own ui.util namespace does expose setTimeout/clearTimeout, and
+// that is what this uses - FEATURE-DETECTED, never assumed. If it is absent the
+// modules behave exactly as they did before and SAY SO on screen, rather than
+// silently promising a deadline they cannot enforce.
+var S7_CALL_DEADLINE_MS = 240000;   // 4 minutes per chunked call
+function s7DeadlineAvailable(){
+  try { return (typeof ui!=='undefined') && !!ui.util && typeof ui.util.setTimeout==='function'; }
+  catch(eDA){ return false; }
+}
+function s7SetDeadline(ms, fn){
+  if(!s7DeadlineAvailable()) return null;
+  try { return ui.util.setTimeout(fn, ms); } catch(eSD){ return null; }
+}
+function s7ClearDeadline(h){
+  if(h===null||h===undefined) return;
+  try { if(s7DeadlineAvailable() && typeof ui.util.clearTimeout==='function') ui.util.clearTimeout(h); }
+  catch(eCD){}
+}
+var S7_DEADLINE_NOTE = s7DeadlineAvailable() ?
+  ('A call that does not return within '+Math.round(S7_CALL_DEADLINE_MS/60000)+
+   ' minutes is REFUSED on screen rather than left waiting.') :
+  ('NO TIMER AVAILABLE in this sandbox build - a call that never returns will leave this\n'+
+   'panel waiting. The line below names which call, and pressing RUN again is a clean retry.');
+
+// ---- the chunked, sequential, deadline-guarded series fetch ----------------
+// cfg: {gridStartStr, nMonths, ptsFC, nRegions, band, scale, tag, isCurrent, onProgress}
+// onDone({ok:true,  fc, plan, nCalls, shortChunks})
+// onDone({ok:false, reason, detail, plan, nCalls, chunkIndex, fc})
+function fetchFaiSeriesChunked(cfg, onDone){
+  var plan=s7FaiChunkPlan(cfg.gridStartStr, cfg.nMonths, cfg.nRegions);
+  var tag=cfg.tag||'S7';
+  if(plan.length===0){ onDone({ok:false, reason:'plan', detail:'Could not build a month grid from the dates given.',
+                               plan:plan, nCalls:0, chunkIndex:-1}); return; }
+  var parts=[], shortChunks=[], i=0;
+  function current(){ return cfg.isCurrent ? cfg.isCurrent() : true; }
+  function step(){
+    if(!current()) return;                      // v10.161 S6a stale-run guard
+    if(i>=plan.length){
+      onDone({ok:true, fc:mergeFaiChunkResults(parts), plan:plan, nCalls:plan.length, shortChunks:shortChunks});
+      return;
+    }
+    var ch=plan[i], settled=false, dl=null;
+    if(cfg.onProgress) cfg.onProgress(i, plan.length, ch);
+    var coll=mkMoFAIRange(ch.start, ch.months);
+    var req=extractMultiNodeSeries(coll, cfg.ptsFC, cfg.band, cfg.scale);
+    dl=s7SetDeadline(S7_CALL_DEADLINE_MS, function(){
+      if(settled||!current()) return;
+      settled=true;
+      print('=== '+tag+' [series chunk '+(ch.index+1)+'/'+plan.length+'] DEADLINE - no response in '+
+            S7_CALL_DEADLINE_MS+' ms ===');
+      onDone({ok:false, reason:'deadline', chunkIndex:ch.index, plan:plan, nCalls:plan.length,
+              detail:'Call '+(ch.index+1)+' of '+plan.length+' ('+ch.start.substring(0,7)+' + '+ch.months+
+                     ' months, '+cfg.nRegions+' regions, '+ch.expected+' expected features) did not return within '+
+                     Math.round(S7_CALL_DEADLINE_MS/60000)+' minutes.'});
+    });
+    req.evaluate(function(v,e){
+      if(settled||!current()) return;
+      settled=true; s7ClearDeadline(dl);
+      var n=(v&&v.features)?v.features.length:0;
+      if(e){
+        print('=== '+tag+' [series chunk '+(ch.index+1)+'/'+plan.length+'] ERROR === '+e);
+        onDone({ok:false, reason:'error', chunkIndex:ch.index, plan:plan, nCalls:plan.length, detail:String(e)});
+        return;
+      }
+      print('=== '+tag+' [series chunk '+(ch.index+1)+'/'+plan.length+'] OK - '+n+' of '+ch.expected+' feature(s) ===');
+      if(n===0){
+        onDone({ok:false, reason:'empty', chunkIndex:ch.index, plan:plan, nCalls:plan.length,
+                detail:'Call '+(ch.index+1)+' of '+plan.length+' ('+ch.start.substring(0,7)+' + '+ch.months+
+                       ' months x '+cfg.nRegions+' regions) returned 0 features where '+ch.expected+
+                       ' were expected. reduceRegions() emits one feature per region per image whether or not '+
+                       'the pixels are masked, so 0 is a failed call, NOT a data gap.'});
+        return;
+      }
+      if(n<ch.expected) shortChunks.push({index:ch.index, got:n, expected:ch.expected});
+      parts.push(v); i++; step();
+    });
+  }
+  step();
+}
+// The on-screen refusal for a chunked fetch that did not complete. One
+// vocabulary for all three modules, so S7E/S7F refuse the way S7D already does.
+function s7ChunkRefusalText(tag, res, nRegions){
+  var head;
+  if(res.reason==='deadline') head='NO RESPONSE - '+tag+' stopped waiting rather than leaving you on a frozen counter.';
+  else if(res.reason==='empty') head='EMPTY RESULT - '+tag+' refused rather than rendering a table on missing data.';
+  else if(res.reason==='error') head='EARTH ENGINE ERROR - '+tag+' refused.';
+  else head='CANNOT RUN - '+tag+' refused.';
+  return head+'\n'+(res.detail||'')+'\n'+
+    'The '+(res.nMonths||(res.plan?res.plan.length:0))+'-call chunked fetch (v10.167: at most '+
+    S7_FAI_MAX_MONTHS_PER_CALL+' months x '+nRegions+' regions = '+
+    (S7_FAI_MAX_MONTHS_PER_CALL*nRegions)+' features per call, against the 108-feature configuration that '+
+    'was OBSERVED to return) did not complete, so nothing is shown. Press RUN again for a clean retry, '+
+    'or shorten the windows.';
 }
 
 
@@ -7621,6 +7869,28 @@ panel.add(row('FAI (floating algae)',faiV)); panel.add(row('NDCI (bloom index)',
 panel.add(row('NDVI water (benthic)',ndviWV)); panel.add(row('Algae status',algaeStatusV));
 
 // ============================================================
+// v10.167 S7G SUPPORT - TWO CLIENT-SIDE STORES. NO NEW EARTH ENGINE CALLS.
+// S7G (the cross-index scatter panel, below S7F) plots relationships between
+// indices this tool ALREADY fetches. The hard constraint on it is that it may
+// not spend a single new EE call, so it never fetches anything: it reads these
+// two stores, which are filled by callbacks that have already run and already
+// paid for their data.
+//   s7bScanStore       - S7B's 9-point compass scan: FAI, NDCI and NDVI-water
+//                        at Center + 8 bearings. Filled inside S7B's existing
+//                        evaluate() callback from the features it already has.
+//   lastClickIndexStore - the single clicked point: SST, Chl-a, FAI, NDCI and
+//                        NDVI-water. Filled inside the click pipeline's
+//                        _onAllDone from values it has already extracted.
+// WHAT THIS MEANS FOR THE CHARTS, stated plainly because it decides what S7G
+// can and cannot draw: S7B does NOT fetch SST or Chl-a. It reduces ONE image -
+// faiImg + ndciImg + ndviWater - over its 9 buffers. There is therefore no
+// 9-point SST and no 9-point Chl-a anywhere in this tool without a new EE call,
+// and S7G says so instead of drawing one.
+var S7G_ONREEF_NDVI = -0.10;     // the SAME on-reef cut S7D applies to NDVI-water
+var s7bScanStore = null;
+var lastClickIndexStore = null;
+
+// ============================================================
 // S7B - MULTI-POINT ALGAE SCAN (v10.102 NEW)
 // Directly motivated by a real finding: two points 1.1km apart at the same
 // reef showed "mild watch" vs "massive bloom" - a single click can miss or
@@ -7730,6 +8000,20 @@ var s7bScanBtn = ui.Button({
             (dv!==null?dv.toFixed(3):'n/a')+' | '+(flags.length>0?flags.join(', '):'-'));
         }
         rows.push(repeatChar('\u2500',48));
+        // v10.167 S7G: keep the per-point values this callback already holds, so
+        // the cross-index scatter panel below S7F can plot them without a single
+        // new Earth Engine call. Nothing is fetched here - feats is the payload
+        // that has already arrived.
+        s7bScanStore = {lat:latIn, lon:lonIn, radiusKm:radiusKm, t:Date.now(), points:[]};
+        for(var si=0; si<feats.length; si++){
+          var sp2=feats[si].properties||{};
+          s7bScanStore.points.push({
+            label: sp2.label,
+            fai:   (sp2.fai!==undefined&&sp2.fai!==null&&!isNaN(sp2.fai))?sp2.fai:null,
+            ndci:  (sp2.ndci!==undefined&&sp2.ndci!==null&&!isNaN(sp2.ndci))?sp2.ndci:null,
+            ndviW: (sp2.ndviW!==undefined&&sp2.ndviW!==null&&!isNaN(sp2.ndviW))?sp2.ndviW:null
+          });
+        }
 
         var faiRange = faiVals.length>1?(Math.max.apply(null,faiVals)-Math.min.apply(null,faiVals)):null;
         var ndciRange = ndciVals.length>1?(Math.max.apply(null,ndciVals)-Math.min.apply(null,ndciVals)):null;
@@ -8023,7 +8307,7 @@ panel.add(legDiv());
 // rather than silently trusted.
 // ============================================================
 panel.add(sHead('S7D - FULL 9-NODE ALGAE COUPLING NETWORK (v10.106)','#3a1a5a'));
-panel.add(lbl('Scales S7C to the full 9-node ring with a real BEFORE/AFTER comparison. v10.107: rebuilt from ~43 separate Earth Engine calls down to 3 batched calls (reduceRegions+flatten, stats computed client-side) - expect ~20-60s instead of 2-5 minutes. v10.162: down to 2 - the separate BEFORE fetch is gone. ONE series is fetched across BEFORE-start..AFTER-end and the two windows are sliced out of it client-side by real timestamp, the same fetch-once-and-slice pattern S13 STEP 4 already uses. This is the fix for a live run in which the BEFORE call returned 0 features while AFTER returned all 108, leaving S7E and S7F waiting on it forever. Correlation is still scored vs the Center node only (8 pairs), not the full 36-pair matrix, to keep this usable.',7,'#663388'));
+panel.add(lbl('Scales S7C to the full 9-node ring with a real BEFORE/AFTER comparison. v10.107: rebuilt from ~43 separate Earth Engine calls down to 3 batched calls (reduceRegions+flatten, stats computed client-side). v10.162: down to 2, one combined BEFORE..AFTER series sliced client-side by timestamp. v10.167: that ONE unchunked series fetch is what failed. OBSERVED, live, at Bocas del Toro: 24, 25 and 32 months x 9 nodes each returned 0 raw features, while 12 months x 9 nodes returned all 108 - and S7C, which fetches FAI at this same site through a different function (one region per graph), works. The series is therefore fetched in chunks of at most 12 months x 9 nodes = 108 features, the largest shape ever observed to return, and merged client-side. Cost: 1 pre-check + ceil(span/12) series calls + 1 NDVI check, where span is the number of calendar months the two windows jointly cover. 5 calls for the 24+12 windows in the live runs above (a 31-month span, so 3 chunks); 4 when the span is 24 months or less; 10 at the 95-month widest span the span gate accepts. Correlation is still scored vs the Center node only (8 pairs), not the full 36-pair matrix.',7,'#663388'));
 panel.add(lbl('NDVI-water is checked once per node to flag likely off-reef points (per the S7B finding that North showed strongly negative NDVI there) - a node/pair involving an off-reef point is caveated, not silently trusted as a real algae-dynamics comparison.',7,'#886600'));
 panel.add(lbl('Lat, Lon:',7,'#334466'));
 var s7dCoordInput = ui.Textbox({placeholder:'lat, lon  e.g. -23.51, 152.09',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
@@ -8065,12 +8349,12 @@ var s7dAfterStartInput = ui.Textbox({placeholder:'e.g. 2023-11-01',style:{stretc
 panel.add(s7dAfterStartInput);
 var s7dAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7dAfterMonthsInput);
-var s7dStatusV = ui.Label('Fill in the fields above, then press RUN. 2 batched calls (v10.162: one combined BEFORE..AFTER series + NDVI), expect ~20-60 seconds.',
+var s7dStatusV = ui.Label('Fill in the fields above, then press RUN. v10.167: 1 pre-check + ceil(span/12) chunked series calls + 1 NDVI check, where span is the calendar months the two windows jointly cover (4 calls at a 24-month span, 5 at 31, 10 at the 95-month maximum). The chunks run in sequence, so expect roughly 1-3 minutes.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7dResultV = ui.Label('',{fontSize:'8px',color:'#2a1040',backgroundColor:'#f2ecfa',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
 var s7dRunSeq = 0;   // v10.161 S6a: a late callback from an abandoned run must not overwrite a newer run's label
 var s7dRunBtn = ui.Button({
-  label:'RUN FULL 9-NODE NETWORK (2 batched EE calls, ~20-60s)',
+  label:'RUN FULL 9-NODE NETWORK (chunked: 2 + 1 EE call per 12 months of span)',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#ded0f0',color:'#3a1560',stretch:'horizontal',padding:'6px 4px',border:'2px solid #5a2a80'},
   onClick:function(){
     var coordTxt=(s7dCoordInput.getValue()||'').trim();
@@ -8134,7 +8418,8 @@ var s7dRunBtn = ui.Button({
     recordStudySite(latIn, lonIn, 'S7D');
 
     // v10.161 S4: cheap FAI data-density gate BEFORE the heavy batched calls
-    // (v10.162 S1: 2 of them now, not 3).
+    // (v10.162 S1: 2 of them, not 3; v10.167 FIX 20: 1 NDVI check plus one
+    // chunked series call per 12 months of BEFORE..AFTER span).
     faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7D', statusLbl:s7dStatusV, resultLbl:s7dResultV,
       windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
                {name:'AFTER', start:afterStartTxt, months:afterMonths}],
@@ -8172,10 +8457,17 @@ var s7dRunBtn = ui.Button({
     // timestamp. Replaces the separate BEFORE fetch that returned 0 features
     // in the live Bocas del Toro run while AFTER returned all 108.
     var _s7dSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
-    var faiCollCombined = mkMoFAIRange(_s7dSpan.startDateStr, _s7dSpan.nMonths);
+    // v10.167 FIX 20 / S1: the ONE unbounded combined fetch is replaced by a
+    // CHUNKED one. See the long note above s7FaiChunkMonths(): every observed
+    // failure of this module used extractMultiNodeSeries() on a single graph of
+    // nMonths x 9 nodes; the only configuration of that path ever observed to
+    // return data was 12 months x 9 nodes = 108 features, and that is the bound
+    // each chunk now respects.
+    var _s7dGrid = s7FaiGridSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var _s7dPlan = s7FaiChunkPlan(_s7dGrid.startDateStr, _s7dGrid.nMonths, nodes.length);
+    var _s7dSeriesCalls = _s7dPlan.length;
+    var _s7dTotalCalls = _s7dSeriesCalls + 1;          // + the NDVI check
     var ndviWaterMasked=ndviWater.updateMask(oceanMask).rename('ndviW');
-
-    var rCombinedSeries = extractMultiNodeSeries(faiCollCombined, ptsFC, 'fai', 20);
     // v10.109 FIX: switched from mean() over 150m to max() over a FIXED
     // 500m buffer to fix Center falsely reading "LIKELY NOT on-reef".
     // v10.110 FIX: that fixed value size (500m) was itself a bug - at the
@@ -8195,29 +8487,55 @@ var s7dRunBtn = ui.Button({
     }));
     var rNdviAll = ndviWaterMasked.reduceRegions({collection:ptsFCForNdvi, reducer:ee.Reducer.max(), scale:20});
 
-    s7dStatusV.setValue('Running: 2 batched Earth Engine calls (ONE combined '+_s7dSpan.nMonths+'-month BEFORE..AFTER series, NDVI check)\n'+
-      'covering all 9 nodes at once. v10.162: the separate BEFORE fetch is gone - one series is fetched\n'+
-      'across both windows and sliced client-side by timestamp, halving the call count. Expect 20-60 seconds.');
+    s7dStatusV.setValue('Running: '+_s7dTotalCalls+' batched Earth Engine calls - '+_s7dSeriesCalls+
+      ' chunked series call(s) covering '+_s7dGrid.nMonths+' months x '+nodes.length+' nodes, plus 1 NDVI check.\n'+
+      'v10.167: the series is fetched in chunks of at most '+S7_FAI_MAX_MONTHS_PER_CALL+' months x '+nodes.length+
+      ' nodes and merged client-side,\n'+
+      'because the single unchunked fetch returned 0 features in live runs at 24-32 months x 9 nodes.\n'+
+      'The chunks run one after another, so expect roughly '+(_s7dSeriesCalls*30)+'-'+(_s7dSeriesCalls*60)+' seconds.\n'+
+      S7_DEADLINE_NOTE);
     s7dStatusV.style().set('color','#334466'); s7dStatusV.style().set('backgroundColor','#eeeeee');
     s7dStatusV.style().set('border','2px solid #aaaaaa'); s7dStatusV.style().set('whiteSpace','pre');
     s7dResultV.setValue('');
 
     var s7dData={}, s7dPending=2, s7dErrors=0;
-    // v10.162 S1: two outstanding calls, not three. The run-sequence guard and
-    // the stall-explaining progress text from v10.161 S6a are unchanged.
-    var s7dWaiting=['combined BEFORE..AFTER series','NDVI check'];
-    var s7dCallName={combined:'combined BEFORE..AFTER series', ndvi:'NDVI check'};
+    // v10.167 FIX 20 / S1: still TWO outstanding units (the series, the NDVI
+    // check), but the series unit is now _s7dSeriesCalls chunked EE calls run
+    // in sequence. The v10.161 S6a run-sequence guard and stall-explaining
+    // progress text are unchanged. s7dDead is the new one: once a chunked fetch
+    // has REFUSED on screen, a later NDVI callback must not overwrite the
+    // refusal with a progress line or a half-populated table.
+    var s7dDead=false;
+    var s7dWaiting=['combined BEFORE..AFTER series ('+_s7dSeriesCalls+' chunked call(s))','NDVI check'];
+    var s7dCallName={combined:'combined BEFORE..AFTER series ('+_s7dSeriesCalls+' chunked call(s))', ndvi:'NDVI check'};
     function s7dBump(key,val,err){
-      if(s7dMyRun!==s7dRunSeq) return;   // v10.161 S6a: stale run, do not touch the label
+      if(s7dMyRun!==s7dRunSeq || s7dDead) return;   // v10.161 S6a: stale run, do not touch the label
       s7dData[key]=err?null:val;
       if(err) s7dErrors++;
       s7dPending--;
       // v10.161 S6a: name the outstanding call(s) and say what a frozen counter means.
       var _wait=s7Outstanding(s7dWaiting, s7dCallName[key]||key);
-      s7dStatusV.setValue('Running: '+(2-s7dPending)+' / 2 batched calls done'+
+      s7dStatusV.setValue('Running: '+(2-s7dPending)+' / 2 batched call groups done ('+_s7dSeriesCalls+
+        ' chunked series call(s) + 1 NDVI check)'+
         (s7dErrors>0?' ('+s7dErrors+' errored)':'')+'...\n'+_wait+
         (s7dPending>0?('\n'+S7_STALL_HINT+' (search "S7D [" in the Console.)'):''));
       if(s7dPending===0) s7dFinish();
+    }
+    // v10.167 FIX 20 / S2: a chunked fetch that errors, comes back empty or
+    // never answers now REFUSES on screen. S7D already refused correctly when
+    // the fetch RETURNED short; this covers the two cases it did not - and it
+    // is the same refusal S7E and S7F now use, so all three behave alike.
+    function s7dRefuseChunks(res){
+      if(s7dMyRun!==s7dRunSeq || s7dDead) return;
+      s7dDead=true;
+      var txt=s7ChunkRefusalText('S7D', res, nodes.length);
+      s7dStatusV.setValue(txt+'\nS7C-S7F cannot run here with these windows.');
+      s7dStatusV.style().set('color','#cc0000'); s7dStatusV.style().set('backgroundColor','#ffd0d0');
+      s7dStatusV.style().set('border','2px solid #cc0000'); s7dStatusV.style().set('whiteSpace','pre');
+      s7dStatusV.style().set('fontWeight','bold');
+      s7dResultV.setValue('Chunk plan was '+_s7dSeriesCalls+' call(s) over '+_s7dGrid.nMonths+' month(s) x '+
+        nodes.length+' nodes, starting '+_s7dGrid.startDateStr+'.'+(_pre&&_pre.note?'\n'+_pre.note:''));
+      print('=== S7D REFUSED (v10.167 chunked fetch: '+res.reason+') === '+(res.detail||''));
     }
     function s7dFinish(){
       if(s7dMyRun!==s7dRunSeq) return;   // v10.161 S6a
@@ -8237,8 +8555,8 @@ var s7dRunBtn = ui.Button({
           s7dStatusV.setValue(_s7dShort+'\nS7C-S7F cannot run here.');
           s7dStatusV.style().set('color','#cc0000'); s7dStatusV.style().set('backgroundColor','#ffd0d0');
           s7dStatusV.style().set('border','2px solid #cc0000'); s7dStatusV.style().set('whiteSpace','pre');
-          s7dResultV.setValue('Combined fetch returned '+((s7dData.combined&&s7dData.combined.features)?s7dData.combined.features.length:0)+
-            ' raw feature(s) across '+_s7dSpan.nMonths+' month(s) x '+nodes.length+' nodes.'+
+          s7dResultV.setValue('Chunked fetch returned '+((s7dData.combined&&s7dData.combined.features)?s7dData.combined.features.length:0)+
+            ' raw feature(s) across '+_s7dGrid.nMonths+' month(s) x '+nodes.length+' nodes in '+_s7dSeriesCalls+' call(s).'+
             (_pre&&_pre.note?'\n'+_pre.note:''));
           print('=== S7D REFUSED (v10.162 S1 combined-slice shortfall) === '+_s7dShort);
           return;
@@ -8363,11 +8681,14 @@ var s7dRunBtn = ui.Button({
         rows.push(repeatChar('\u2500',56));
         rows.push('\u26A0ARTIFACT flag (v10.162): 1st-half FAI variance was near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), so the \u0394Var beside it is divided by the 1e-6 floor rather than by a real number - a division artifact (see S7C v10.105 note), not a genuine surge, at ANY magnitude. The flag no longer ALSO requires |\u0394Var|>'+CSD_VAR_ARTIFACT_MAG+'x: a live S7C run showed a 4.14x row and a 12.08x row with the same 0.0000 first half, and only the second was flagged.');
         rows.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo | radius='+radiusKm+'km | NDVI check buffer='+ndviBufM.toFixed(0)+'m (scaled to avoid overlapping adjacent nodes)');
-        rows.push('Method (v10.162): 2 batched EE fetches (reduceRegions+flatten) - ONE combined '+_s7dSpan.nMonths+
-          '-month BEFORE..AFTER FAI series plus the NDVI check. The two windows are sliced out of that one series '+
-          'client-side by real timestamp; AC1/variance/correlation are computed client-side in JS. Under v10.161 this '+
-          'was 3 fetches with a separate BEFORE call, which is the call that returned 0 features in the live run and '+
-          'left S7E/S7F waiting forever.');
+        rows.push('Method (v10.167): '+_s7dTotalCalls+' EE fetches for this run - '+_s7dSeriesCalls+
+          ' CHUNKED series call(s) (reduceRegions+flatten, at most '+S7_FAI_MAX_MONTHS_PER_CALL+' months x '+
+          nodes.length+' nodes = '+(S7_FAI_MAX_MONTHS_PER_CALL*nodes.length)+' features each) covering '+
+          _s7dGrid.nMonths+' months from '+_s7dGrid.startDateStr+', merged client-side, plus the NDVI check. '+
+          'v10.162 made this ONE fetch; that single unchunked fetch is what returned 0 features in live runs at '+
+          '24, 25 and 32 months x 9 nodes, while a 12-month x 9-node fetch returned all 108 features. The two '+
+          'windows are still sliced out of the merged series client-side by real timestamp; AC1/variance/'+
+          'correlation are still computed client-side in JS.');
         rows.push('');
         rows.push('=== v10.154 SIGNIFICANCE (permutation, 500 shuffles, pairing preserved) ===');
         rows.push('S7D previously had NO significance test - its verdict came from fixed cutoffs');
@@ -8450,11 +8771,12 @@ var s7dRunBtn = ui.Button({
         // out of it - which is the number that can actually be short now.
         var _sliceB=(beforeByNode['Center']||[]).length, _sliceA=(afterByNode['Center']||[]).length;
         rows.push('Raw features returned: COMBINED='+combinedFeatCount+' | NDVI='+ndviFeatCount+
-          ' (expect COMBINED='+(_s7dSpan.nMonths*nodes.length)+' = '+_s7dSpan.nMonths+'mo x '+nodes.length+' nodes, NDVI='+nodes.length+' if fully populated)');
+          ' (expect COMBINED='+(_s7dGrid.nMonths*nodes.length)+' = '+_s7dGrid.nMonths+'mo x '+nodes.length+' nodes across '+
+          _s7dSeriesCalls+' chunked call(s), NDVI='+nodes.length+' if fully populated)');
         rows.push('Client-side timestamp slice (Center node): BEFORE='+_sliceB+'/'+beforeMonths+' months, AFTER='+_sliceA+'/'+afterMonths+
           ' months. A shortfall here is a data gap in the combined series, not a failed second call - there is no second call.');
         if(nOffReef>0) rows.push('NOTE: '+nOffReef+' of 9 nodes flagged LIKELY NOT on-reef (NDVI-water <= -0.10) - their rows above are informational only, not trusted algae-dynamics comparisons.');
-        if(s7dErrors>0) rows.push('NOTE: '+s7dErrors+' of 2 batched calls returned no usable data. Check the Console for the exact error text (search for "S7D [" lines).');
+        if(s7dErrors>0) rows.push('NOTE: '+s7dErrors+' of 2 batched call groups returned no usable data. Check the Console for the exact error text (search for "S7D [" lines).');
         if(_pre && _pre.note) rows.push(_pre.note);   // v10.161 S4
         s7dResultV.setValue(rows.join('\n'));
 
@@ -8526,7 +8848,27 @@ var s7dRunBtn = ui.Button({
         print('WARNING: 0 features returned - reduceRegions/flatten produced an empty table.');
       }
     }
-    rCombinedSeries.evaluate(function(v,e){ s7dDiagnose('combined BEFORE..AFTER series', v, e); s7dBump('combined', v, e); });
+    // v10.167 FIX 20 / S1: the series arrives as _s7dSeriesCalls sequential
+    // chunks. Any chunk that errors, returns 0 features or blows the deadline
+    // refuses the whole run on screen instead of leaving the counter frozen.
+    fetchFaiSeriesChunked({
+      gridStartStr:_s7dGrid.startDateStr, nMonths:_s7dGrid.nMonths, ptsFC:ptsFC,
+      nRegions:nodes.length, band:'fai', scale:20, tag:'S7D',
+      isCurrent:function(){ return s7dMyRun===s7dRunSeq && !s7dDead; },
+      onProgress:function(i,total,ch){
+        if(s7dMyRun!==s7dRunSeq || s7dDead) return;
+        s7dStatusV.setValue('Running: series chunk '+(i+1)+' / '+total+' ('+ch.start.substring(0,7)+' + '+
+          ch.months+' months x '+nodes.length+' nodes = '+ch.expected+' features), plus the NDVI check.\n'+
+          S7_STALL_HINT+' (search "S7D [" in the Console.)\n'+S7_DEADLINE_NOTE);
+      }
+    }, function(res){
+      if(!res.ok){ s7dRefuseChunks(res); return; }
+      if(res.shortChunks && res.shortChunks.length>0){
+        print('=== S7D NOTE: '+res.shortChunks.length+' chunk(s) returned fewer features than expected ===');
+      }
+      s7dDiagnose('combined BEFORE..AFTER series ('+res.nCalls+' chunked call(s))', res.fc, null);
+      s7dBump('combined', res.fc, null);
+    });
     rNdviAll.evaluate(function(v,e){ s7dDiagnose('NDVI check', v, e); s7dBump('ndvi', v, e); });
     });  // end faiPrecheckThenRun callback (v10.161 S4)
   }
@@ -8600,7 +8942,7 @@ var s7eAfterStartInput = ui.Textbox({placeholder:'e.g. 2023-11-01',style:{stretc
 panel.add(s7eAfterStartInput);
 var s7eAfterMonthsInput = ui.Textbox({placeholder:'months, e.g. 12',value:'12',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7eAfterMonthsInput);
-var s7eStatusV = ui.Label('Fill in the fields above, then press RUN. 2 batched calls (v10.162: GEBCO reference search + one combined BEFORE..AFTER series), expect ~30-90 seconds.',
+var s7eStatusV = ui.Label('Fill in the fields above, then press RUN. v10.167: 1 pre-check + 1 GEBCO reference search + ceil(span/12) chunked series calls, where span is the calendar months the two windows jointly cover (4 calls at a 24-month span, 5 at 31, 10 at the 95-month maximum). This is the panel whose single unchunked 36-month fetch NEVER RETURNED in a live run; each chunk now has a 4-minute deadline and refuses on screen rather than waiting forever.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var s7eResultV = ui.Label('',{fontSize:'8px',color:'#5a1020',backgroundColor:'#faeef2',padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'});
 var s7eRunSeq = 0;   // v10.161 S6a
@@ -8753,7 +9095,8 @@ var s7eRunBtn = ui.Button({
 
         s7eStatusV.setValue('Step 2/2: Reference reef found '+best.radiusKm+'km away (depth '+best.elev.toFixed(1)+'m)'+
           (excludedByHistoryCount>0?' ['+excludedByHistoryCount+' closer candidate(s) skipped - already tested as a study site]':'')+'. '+
-          'Fetching ONE combined BEFORE..AFTER FAI series at study + reference (1 batched call, v10.162 - was 2)...');
+          'Fetching the combined BEFORE..AFTER FAI series at study + reference, in chunks of at most '+
+          S7_FAI_MAX_MONTHS_PER_CALL+' months (v10.167)...');
 
         var studyPtBuf=ee.Geometry.Point([lonIn,latIn]).buffer(150);
         var refPtBuf=ee.Geometry.Point([best.lon,best.lat]).buffer(150);
@@ -8766,21 +9109,42 @@ var s7eRunBtn = ui.Button({
         // nothing in the live Bocas del Toro run and left this panel parked on
         // "Still waiting on: BEFORE FAI series" with no way to time out.
         var _s7eSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
-        var faiCollCombined=mkMoFAIRange(_s7eSpan.startDateStr,_s7eSpan.nMonths);
-        var rCombined=extractMultiNodeSeries(faiCollCombined, pairFC, 'fai', 20);
+        // v10.167 FIX 20 / S1 + S2: this is the fetch that NEVER RETURNED in the
+        // live 36-month runs. Chunked to the same 12-months-per-call bound as
+        // S7D (2 regions here, so the 108-feature ceiling is not the binding
+        // one - the 12-month one is), and guarded by the per-call deadline, so
+        // a call that does not answer becomes a visible refusal instead of a
+        // panel parked on "Still waiting on: ..." with nothing able to clear it.
+        var _s7eGrid = s7FaiGridSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+        var _s7eRegions = 2;
+        var _s7ePlan = s7FaiChunkPlan(_s7eGrid.startDateStr, _s7eGrid.nMonths, _s7eRegions);
+        var _s7eSeriesCalls = _s7ePlan.length;
 
-        var s7ePending=1, s7eErrors=0, s7eData={};
-        var s7eWaiting=['combined BEFORE..AFTER FAI series'];
-        var s7eCallName={combined:'combined BEFORE..AFTER FAI series'};
+        var s7ePending=1, s7eErrors=0, s7eData={}, s7eDead=false;
+        var s7eWaiting=['combined BEFORE..AFTER FAI series ('+_s7eSeriesCalls+' chunked call(s))'];
+        var s7eCallName={combined:'combined BEFORE..AFTER FAI series ('+_s7eSeriesCalls+' chunked call(s))'};
         function s7eBump(key,v,e){
-          if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
+          if(s7eMyRun!==s7eRunSeq || s7eDead) return;   // v10.161 S6a
           s7eData[key]=e?null:v;
           if(e) s7eErrors++;
           s7ePending--;
           var _wait=s7Outstanding(s7eWaiting, s7eCallName[key]||key);
-          s7eStatusV.setValue('Step '+(3-s7ePending)+'/2: '+(1-s7ePending)+' / 1 batched call done...\n'+_wait+
+          s7eStatusV.setValue('Step '+(3-s7ePending)+'/2: '+(1-s7ePending)+' / 1 batched call group done...\n'+_wait+
             (s7ePending>0?('\n'+S7_STALL_HINT+' (search "S7E [" in the Console.)'):''));
           if(s7ePending===0) s7eFinish();
+        }
+        // v10.167 FIX 20 / S2: S7E now refuses exactly the way S7D does.
+        function s7eRefuseChunks(res){
+          if(s7eMyRun!==s7eRunSeq || s7eDead) return;
+          s7eDead=true;
+          var txt=s7ChunkRefusalText('S7E', res, _s7eRegions);
+          s7eStatusV.setValue('CANNOT CLASSIFY\n'+txt);
+          s7eStatusV.style().set('color','#cc0000'); s7eStatusV.style().set('backgroundColor','#ffd0d0');
+          s7eStatusV.style().set('border','2px solid #cc0000'); s7eStatusV.style().set('whiteSpace','pre');
+          s7eStatusV.style().set('fontWeight','bold');
+          s7eResultV.setValue('Chunk plan was '+_s7eSeriesCalls+' call(s) over '+_s7eGrid.nMonths+
+            ' month(s) x '+_s7eRegions+' sites, starting '+_s7eGrid.startDateStr+'.'+(_pre&&_pre.note?'\n'+_pre.note:''));
+          print('=== S7E REFUSED (v10.167 chunked fetch: '+res.reason+') === '+(res.detail||''));
         }
         function s7eFinish(){
           if(s7eMyRun!==s7eRunSeq) return;   // v10.161 S6a
@@ -8796,8 +9160,9 @@ var s7eRunBtn = ui.Button({
               s7eStatusV.setValue('CANNOT CLASSIFY (insufficient data in at least one period)\n'+_s7eShort);
               s7eStatusV.style().set('color','#cc0000'); s7eStatusV.style().set('backgroundColor','#ffd0d0');
               s7eStatusV.style().set('border','2px solid #cc0000'); s7eStatusV.style().set('whiteSpace','pre');
-              s7eResultV.setValue('Combined fetch returned '+((s7eData.combined&&s7eData.combined.features)?s7eData.combined.features.length:0)+
-                ' raw feature(s) across '+_s7eSpan.nMonths+' month(s) x 2 sites.'+(_pre&&_pre.note?'\n'+_pre.note:''));
+              s7eResultV.setValue('Chunked fetch returned '+((s7eData.combined&&s7eData.combined.features)?s7eData.combined.features.length:0)+
+                ' raw feature(s) across '+_s7eGrid.nMonths+' month(s) x '+_s7eRegions+' sites in '+_s7eSeriesCalls+
+                ' call(s).'+(_pre&&_pre.note?'\n'+_pre.note:''));
               print('=== S7E REFUSED (v10.162 S1 combined-slice shortfall) === '+_s7eShort);
               return;
             }
@@ -8963,7 +9328,8 @@ var s7eRunBtn = ui.Button({
             lines.push('statistic, not a safe one - below '+CSD_AC1_MIN_POOLED_MONTHS+' pooled valid months, and is now refused');
             lines.push('there rather than reported. At this panel\'s '+beforeMonths+'+'+afterMonths+' month boxes that means');
             lines.push((beforeMonths+afterMonths>=CSD_AC1_MIN_POOLED_MONTHS?'the AC1 p-value IS reported.':'the AC1 p-value is NOT reported - only the variance one.'));
-            if(s7eErrors>0) lines.push('NOTE: '+s7eErrors+' of 1 batched series call returned no usable data (v10.162: one combined BEFORE..AFTER fetch replaces the two separate ones).');
+            if(s7eErrors>0) lines.push('NOTE: the batched series group returned no usable data (v10.167: '+_s7eSeriesCalls+
+              ' chunked BEFORE..AFTER call(s), merged client-side).');
             lines.push(repeatChar('\u2500',50));
             lines.push('=== PERMUTATION TEST (real p-value, 500 shuffles, algae/FAI) ===');
             lines.push('Same engine as STEP 3 COMPARE (v10.122), applied here to algae instead of SST -');
@@ -9013,10 +9379,21 @@ var s7eRunBtn = ui.Button({
         // undiagnosed failure mode. Rather than guess a third fix blind,
         // this makes the NEXT run tell us exactly which of the two calls
         // (BEFORE or AFTER FAI fetch) is failing and why.
-        rCombined.evaluate(function(v,e){
-          if(e){ print('=== S7E [combined BEFORE..AFTER series] ERROR === '+e); }
-          else { print('=== S7E [combined BEFORE..AFTER series] OK - '+((v&&v.features)?v.features.length:0)+' feature(s) returned ==='); }
-          s7eBump('combined', v, e);
+        fetchFaiSeriesChunked({
+          gridStartStr:_s7eGrid.startDateStr, nMonths:_s7eGrid.nMonths, ptsFC:pairFC,
+          nRegions:_s7eRegions, band:'fai', scale:20, tag:'S7E',
+          isCurrent:function(){ return s7eMyRun===s7eRunSeq && !s7eDead; },
+          onProgress:function(i,total,ch){
+            if(s7eMyRun!==s7eRunSeq || s7eDead) return;
+            s7eStatusV.setValue('Step 2/2: series chunk '+(i+1)+' / '+total+' ('+ch.start.substring(0,7)+' + '+
+              ch.months+' months x '+_s7eRegions+' sites).\n'+S7_STALL_HINT+' (search "S7E [" in the Console.)\n'+
+              S7_DEADLINE_NOTE);
+          }
+        }, function(res){
+          if(!res.ok){ s7eRefuseChunks(res); return; }
+          print('=== S7E [combined BEFORE..AFTER series] OK - '+
+            ((res.fc&&res.fc.features)?res.fc.features.length:0)+' feature(s) across '+res.nCalls+' chunked call(s) ===');
+          s7eBump('combined', res.fc, null);
         });
       } catch(errFinal){
         s7eStatusV.setValue(friendlyEEError(errFinal));
@@ -9050,16 +9427,23 @@ panel.add(legDiv());
 // that tries several window lengths across every S7 tool would multiply
 // both the hang risk and the quota load severalfold, with no reliable
 // way to know if a huge combined run is progressing or stuck. This
-// version fires a bounded 4 EE calls total (v10.162: matching S7D's 2 +
-// S7E's 2 - each site now fetches ONE combined BEFORE..AFTER series and
-// slices the two windows out of it client-side, instead of firing a
-// separate BEFORE and AFTER call; under v10.116-v10.161 it was 6),
-// with the same proven functions S7D/S7E already use - not a new,
-// riskier reimplementation.
+// version fires a bounded call budget (v10.162: 4 - each site fetched ONE
+// combined BEFORE..AFTER series and sliced the two windows out of it
+// client-side; under v10.116-v10.161 it was 6). v10.167 FIX 20: both of those
+// combined fetches are the shape that returned 0 features (S7D, 24-32 months x
+// 9 nodes) or never returned at all (S7E/S7F, 36 months), so each is now
+// CHUNKED at 12 months per call and the budget is
+//   1 pre-check + 1 GEBCO search + 1 NDVI + ceil(span/12) x 9-node calls
+//   + ceil(span/12) x 2-site calls
+// which is 9 for the 24+12 windows in the live runs (a 31-month span -> 3 + 3),
+// 7 whenever the span is 24 months or less, and 19 at the 95-month widest span
+// the span gate accepts. Still
+// bounded, still the same proven functions - not a new, riskier
+// reimplementation.
 // ============================================================
 panel.add(sHead('S7F - RUN ALL: S7D + S7E COMBINED (v10.116)','#1a3a5a'));
 panel.add(lbl('Runs S7D (within-reef coupling) and S7E (local vs regional) together from ONE shared Lat/Lon + BEFORE/AFTER input, tabulating both verdicts side by side. Does NOT try multiple window lengths automatically - see the note below for why.',7,'#224466'));
-panel.add(lbl('SCOPE: still just ONE window length per run, chosen by you (the same window-tuning process from S7D/S7E still applies - this only removes re-typing coordinates/dates twice). Does not include S7B/S7C/S13 - kept bounded to 4 EE calls total (v10.162: was 6; each site now fetches ONE combined BEFORE..AFTER series instead of two separate ones) to avoid the quota/hang risk already seen this session with heavier combined runs.',7,'#886600'));
+panel.add(lbl('SCOPE: still just ONE window length per run, chosen by you (the same window-tuning process from S7D/S7E still applies - this only removes re-typing coordinates/dates twice). Does not include S7B/S7C/S13. v10.167 call budget: 1 pre-check + 1 GEBCO reference search + 1 NDVI check + ceil(span/12) chunked 9-node series calls + ceil(span/12) chunked 2-site series calls, where span is the calendar months the two windows jointly cover - 9 calls for the 24+12 windows in the live runs (a 31-month span), 7 whenever the span is 24 months or less, 19 at the 95-month maximum. v10.162 sent 4 unchunked calls and v10.116-v10.161 sent 6; the unchunked ones are the calls that returned 0 features or never returned in live runs, so the higher count here buys a fetch that can actually complete AND a deadline that refuses instead of hanging.',7,'#886600'));
 panel.add(lbl('Lat, Lon:',7,'#334466'));
 var s7fCoordInput = ui.Textbox({placeholder:'lat, lon  e.g. -23.51, 152.09',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(s7fCoordInput);
@@ -9185,7 +9569,8 @@ var s7fRunBtn = ui.Button({
     recordStudySite(latIn, lonIn, 'S7F');
 
     // v10.161 S4: cheap FAI data-density gate BEFORE the call budget
-    // (v10.162 S1: 4 calls, down from 6).
+    // (v10.162 S1: 4 calls, down from 6; v10.167 FIX 20: chunked, so the budget
+    // is now 3 fixed calls + 2 x ceil(span/12) series calls - 9 at a 31-month span).
     faiPrecheckThenRun({lat:latIn, lon:lonIn, moduleName:'S7F', statusLbl:s7fStatusV, resultLbl:s7fResultV,
       windows:[{name:'BEFORE',start:beforeStartTxt,months:beforeMonths},
                {name:'AFTER', start:afterStartTxt, months:afterMonths}],
@@ -9212,15 +9597,22 @@ var s7fRunBtn = ui.Button({
     // v10.162 S1: ONE combined BEFORE..AFTER collection, shared by the S7D
     // 9-node fetch and the S7E study/reference fetch below.
     var _s7fSpan = combinedWindowSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
-    var faiCollCombined=mkMoFAIRange(_s7fSpan.startDateStr,_s7fSpan.nMonths);
+    // v10.167 FIX 20 / S1 + S2: both of S7F's series fetches are chunked and
+    // deadline-guarded, exactly as S7D's and S7E's now are. S7F is where the
+    // 36-month hang was first seen, and it is the module with the most calls in
+    // flight, so it is the one that most needed a failure path that ends.
+    var _s7fGrid = s7FaiGridSpan(beforeStartTxt, beforeMonths, afterStartTxt, afterMonths);
+    var _s7fDCalls = s7FaiCallCount(_s7fGrid.startDateStr, _s7fGrid.nMonths, nodes.length);
+    var _s7fERegions = 2;
+    var _s7fECalls = s7FaiCallCount(_s7fGrid.startDateStr, _s7fGrid.nMonths, _s7fERegions);
+    var _s7fTotalCalls = _s7fDCalls + 1 /*NDVI*/ + 1 /*GEBCO search*/ + _s7fECalls;
     var ndviWaterMaskedF=ndviWater.updateMask(oceanMask).rename('ndviW');
     var ndviBufMF = Math.max(80, Math.min(250, radiusKm*1000*0.3));
     var ptsFCForNdviF = ee.FeatureCollection(nodes.map(function(nd,idx){
       return ee.Feature(ee.Geometry.Point([nd.lon,nd.lat]).buffer(ndviBufMF), {label:nd.label, idx:idx});
     }));
 
-    // S7D's calls - 2 now, not 3 (v10.162 S1: one combined series + NDVI)
-    var rD_combined = extractMultiNodeSeries(faiCollCombined, ptsFC, 'fai', 20);
+    // S7D's calls - the series is now _s7fDCalls chunked call(s) (v10.167), plus NDVI.
     var rD_ndvi = ndviWaterMaskedF.reduceRegions({collection:ptsFCForNdviF, reducer:ee.Reducer.max(), scale:20});
 
     // S7E's candidate search (1 call, must resolve before its other 2)
@@ -9238,28 +9630,58 @@ var s7fRunBtn = ui.Button({
     var candFCF = ee.FeatureCollection(candFeatsF);
     var rCandidatesF = GEBCO.reduceRegions({collection:candFCF, reducer:ee.Reducer.first(), scale:500});
 
-    s7fStatusV.setValue('Running: 3 calls in parallel (v10.162: ONE combined '+_s7fSpan.nMonths+'-month S7D BEFORE..AFTER series + NDVI + reference search),\n'+
-      'then 1 more once the reference is found - 4 total, down from 6. The two windows are sliced out of the combined\n'+
-      'series client-side by real timestamp. Expect ~30-90s.');
+    s7fStatusV.setValue('Running: the S7D series as '+_s7fDCalls+' chunked call(s) over '+_s7fGrid.nMonths+
+      ' months x '+nodes.length+' nodes, alongside the NDVI check and the reference search,\n'+
+      'then '+_s7fECalls+' more chunked call(s) once the reference is found - '+_s7fTotalCalls+' EE calls in total '+
+      '(v10.162 sent 4, unchunked; both of its series fetches are the shape that returned 0 features or never\n'+
+      'returned in live runs). The two windows are still sliced out of the merged series client-side by real\n'+
+      'timestamp. Expect roughly '+((_s7fDCalls+_s7fECalls)*30)+'-'+((_s7fDCalls+_s7fECalls)*60)+' seconds.\n'+
+      S7_DEADLINE_NOTE);
     s7fStatusV.style().set('color','#334466'); s7fStatusV.style().set('backgroundColor','#eeeeee');
     s7fStatusV.style().set('border','2px solid #aaaaaa'); s7fStatusV.style().set('whiteSpace','pre');
     s7fResultV.setValue('');
 
-    var s7fData={}, s7fPending=3, s7fErrors=0;
-    // v10.162 S1: three first-stage calls, not four. The v10.161 S6a run-sequence
-    // guard and stall-explaining progress text are unchanged.
-    var s7fWaiting=['S7D combined BEFORE..AFTER series','S7D NDVI check','reference-site GEBCO search'];
-    var s7fCallName={dCombined:'S7D combined BEFORE..AFTER series',
+    var s7fData={}, s7fPending=3, s7fErrors=0, s7fDead=false;
+    // v10.162 S1: three first-stage call GROUPS, not four. v10.167: the first of
+    // them is _s7fDCalls chunked calls run in sequence, not one. The v10.161 S6a
+    // run-sequence guard and stall-explaining progress text are unchanged.
+    var s7fWaiting=['S7D combined BEFORE..AFTER series ('+_s7fDCalls+' chunked call(s))','S7D NDVI check','reference-site GEBCO search'];
+    var s7fCallName={dCombined:'S7D combined BEFORE..AFTER series ('+_s7fDCalls+' chunked call(s))',
                      dNdvi:'S7D NDVI check', candidates:'reference-site GEBCO search'};
     function s7fBump(key,v,e){
-      if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
+      if(s7fMyRun!==s7fRunSeq || s7fDead) return;   // v10.161 S6a
       s7fData[key]=e?null:v;
       if(e) s7fErrors++;
       s7fPending--;
       var _wait=s7Outstanding(s7fWaiting, s7fCallName[key]||key);
-      s7fStatusV.setValue('Running: '+(3-s7fPending)+' / 3 first-stage calls done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...\n'+_wait+
+      s7fStatusV.setValue('Running: '+(3-s7fPending)+' / 3 first-stage call groups done'+(s7fErrors>0?' ('+s7fErrors+' errored)':'')+'...\n'+_wait+
         (s7fPending>0?('\n'+S7_STALL_HINT):''));
       if(s7fPending===0) s7fStage2();
+    }
+    // v10.167 FIX 20 / S2: S7F refuses like S7D and S7E. Two entry points -
+    // stage 1 (the 9-node series) kills the whole run; stage 2 (the study/
+    // reference series) falls back to the S7D-only summary, which is a real
+    // partial result rather than a blank panel.
+    function s7fRefuseChunks(res, which, nRegions, fallbackD){
+      if(s7fMyRun!==s7fRunSeq || s7fDead) return;
+      var txt=s7ChunkRefusalText('S7F ('+which+')', res, nRegions);
+      if(fallbackD){
+        s7fStatusV.setValue('S7E half REFUSED - S7D results are shown below.\n'+txt);
+        s7fStatusV.style().set('color','#886600'); s7fStatusV.style().set('backgroundColor','#fff6cc');
+        s7fStatusV.style().set('border','2px solid #886600'); s7fStatusV.style().set('whiteSpace','pre');
+        print('=== S7F REFUSED (v10.167 chunked fetch, '+which+': '+res.reason+') === '+(res.detail||''));
+        s7fFinishD_only('REFUSED - the study/reference series fetch did not complete ('+res.reason+
+          '). The reference reef WAS found; it is the FAI fetch at it that failed. See the status box above.');
+        return;
+      }
+      s7fDead=true;
+      s7fStatusV.setValue(txt);
+      s7fStatusV.style().set('color','#cc0000'); s7fStatusV.style().set('backgroundColor','#ffd0d0');
+      s7fStatusV.style().set('border','2px solid #cc0000'); s7fStatusV.style().set('whiteSpace','pre');
+      s7fStatusV.style().set('fontWeight','bold');
+      s7fResultV.setValue('Chunk plan was '+_s7fDCalls+' call(s) over '+_s7fGrid.nMonths+' month(s) x '+
+        nodes.length+' nodes, starting '+_s7fGrid.startDateStr+'.'+(_pre&&_pre.note?'\n'+_pre.note:''));
+      print('=== S7F REFUSED (v10.167 chunked fetch, '+which+': '+res.reason+') === '+(res.detail||''));
     }
     function s7fStage2(){
       if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
@@ -9296,20 +9718,32 @@ var s7fRunBtn = ui.Button({
         var pairFCF=ee.FeatureCollection([
           ee.Feature(studyPtBufF,{label:'Study'}), ee.Feature(refPtBufF,{label:'Reference'})
         ]);
-        var rE_combined = extractMultiNodeSeries(faiCollCombined, pairFCF, 'fai', 20);
         var s7fPending2=1;
-        var s7fWaiting2=['S7E study/reference combined BEFORE..AFTER series'];
-        var s7fCallName2={eCombined:'S7E study/reference combined BEFORE..AFTER series'};
+        var s7fWaiting2=['S7E study/reference combined BEFORE..AFTER series ('+_s7fECalls+' chunked call(s))'];
+        var s7fCallName2={eCombined:'S7E study/reference combined BEFORE..AFTER series ('+_s7fECalls+' chunked call(s))'};
         function s7fBump2(key,v,e){
-          if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
+          if(s7fMyRun!==s7fRunSeq || s7fDead) return;   // v10.161 S6a
           s7fData[key]=e?null:v; if(e) s7fErrors++;
           s7fPending2--;
           var _wait2=s7Outstanding(s7fWaiting2, s7fCallName2[key]||key);
-          s7fStatusV.setValue('Running: second-stage '+(1-s7fPending2)+' / 1 call done...\n'+_wait2+
+          s7fStatusV.setValue('Running: second-stage '+(1-s7fPending2)+' / 1 call group done...\n'+_wait2+
             (s7fPending2>0?('\n'+S7_STALL_HINT):''));
           if(s7fPending2===0) s7fFinishAll(excludedCount);
         }
-        rE_combined.evaluate(function(v,e){ s7fBump2('eCombined', v, e); });
+        fetchFaiSeriesChunked({
+          gridStartStr:_s7fGrid.startDateStr, nMonths:_s7fGrid.nMonths, ptsFC:pairFCF,
+          nRegions:_s7fERegions, band:'fai', scale:20, tag:'S7F-E',
+          isCurrent:function(){ return s7fMyRun===s7fRunSeq && !s7fDead; },
+          onProgress:function(i,total,ch){
+            if(s7fMyRun!==s7fRunSeq || s7fDead) return;
+            s7fStatusV.setValue('Running: second-stage series chunk '+(i+1)+' / '+total+' ('+
+              ch.start.substring(0,7)+' + '+ch.months+' months x '+_s7fERegions+' sites).\n'+
+              S7_STALL_HINT+'\n'+S7_DEADLINE_NOTE);
+          }
+        }, function(res){
+          if(!res.ok){ s7fRefuseChunks(res, 'S7E study/reference series', _s7fERegions, true); return; }
+          s7fBump2('eCombined', res.fc, null);
+        });
       } catch(errStage2){
         s7fStatusV.setValue(friendlyEEError(errStage2));
         s7fStatusV.style().set('color','#cc0000'); s7fStatusV.style().set('backgroundColor','#ffd0d0');
@@ -9360,7 +9794,11 @@ var s7fRunBtn = ui.Button({
       return {headline:headline, nAc1Rising:nAc1Rising, nAc1Avail:nAc1Avail,
               disclosureLines:nodeStatsDisclosureLines(s7fDDisc)};
     }
-    function s7fFinishD_only(){
+    // v10.167 FIX 20 / S2: eNote says WHY the S7E half is missing. It used to
+    // hardcode "no usable reference site found", which was the only way this
+    // path could be reached before; a refused study/reference fetch now reaches
+    // it too, and saying the reference was not found there would be false.
+    function s7fFinishD_only(eNote){
       if(s7fMyRun!==s7fRunSeq) return;   // v10.161 S6a
       try {
         var dSum = buildS7DSummary();
@@ -9370,7 +9808,7 @@ var s7fRunBtn = ui.Button({
         lines.push(dSum.headline+' | AC1 rising at '+
           countOfTotal(dSum.nAc1Rising, dSum.nAc1Avail, 'nodes',
             'AC1: no node had a computable \u0394AC1 in BOTH windows, so no node was tested'));
-        lines.push('S7E: not run this time (no usable reference site found)');
+        lines.push('S7E: '+(eNote||'not run this time (no usable reference site found)'));
         if(dSum.disclosureLines.length>0){
           lines.push('SERIES QUALITY (v10.159 W-02):');
           dSum.disclosureLines.forEach(function(d){ lines.push(d); });
@@ -9568,7 +10006,20 @@ var s7fRunBtn = ui.Button({
         print('=== S7F finishAll error === '+eF2);
       }
     }
-    rD_combined.evaluate(function(v,e){ s7fBump('dCombined', v, e); });
+    fetchFaiSeriesChunked({
+      gridStartStr:_s7fGrid.startDateStr, nMonths:_s7fGrid.nMonths, ptsFC:ptsFC,
+      nRegions:nodes.length, band:'fai', scale:20, tag:'S7F-D',
+      isCurrent:function(){ return s7fMyRun===s7fRunSeq && !s7fDead; },
+      onProgress:function(i,total,ch){
+        if(s7fMyRun!==s7fRunSeq || s7fDead) return;
+        s7fStatusV.setValue('Running: S7D series chunk '+(i+1)+' / '+total+' ('+ch.start.substring(0,7)+' + '+
+          ch.months+' months x '+nodes.length+' nodes = '+ch.expected+' features), alongside the NDVI check\n'+
+          'and the reference search.\n'+S7_STALL_HINT+'\n'+S7_DEADLINE_NOTE);
+      }
+    }, function(res){
+      if(!res.ok){ s7fRefuseChunks(res, 'S7D 9-node series', nodes.length, false); return; }
+      s7fBump('dCombined', res.fc, null);
+    });
     rD_ndvi.evaluate(function(v,e){ s7fBump('dNdvi', v, e); });
     rCandidatesF.evaluate(function(v,e){ s7fBump('candidates', v, e); });
     });  // end faiPrecheckThenRun callback (v10.161 S4)
@@ -9578,6 +10029,271 @@ panel.add(s7fRunBtn);
 panel.add(s7fStatusV);
 panel.add(s7fResultV);
 panel.add(legDiv());
+
+// ============================================================
+// S7G - CROSS-INDEX SCATTER PANEL (v10.167 NEW)
+// WHY: every algae/water number in this tool is currently TABULATED. A table
+// answers "how big is FAI at N?"; it does not answer "do FAI and NDCI move
+// together across this reef, or is one of them being driven by something the
+// other is not?" - which is the question that makes spatial and oceanographic
+// drift visible. S7B already samples three indices at nine points around a
+// site in ONE call; plotting them against each other costs nothing more.
+//
+// HARD CONSTRAINT, and what it excluded: ZERO new Earth Engine calls. Every
+// value plotted here was already fetched and is read from s7bScanStore (S7B's
+// 9-point scan) or lastClickIndexStore (the current click). That constraint
+// removed one of the three charts originally asked for:
+//   SST x Chl-a ACROSS THE 9 SCAN POINTS IS NOT PLOTTED, AND CANNOT BE.
+//   S7B reduces ONE image over its nine buffers - faiImg + ndciImg +
+//   ndviWater - so it has no SST and no Chl-a at any of the nine points. The
+//   only SST and Chl-a in hand are the SINGLE pair at the clicked point
+//   (5 km / 1 km buffers, MODIS-era OISST and Copernicus ocean colour). One
+//   point is not a scatter, and drawing it as one would be a lie about what
+//   was measured. It is shown as a numeric row instead, and the chart slot
+//   says why it is empty. Plotting it properly needs a 9-point SST/Chl-a
+//   fetch, which is a new EE call and is therefore out of scope here.
+//
+// CHARTING DECISIONS, and which ones are deliberate refusals:
+//  - NOT nine categorical series. Nine generated hues across nine compass
+//    nodes would be nine colours carrying no order and no meaning. Colour
+//    instead encodes the ON-REEF / OFF-REEF binary that S7D already computes
+//    from NDVI-water (> -0.10 = on-reef) - two series, both named in the
+//    legend, a distinction that actually changes how a point should be read.
+//    CHOSEN FOR: the FAI x NDCI chart.
+//  - The NDVI-water x FAI chart uses the OTHER permitted option - one series
+//    with the centre point marked - because there colouring by an NDVI-water
+//    cut would be colouring by a threshold on the x axis itself: the legend
+//    would tell you only which side of x = -0.10 each point sits on, which
+//    the axis already says. That is decoration, not information.
+//  - NO dual-axis chart anywhere. Two measures of different scale get two
+//    charts. Every axis carries one measure and its unit.
+//  - Grid and axes recessive (#e6e6e6 gridlines, 8px grey tick text); marks
+//    prominent (9px points, 14px for the marked centre).
+//  - A single-series chart gets no legend box; its title names the series.
+//  - Fewer than 3 plottable points after nulls are dropped renders an
+//    explicit message, never an empty chart frame.
+//  - ui.Chart(dataTable, ...) - the client-side DataTable constructor - is
+//    used rather than ui.Chart.array.values() or ui.Chart.feature.byFeature().
+//    Those two take ee.Array / ee.FeatureCollection arguments and evaluate
+//    them server-side, which is an Earth Engine call. The constraint above
+//    forbids one, so the values go in as a plain client-side table.
+// ============================================================
+var S7G_MIN_POINTS = 3;
+// Canonical series order, so a series always gets the same colour whatever
+// order the points happen to arrive in.
+var S7G_SERIES_REEF = ['On-reef (NDVI-water > -0.10)','Off-reef (NDVI-water <= -0.10)','On-reef status unknown'];
+var S7G_SERIES_CENTRE = ['Ring point','Centre (your click)'];
+var S7G_COLORS_REEF = ['#2166ac','#c0392b','#9aa0a6'];
+var S7G_COLORS_CENTRE = ['#4a6fa5','#b8422a'];
+
+// Pure: drop every point that has no number on BOTH axes, and carry the
+// on-reef flag along. Unit-tested in Node.
+function s7gPairs(points, xKey, yKey){
+  var out=[];
+  (points||[]).forEach(function(p){
+    if(!p) return;
+    var x=p[xKey], y=p[yKey];
+    if(x===null||x===undefined||typeof x!=='number'||isNaN(x)) return;
+    if(y===null||y===undefined||typeof y!=='number'||isNaN(y)) return;
+    var nw=p.ndviW;
+    var onReef=(nw===null||nw===undefined||typeof nw!=='number'||isNaN(nw))?null:(nw>S7G_ONREEF_NDVI);
+    out.push({label:p.label, x:x, y:y, ndviW:(typeof nw==='number'&&!isNaN(nw))?nw:null, onReef:onReef});
+  });
+  return out;
+}
+function s7gEnoughPoints(pairs){ return ((pairs||[]).length) >= S7G_MIN_POINTS; }
+function s7gSeriesOf(pair, mode){
+  if(mode==='centre') return (pair.label==='Center')?S7G_SERIES_CENTRE[1]:S7G_SERIES_CENTRE[0];
+  if(pair.onReef===null) return S7G_SERIES_REEF[2];
+  return pair.onReef?S7G_SERIES_REEF[0]:S7G_SERIES_REEF[1];
+}
+// Pure: a Google-Charts DataTable - [[xTitle, series1, series2, ...],
+// [x, y|null, y|null], ...] - with the series in canonical order so colours
+// are stable. Returns {table, seriesNames}.
+function s7gDataTable(pairs, xTitle, mode){
+  var canon=(mode==='centre')?S7G_SERIES_CENTRE:S7G_SERIES_REEF;
+  var present={}, names=[], i;
+  (pairs||[]).forEach(function(p){ present[s7gSeriesOf(p,mode)]=true; });
+  for(i=0;i<canon.length;i++){ if(present[canon[i]]) names.push(canon[i]); }
+  var header=[xTitle];
+  for(i=0;i<names.length;i++) header.push(names[i]);
+  var idx={};
+  for(i=0;i<names.length;i++) idx[names[i]]=i;
+  var rows=[header];
+  (pairs||[]).forEach(function(p){
+    var row=[p.x], k;
+    for(k=0;k<names.length;k++) row.push(null);
+    row[1+idx[s7gSeriesOf(p,mode)]]=p.y;
+    rows.push(row);
+  });
+  return {table:rows, seriesNames:names};
+}
+// Pure: which canonical colours the present series map to.
+function s7gColorsFor(seriesNames, mode){
+  var canon=(mode==='centre')?S7G_SERIES_CENTRE:S7G_SERIES_REEF;
+  var pal=(mode==='centre')?S7G_COLORS_CENTRE:S7G_COLORS_REEF;
+  return (seriesNames||[]).map(function(n){
+    var i=canon.indexOf(n);
+    return (i>=0)?pal[i]:'#666666';
+  });
+}
+// Recessive grid, prominent marks, one measure per axis, legend only when
+// there is more than one series to name.
+function s7gChartOptions(title, xTitle, yTitle, seriesNames, mode){
+  var colors=s7gColorsFor(seriesNames, mode);
+  var opts={
+    title:title,
+    titleTextStyle:{fontSize:11, bold:true, color:'#222222'},
+    width:238, height:210,
+    chartArea:{left:50, top:36, width:'68%', height:'58%'},
+    pointSize:9,
+    dataOpacity:0.95,
+    colors:colors,
+    backgroundColor:{fill:'#ffffff'},
+    hAxis:{title:xTitle, titleTextStyle:{fontSize:9, italic:false, color:'#555555'},
+           textStyle:{fontSize:8, color:'#777777'},
+           gridlines:{color:'#e8e8e8', count:5}, minorGridlines:{count:0}, baselineColor:'#c0c0c0'},
+    vAxis:{title:yTitle, titleTextStyle:{fontSize:9, italic:false, color:'#555555'},
+           textStyle:{fontSize:8, color:'#777777'},
+           gridlines:{color:'#e8e8e8', count:5}, minorGridlines:{count:0}, baselineColor:'#c0c0c0'},
+    legend:(seriesNames&&seriesNames.length>1)?
+      {position:'bottom', textStyle:{fontSize:8, color:'#444444'}} : {position:'none'}
+  };
+  // The marked centre point is the one mark that must read as different in
+  // size, not only in hue.
+  if(mode==='centre'){
+    var ci=(seriesNames||[]).indexOf(S7G_SERIES_CENTRE[1]);
+    if(ci>=0){ opts.series={}; opts.series[ci]={pointSize:15, pointShape:'diamond'}; }
+  }
+  return opts;
+}
+// Pure: the numbers, as text, because GEE's chart rendering is limited and a
+// reader needs to be able to read the values off.
+function s7gTextTable(pairs, xName, yName, mode){
+  var w=8, lines=[];
+  function pad(s2,n){ s2=String(s2); while(s2.length<n) s2+=' '; return s2; }
+  lines.push(pad('Point',8)+'| '+pad(xName,w)+'| '+pad(yName,w)+'| '+(mode==='centre'?'Role':'On-reef?'));
+  lines.push(repeatChar('─', 8+2+w+2+w+2+10));
+  (pairs||[]).forEach(function(p){
+    var third=(mode==='centre')?((p.label==='Center')?'CENTRE':'ring')
+      :(p.onReef===null?'unknown':(p.onReef?'yes':'NO ('+p.ndviW.toFixed(2)+')'));
+    lines.push(pad(p.label,8)+'| '+pad(p.x.toFixed(3),w)+'| '+pad(p.y.toFixed(3),w)+'| '+third);
+  });
+  return lines.join('\n');
+}
+// Pure: the message shown INSTEAD of a chart frame when there is not enough to plot.
+function s7gNotEnoughText(nPlottable, nTotal, xName, yName){
+  return 'NOT ENOUGH VALID POINTS to plot '+yName+' against '+xName+': '+nPlottable+
+    ' of '+nTotal+' scanned point(s) had a number on BOTH axes, against a floor of '+S7G_MIN_POINTS+
+    '. Nothing is drawn - an empty chart frame would look like a measured null.'+
+    (nTotal>0&&nPlottable<nTotal?' The missing points are masked (cloud, land or outside the ocean mask), not zero.':'');
+}
+
+panel.add(sHead('S7G - CROSS-INDEX SCATTER (v10.167)','#1a4455'));
+panel.add(lbl('Plots the indices this tool ALREADY has against each other, so spatial drift across the 9-point ring is visible rather than only tabulated. ZERO new Earth Engine calls - it reads S7B\'s 9-point scan and your current click. Run S7B first, then press the button below.',7,'#1a4455'));
+panel.add(lbl('Colour is NOT nine hues for nine nodes. The FAI x NDCI chart colours by the SAME on-reef / off-reef NDVI-water cut S7D uses (> -0.10); the NDVI-water x FAI chart is a single series with the centre point marked, because colouring THAT one by an NDVI-water cut would just restate its own x axis. No chart here has two y-scales: two measures of different scale get two charts.',7,'#556677'));
+var s7gStatusV = ui.Label('Press the button below. Requires an S7B scan first (and a map click, for the centre-point numbers).',
+  {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
+var s7gHost = ui.Panel({style:{margin:'2px 0', padding:'0px'}});
+var s7gRunSeq = 0;   // v10.161 S6a convention, kept even though this panel is synchronous
+var s7gBtn = ui.Button({
+  label:'PLOT CROSS-INDEX SCATTERS (0 new EE calls)',
+  style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#d6e9f0',color:'#10343f',
+         stretch:'horizontal',padding:'6px 4px',border:'2px solid #1a4455'},
+  onClick:function(){
+    s7gRunSeq++;
+    s7gHost.clear();
+    if(!s7bScanStore || !s7bScanStore.points || s7bScanStore.points.length===0){
+      s7gStatusV.setValue('NO SCAN IN HAND - run S7B (MULTI-POINT ALGAE SCAN) above first. S7G never fetches anything itself, so it has nothing to plot until S7B\'s one call has returned.');
+      s7gStatusV.style().set('color','#aa3300'); s7gStatusV.style().set('backgroundColor','#fff0d0');
+      s7gStatusV.style().set('border','2px solid #aa3300'); s7gStatusV.style().set('whiteSpace','pre');
+      return;
+    }
+    try {
+      var pts=s7bScanStore.points, nTotal=pts.length;
+      var nDrawn=0, nRefused=0;
+
+      function addTextBlock(txt, col, bg){
+        s7gHost.add(ui.Label(txt,{fontSize:'8px',color:col||'#223344',backgroundColor:bg||'#f4f8fa',
+          padding:'4px 6px',margin:'2px 0',whiteSpace:'pre'}));
+      }
+      // One chart + its numbers, or one explicit refusal. Never an empty frame.
+      function addScatter(title, xKey, yKey, xTitle, yTitle, xName, yName, mode){
+        var pairs=s7gPairs(pts, xKey, yKey);
+        if(!s7gEnoughPoints(pairs)){
+          nRefused++;
+          addTextBlock(title+'\n'+s7gNotEnoughText(pairs.length, nTotal, xName, yName), '#aa3300', '#fff0d0');
+          return;
+        }
+        var dt=s7gDataTable(pairs, xTitle, mode);
+        var ch=ui.Chart(dt.table, 'ScatterChart', s7gChartOptions(title, xTitle, yTitle, dt.seriesNames, mode));
+        ch.style().set({stretch:'horizontal', margin:'2px 0', height:'210px'});
+        s7gHost.add(ch);
+        addTextBlock(title+'\n'+s7gTextTable(pairs, xName, yName, mode)+
+          '\nPlotted '+pairs.length+' of '+nTotal+' scanned points ('+(nTotal-pairs.length)+
+          ' dropped for a missing value on one axis).');
+        nDrawn++;
+      }
+
+      // ---- 1. SST x Chl-a: REFUSED, with the reason and the one real pair ----
+      var ck=lastClickIndexStore;
+      var sstChlTxt='1. SST x Chl-a across the 9 scan points - NOT PLOTTED.\n'+
+        'S7B does not fetch SST or Chl-a. Its single call reduces FAI + NDCI + NDVI-water over the\n'+
+        'nine buffers, so there is no 9-point SST and no 9-point Chl-a anywhere in this tool, and\n'+
+        'S7G is not allowed to spend an Earth Engine call to create one.\n'+
+        'The one SST/Chl-a pair that DOES exist is a single point, which is below the '+S7G_MIN_POINTS+
+        '-point floor this\npanel applies to every chart, so nothing is drawn rather than a one-dot frame.\n'+
+        'What IS in hand, at the clicked point only:\n'+
+        (ck ? ('  SST   = '+(ck.sst!==null?ck.sst.toFixed(2)+' deg C':'n/a')+
+               '  (annual mean; peak '+(ck.sstPeak!==null?ck.sstPeak.toFixed(2)+' deg C':'n/a')+')\n'+
+               '  Chl-a = '+(ck.chl!==null?ck.chl.toFixed(3)+' mg/m3':'n/a')+'  (source: '+(ck.chlSource||'n/a')+')\n'+
+               '  FAI   = '+(ck.fai!==null?ck.fai.toFixed(3):'n/a')+'   NDCI = '+(ck.ndci!==null?ck.ndci.toFixed(3):'n/a')+
+               '   NDVI-water = '+(ck.ndviW!==null?ck.ndviW.toFixed(3):'n/a')+'  (all dimensionless)\n'+
+               '  at '+ck.lat.toFixed(4)+', '+ck.lon.toFixed(4))
+             : '  nothing - click the map first and let the sidebar finish computing.');
+      addTextBlock(sstChlTxt, '#7a4a00', '#fff6e0');
+      nRefused++;
+
+      // ---- 2. FAI x NDCI, coloured by the on-reef / off-reef binary ----
+      addScatter('2. NDCI vs FAI across the 9 scan points',
+        'fai','ndci',
+        'FAI (dimensionless index)','NDCI (dimensionless index)',
+        'FAI','NDCI','reef');
+
+      // ---- 3. NDVI-water x FAI, single series with the centre marked ----
+      addScatter('3. FAI vs NDVI-water (the off-reef check against the algae index)',
+        'ndviW','fai',
+        'NDVI-water (dimensionless index)','FAI (dimensionless index)',
+        'NDVI-w','FAI','centre');
+
+      addTextBlock('Scan: '+s7bScanStore.points.length+' points, '+s7bScanStore.radiusKm+
+        ' km ring at '+s7bScanStore.lat.toFixed(4)+', '+s7bScanStore.lon.toFixed(4)+
+        ', 300 m buffer per point, max reducer (S7B\'s own methodology - these are S7B\'s numbers, unmodified).\n'+
+        'Earth Engine calls spent by this panel: 0.\n'+
+        'READ THESE AS ASSOCIATION, NOT MECHANISM: FAI, NDCI and NDVI-water are all built from the same\n'+
+        'Sentinel-2 red/NIR/SWIR bands over the same pixels, so they are not independent measurements.\n'+
+        'A tight FAI-NDCI line can be band-sharing as easily as a real bloom gradient.', '#445566', '#eef2f5');
+
+      s7gStatusV.setValue(nDrawn+' chart(s) drawn, '+nRefused+' slot(s) refused with a reason. 0 Earth Engine calls spent.');
+      s7gStatusV.style().set('color', nDrawn>0?'#115511':'#aa3300');
+      s7gStatusV.style().set('backgroundColor', nDrawn>0?'#d4f5df':'#fff0d0');
+      s7gStatusV.style().set('border','2px solid '+(nDrawn>0?'#115511':'#aa3300'));
+      s7gStatusV.style().set('whiteSpace','pre');
+      print('=== S7G CROSS-INDEX SCATTER (v10.167) === '+nDrawn+' chart(s), '+nRefused+' refused slot(s), 0 EE calls.');
+    } catch(eS7G){
+      s7gStatusV.setValue(friendlyEEError(eS7G));
+      s7gStatusV.style().set('color','#cc0000'); s7gStatusV.style().set('backgroundColor','#ffd0d0');
+      s7gStatusV.style().set('border','2px solid #cc0000'); s7gStatusV.style().set('whiteSpace','pre');
+      print('=== S7G ERROR === '+eS7G);
+    }
+  }
+});
+panel.add(s7gBtn);
+panel.add(s7gStatusV);
+panel.add(s7gHost);
+panel.add(lbl('The charts are 238px wide because they live in this 256px sidebar - that is why every chart is followed by its own numeric table. Read the numbers; the picture is for the shape.',7,'#886600'));
+panel.add(legDiv());
+
 
 panel.add(sHead('S8 - AQUACULTURE SUITABILITY (v10.67)','#003366'));
 panel.add(lbl('A. taxiformis: 17-21 deg C optimal (Statton 2024 AgriFutures AU)',7,'#336633'));
@@ -10840,6 +11556,11 @@ function analyzeLocation(lat, lon) {
     var nciV=(nc&&nc.ndci!==null&&!isNaN(nc.ndci))?nc.ndci:null;
     var ndwV=(nw&&nw.ndvi_water!==null&&!isNaN(nw.ndvi_water))?nw.ndvi_water:null;
     var chlBloom=(cb&&cb.chlor_a!==null)?cb.chlor_a:null;
+    // v10.167 S7G: the clicked point's indices, kept for the cross-index scatter
+    // panel. Every one of these was already extracted above for the sidebar -
+    // this is a reference, not a fetch.
+    lastClickIndexStore = {lat:lat, lon:lon, t:Date.now(), sst:sv, sstPeak:sv_peak,
+                           chl:cv, chlSource:chlSource, fai:faiv, ndci:nciV, ndviW:ndwV};
     // v10.148 FIX: computeAquaculture moved earlier (was previously
     // called AFTER this S7 block, at what's now the second reference
     // below) so its cold-water-kelp detection is available in time to
@@ -11569,6 +12290,110 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.167 FIX 21: the FAI multi-node fetch, diagnosed from the live evidence');
+print('  rather than from the span hypothesis - plus S7G, a new cross-index scatter');
+print('  panel that spends no Earth Engine calls at all.');
+print('');
+print('  CHANGELOG HONESTY, the standing rule: every figure below is either quoted AS');
+print('  OBSERVED from live browser runs at Bocas del Toro (9.175, -81.986) and');
+print('  labelled so, or was re-derived THIS session in a Node harness that EXECUTES');
+print('  THIS WHOLE FILE against stubbed ee/ui/Map and drives the real button handlers');
+print('  with synthetic Earth Engine payloads. Earth Engine itself was NOT run.');
+print('');
+print('  S1 BLOCKER - WHY THE FAI FETCH FAILED. IT IS NOT THE SPAN.');
+print('    OBSERVED, live:');
+print('      S7C  3 nodes, 24 months          WORKS - 8 valid months per node');
+print('      S7D  9 nodes, 25-month union     returns, 0 raw features');
+print('      S7D  9 nodes, 32-month union     returns, 0 raw features');
+print('      S7E/S7F 2 sites, 36-month union  NEVER RETURNS');
+print('      (v10.162-era) 9 nodes x 12 mo    returned all 108 features');
+print('    and the FAI pre-check reported scenes DO exist (BEFORE 9 of 24 months |');
+print('    AFTER 4 of 12 months) in every S7D case.');
+print('    RULED OUT, with the evidence that rules each one out:');
+print('      NOT span. S7C works at 24 and S7D fails at 25 - but they do not share a');
+print('      fetch function, so those two numbers were never comparable.');
+print('      NOT node count. S7E fails with TWO sites.');
+print('      NOT a labelling/grouping bug. groupSeriesByLabel() does drop an');
+print('      unlabelled feature silently, but S7D counts RAW features BEFORE grouping');
+print('      and the live run reported 0 there. Nothing arrived to be dropped.');
+print('    THE ACTUAL SEPARATOR IS THE CODE PATH, 5 for 5: every failing FAI fetch');
+print('    goes through extractMultiNodeSeries(); every working one goes through');
+print('    computeRealCSDDeseasonalized()/computeZonalSyncCSD(). Same collection');
+print('    builder, same band, same 20 m scale, same 150 m buffer, same site. The');
+print('    difference is that the failing path asks ONE .evaluate() to build nMonths');
+print('    Sentinel-2 median composites AND materialize nMonths x nRegions features');
+print('    from them, unchunked: 108 returned, 216/225/288 returned EMPTY, 324 never');
+print('    returned. The two failure MODES order by that number.');
+print('    FIXED: the series is now fetched in CHUNKS bounded by the largest shape');
+print('    ever observed to return - 12 months x 9 nodes = 108 features - fired');
+print('    SEQUENTIALLY and merged client-side by (label, timestamp). tileScale:4 was');
+print('    added to the reduceRegions call as well. S7C is UNCHANGED: it is the one');
+print('    configuration observed to work.');
+print('    EE CALLS, re-derived by counting .evaluate() in the harness on the 24+12');
+print('    windows of the live runs (a 31-month span, so 3 chunks per series):');
+print('      S7D 3 -> 5,  S7E 3 -> 5,  S7F 5 -> 9.  General form: S7D and S7E are');
+print('      2 + ceil(span/12); S7F is 3 + 2*ceil(span/12). Minimum 4/4/7 at a');
+print('      24-month span, maximum 10/10/19 at the 95-month widest span the existing');
+print('      span gate accepts. Every on-screen string quoting a count was updated.');
+print('    HONEST LIMIT: what happens server-side between "216 elements" and "empty');
+print('    result, no error" cannot be observed from here. The MECHANISM is inferred.');
+print('    WHICH CODE PATH FAILS AND WHICH DOES NOT IS NOT INFERRED - that is the');
+print('    observation. THIS FIX CANNOT BE CONFIRMED WITHOUT A LIVE EARTH ENGINE RUN.');
+print('');
+print('  S2 BLOCKER - S7E AND S7F COULD BE LEFT WAITING FOREVER. NOW THEY REFUSE.');
+print('    v10.161 S6a said plainly that a callback which never fires can never be');
+print('    turned into a failure "without a timer". That was true of the GLOBAL');
+print('    setTimeout. The Code Editor DOES expose ui.util.setTimeout, so every');
+print('    chunked call now carries a 4-minute deadline that names the chunk and');
+print('    refuses on screen. It is FEATURE-DETECTED, never assumed: where ui.util is');
+print('    absent the panels behave exactly as before and the status box SAYS SO.');
+print('    All three modules now refuse identically on an errored chunk, a chunk that');
+print('    returns 0 features (reduceRegions emits one feature per region per image');
+print('    whether or not the pixels are masked, so 0 is a failed call, not a data');
+print('    gap) and a chunk that blows the deadline. S7F keeps its S7D half and says');
+print('    the reference reef WAS found when only the S7E half fails.');
+print('    The v10.161 stall-explaining progress text and the per-panel run sequence');
+print('    numbers are unchanged, and a late reply from a refused run cannot overwrite');
+print('    the refusal.');
+print('    VERIFIED IN NODE by driving the real handlers: 0-feature chunk, partially');
+print('    populated chunk, and a chunk that never answers, for S7D, S7E and S7F.');
+print('    On SHIPPED v10.166 the never-answering case leaves S7D reading');
+print('    "Running: 1 / 2 batched calls done..." with no path that can clear it;');
+print('    v10.167 refuses with the chunk named. NOT FIXED: without ui.util there is');
+print('    still no deadline - the panel says that instead of pretending otherwise.');
+print('');
+print('  S3 NEW - S7G CROSS-INDEX SCATTER PANEL, ZERO NEW EARTH ENGINE CALLS.');
+print('    Plots indices already in hand: NDCI vs FAI and FAI vs NDVI-water across');
+print('    S7B\'s 9 scan points, with S7B\'s numbers printed under each chart because');
+print('    GEE chart rendering is limited and the sidebar is 256px wide.');
+print('    WHAT IT DOES NOT PLOT, AND WHY: SST x Chl-a across the 9 points. S7B\'s one');
+print('    call reduces FAI + NDCI + NDVI-water over its nine buffers and fetches no');
+print('    SST and no Chl-a; the only pair in hand is the SINGLE clicked point, which');
+print('    is below the 3-point floor. The slot shows that pair as numbers and states');
+print('    the reason. Plotting it properly needs a new EE call, which is out of scope.');
+print('    COLOUR: NOT nine hues for nine nodes. The NDCI vs FAI chart colours by the');
+print('    on-reef / off-reef NDVI-water binary S7D already computes (> -0.10). The');
+print('    FAI vs NDVI-water chart is a single series with the centre point marked,');
+print('    because colouring THAT one by an NDVI-water cut would restate its own x');
+print('    axis. No dual-axis chart anywhere; one measure per axis, units on both.');
+print('    Fewer than 3 plottable points renders a message, never an empty frame.');
+print('    ui.Chart(dataTable,...) is used rather than ui.Chart.array.values() or');
+print('    ui.Chart.feature.byFeature(): those take ee.* arguments and evaluate them');
+print('    server-side, which would be the EE call this panel is forbidden to spend.');
+print('    VERIFIED IN NODE: pairing, null/NaN dropping, the <3-point guard, canonical');
+print('    series order, one y-value per row, legend suppressed on a single series and');
+print('    the marked centre point are unit-tested against the shipped functions;');
+print('    driving S7B then S7G end to end spends 0 .evaluate() calls.');
+print('');
+print('  RESIDUAL RISK, stated plainly: the S1 fix cannot be verified from here. The');
+print('  Node harness proves the chunk plan, the merge, the refusals and the call');
+print('  counts; it cannot prove that a 12-month x 9-node reduceRegions returns data');
+print('  at Bocas del Toro, because it never talks to Earth Engine. The evidence that');
+print('  it should is that this exact shape was OBSERVED to return all 108 features in');
+print('  a live run. If it turns out the ceiling is lower, the remedy is a smaller');
+print('  S7_FAI_MAX_ELEMENTS_PER_CALL / S7_FAI_MAX_MONTHS_PER_CALL - one constant each');
+print('  - and the failure is now a visible refusal naming the chunk, not a hang.');
 print('');
 print('v10.162 FIX 20: 6 defects, all from the SAME live Earth Engine browser run at');
 print('  Bocas del Toro, Panama (9.175, -81.981) that produced the v10.161 round. The');

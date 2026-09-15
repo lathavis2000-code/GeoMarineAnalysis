@@ -14,6 +14,220 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.167 FIX 21: the FAI multi-node fetch, diagnosed from the live evidence
+  instead of from the span hypothesis - plus S7G, a new cross-index scatter
+  panel that spends no Earth Engine calls at all.
+
+  CHANGELOG HONESTY, the standing rule: every numeric claim below either
+  (a) is quoted AS OBSERVED from live browser runs at Bocas del Toro, Panama
+  (9.175, -81.986) and labelled so, or (b) was re-derived THIS session in a
+  Node harness that EXECUTES THIS WHOLE FILE against stubbed ee/ui/Map and
+  drives the real button handlers with synthetic Earth Engine payloads, and
+  states the design that produced it. Nothing is asserted from memory and no
+  precision is invented around the live figures. Earth Engine itself was NOT
+  run - see RESIDUAL RISK at the end of this entry.
+
+  S1 BLOCKER - THE FAI FETCH. THE CAUSE IS NOT THE SPAN, AND NOT THE NODE
+  COUNT, AND NOT A LABELLING BUG.
+    OBSERVED, across real browser runs at one site:
+      module     shape                              result
+      S7C        3 nodes, 24 months (2023-01 +24)   WORKS, 8 valid months/node
+      S7D        9 nodes, 25-month union            returns, 0 raw features
+      S7D        9 nodes, 32-month union            returns, 0 raw features
+      S7E/S7F    2 sites, 36-month union            NEVER RETURNS (hangs)
+      (v10.162-era) 9 nodes x 12-month AFTER window returned all 108 features
+    In every S7D case the FAI pre-check reported that scenes DO exist at this
+    exact point - "BEFORE 9 of 24 months | AFTER 4 of 12 months" - and S7C
+    proves FAI genuinely resolves at this site.
+
+    THREE HYPOTHESES RULED OUT, each with what rules it out:
+      NOT SPAN LENGTH. S7C works at 24 months and S7D fails at 25. Those two
+      numbers were never comparable: S7C and S7D do not share a fetch
+      function, so that pair compares two functions, not two spans.
+      NOT NODE COUNT. S7E fails with TWO sites. A "9 nodes is too many"
+      explanation cannot cover a 2-site failure.
+      NOT A LABELLING / GROUPING BUG. groupSeriesByLabel() does silently drop
+      a feature carrying no `label` - but S7D's own diagnostic counts RAW
+      features BEFORE grouping (combinedFeatCount), and the live run reported
+      0 there. The features never arrived; there was nothing to drop. Traced
+      (not run - this path needs Earth Engine): ptsFC sets `label` on every
+      feature, reduceRegions carries non-reducer properties through
+      untouched, f.set('t',t) preserves them, flatten() preserves them, and
+      groupSeriesByLabel() buckets on exactly that key.
+
+    WHAT DOES SEPARATE EVERY FAILURE FROM EVERY SUCCESS, 5 observations for
+    5: THE CODE PATH. Every failing FAI fetch goes through
+    extractMultiNodeSeries(); every succeeding one goes through
+    computeRealCSDDeseasonalized() / computeZonalSyncCSD(). Line by line
+    that is the only structural difference - the two paths agree on the
+    collection builder (mkMoFAIRange), the band ('fai'), the scale (20 m),
+    the buffer (150 m) and the site:
+
+      WORKING (S7C)                     FAILING (S7D / S7E / S7F)
+      monthlyColl.map(img => ...)       toList() + ee.List.sequence().map()
+      img.reduceRegion(ONE geometry)    img.select([b]).reduceRegions(ptsFC)
+      maxPixels: 1e9 set                no maxPixels, no tileScale
+      output = nMonths features         output = nMonths x nRegions features
+      one region per graph              2 or 9 regions per graph
+      no label (positional {t,v})       label carried through flatten()
+
+    So the failing path asks ONE .evaluate() to build nMonths Sentinel-2
+    monthly median composites AND materialize nMonths x nRegions features out
+    of them, unchunked and unbounded. Ordering the observations by that
+    per-call work:
+      12 mo x 9 = 108 elements    -> returned, fully populated
+      24 mo x 9 = 216             -> returned EMPTY
+      25 mo x 9 = 225             -> returned EMPTY
+      32 mo x 9 = 288             -> returned EMPTY
+      36 mo x 9 = 324 (+ 36 x 2)  -> never returned
+    The two failure MODES order by that number. The failure itself is the
+    path.
+
+    FIXED by chunking, not by a span rule: each series is fetched in chunks
+    whose per-call work never exceeds the LARGEST CONFIGURATION EVER OBSERVED
+    TO RETURN DATA ON THIS PATH - 12 months x 9 nodes = 108 features. Both
+    bounds come from that one observation and nothing else; neither is a
+    guess at where the real ceiling sits, because the real ceiling has not
+    been measured. Chunks are fired SEQUENTIALLY (this file has hit the
+    account concurrency quota before) and merged client-side, de-duplicated
+    on (label, timestamp). tileScale:4 was added to the reduceRegions call -
+    the standard Earth Engine remedy for the memory pressure the empty
+    returns point at, free when it is not needed, and UNTESTED here.
+    S7C IS NOT CHANGED. It is the one configuration observed to work.
+
+    WHICH FIX ADDRESSES WHICH FAILURE:
+      chunking + tileScale    -> the "returns 0 raw features" failure (S7D)
+      chunking + the deadline -> the "never returns" failure (S7E / S7F).
+      Chunking alone cannot fix a hang; it only makes each call small enough
+      that hanging is less likely and names WHICH chunk stalled. The deadline
+      (S2 below) is what turns a stall into a visible refusal.
+
+    EE CALL COUNTS, re-derived this session by counting .evaluate() calls
+    while driving each module's real handler to completion with fully
+    populated synthetic payloads, on the 24+12 windows of the live runs
+    (a 31-month joint span, so 3 chunks per series):
+      S7D  3 -> 5     S7E  3 -> 5     S7F  5 -> 9
+    General form, where span is the number of calendar months the two windows
+    jointly cover:
+      S7D = 1 pre-check + ceil(span/12) + 1 NDVI
+      S7E = 1 pre-check + 1 GEBCO search + ceil(span/12)
+      S7F = 1 pre-check + 1 GEBCO search + 1 NDVI + 2 x ceil(span/12)
+    which is 4 / 4 / 7 whenever the span is 24 months or less and 10 / 10 /
+    19 at the 95-month widest span the existing span gate accepts. Every
+    on-screen string quoting a count was updated - button labels, status
+    lines, progress counters, method lines, scope notes. The count went UP,
+    deliberately: it buys a fetch that can complete.
+
+  S2 BLOCKER - S7E AND S7F COULD BE LEFT WAITING FOREVER. NOW THEY REFUSE.
+    v10.161 S6a stated plainly that "a callback that never fires still never
+    fires. Without a timer this cannot be turned into an automatic failure."
+    That was true of the GLOBAL setTimeout, which the GEE sandbox does not
+    expose. The Code Editor's own ui.util namespace DOES expose setTimeout
+    and clearTimeout, so every chunked call now carries a 4-minute deadline
+    that names the chunk and refuses on screen. It is FEATURE-DETECTED, never
+    assumed: where ui.util is absent the panels behave exactly as they did
+    before and the status box SAYS SO rather than promising a deadline it
+    cannot enforce.
+    All three modules now refuse identically on: an errored chunk, a chunk
+    that returns 0 features, and a chunk that blows the deadline. A 0-feature
+    chunk is treated as a FAILED CALL, not a data gap, because reduceRegions
+    emits one feature per region per image whether or not the pixels are
+    masked - so a chunk that ran returns exactly chunkMonths x nRegions
+    features. S7F keeps its S7D half when only the S7E half fails, and says
+    the reference reef WAS found (it used to print "no usable reference site
+    found" there, which would now be false).
+    The v10.161 stall-explaining progress text and the per-panel run sequence
+    numbers are unchanged, and a late reply from an already-refused run
+    cannot overwrite the refusal.
+
+    VERIFIED IN NODE, by executing this file under stubbed ee/ui/Map and
+    driving the real button handlers:
+      - 0-FEATURE CASE: first chunk returns {features: []}. S7D, S7E and S7F
+        each refuse, naming the chunk, its month range and the 108 (or 24)
+        features expected.
+      - PARTIALLY-POPULATED CASE: chunk 3 returns 3 months x 2 of the 9
+        labels instead of 7 x 9. The run completes on the merged series and
+        the Console records the short chunk.
+      - NEVER-RETURNS CASE: chunk 2 is issued and never answered. On SHIPPED
+        v10.166 the same drive leaves S7D reading "Running: 1 / 2 batched
+        calls done... Still waiting on: combined BEFORE..AFTER series" with
+        no code path able to clear it. On v10.167 the deadline fires and the
+        panel refuses with the chunk named; a late reply afterwards does not
+        overwrite the refusal.
+      - NO-TIMER CASE: with ui.util removed entirely, the file still loads
+        and runs, no deadline is armed, and the status box reads "NO TIMER
+        AVAILABLE in this sandbox build".
+      - The chunk planner is unit-tested directly against the shipped
+        functions: month grids for all three live configurations, mid-month
+        start dates, every chunk within the 12-month and 108-feature bounds,
+        months conserved across the plan, and merge de-duplication.
+
+  S3 NEW - S7G CROSS-INDEX SCATTER PANEL. ZERO NEW EARTH ENGINE CALLS.
+    Every algae number in this tool was tabulated and nothing was plotted
+    against anything, so spatial drift across the ring was invisible. S7G
+    sits below S7F, behind its own button, and reads two client-side stores
+    filled by callbacks that have already paid for their data: S7B's 9-point
+    scan and the current click.
+    CHARTS DRAWN:
+      2. NDCI vs FAI across the 9 scan points
+      3. FAI vs NDVI-water (the off-reef check against the algae index)
+    CHART NOT DRAWN, and why: 1. SST x Chl-a across the 9 scan points. S7B's
+    single call reduces ONE image - faiImg + ndciImg + ndviWater - over its
+    nine buffers. It fetches no SST and no Chl-a, so there is no 9-point SST
+    or Chl-a anywhere in this tool, and the zero-new-calls constraint forbids
+    creating one. The only pair in hand is the SINGLE clicked point, which is
+    below the 3-point floor. That slot prints the clicked point's SST, Chl-a,
+    FAI, NDCI and NDVI-water as numbers and states the reason.
+    COLOUR, and which option was chosen where: NOT nine categorical hues for
+    nine compass nodes. The NDCI vs FAI chart colours by the ON-REEF /
+    OFF-REEF binary S7D already computes from NDVI-water (> -0.10) - two
+    named series plus an explicit "unknown" bucket. The FAI vs NDVI-water
+    chart uses the other permitted option, a single series with the centre
+    point marked (15px diamond), because colouring THAT chart by an
+    NDVI-water cut would encode only which side of x = -0.10 each point sits
+    on, which its own x axis already says.
+    NO DUAL-AXIS CHART ANYWHERE. One measure per axis, units on both
+    (dimensionless index here; deg C and mg/m3 in the numeric slot). Grid and
+    axes recessive (#e8e8e8 gridlines, 8px grey ticks, minor gridlines off);
+    marks prominent (9px points). Every series named in the legend; a
+    single-series chart gets no legend box because the title names it. Fewer
+    than 3 plottable points after nulls are dropped renders an explicit
+    message, never an empty chart frame. Each chart is followed by its own
+    numeric table, because GEE chart rendering is limited and the sidebar is
+    256px wide.
+    ui.Chart(dataTable, 'ScatterChart', options) is used rather than
+    ui.Chart.array.values() or ui.Chart.feature.byFeature(): both of those
+    take ee.Array / ee.FeatureCollection arguments and evaluate them
+    server-side, which is exactly the Earth Engine call this panel is
+    forbidden to spend.
+    VERIFIED IN NODE against the shipped functions: pairing and null/NaN
+    dropping on both axes, the <3-point guard at 0 / 2 / 3 / 6 points and on
+    null input, canonical series order (stable under input shuffling, so a
+    series always gets the same colour), exactly one y-value per data row,
+    legend suppressed on a single series, the marked centre point, and the
+    text table. Driving S7B and then S7G end to end spends 0 .evaluate()
+    calls; pressing S7G before any S7B scan spends 0 and says so.
+
+  RESIDUAL RISK, stated plainly.
+    THE S1 FIX CANNOT BE VERIFIED FROM HERE. The harness proves the chunk
+    plan, the merge, the refusals, the deadline and the call counts. It
+    cannot prove that a 12-month x 9-node reduceRegions returns data at Bocas
+    del Toro, because it never talks to Earth Engine. The evidence that it
+    should is that this exact shape was OBSERVED to return all 108 features
+    in a live run. If the real ceiling is lower, the remedy is a smaller
+    S7_FAI_MAX_ELEMENTS_PER_CALL or S7_FAI_MAX_MONTHS_PER_CALL - one constant
+    each - and the failure is now a visible refusal naming the chunk instead
+    of a hang.
+    The server-side mechanism behind "216 elements -> empty result with no
+    error" is INFERRED, not observed. Which code path fails and which does
+    not is NOT inferred: that is the observation, 5 for 5.
+    tileScale:4 is untested against live Earth Engine.
+    ui.util.setTimeout is feature-detected but has not been exercised in a
+    real Code Editor session from here; if it is missing the panels fall back
+    to v10.166 behaviour and say so on screen.
+    Sequential chunking makes a long span take longer in wall-clock time than
+    v10.166's single call would have if that call had worked. It did not.
+
 v10.162 FIX 20: six defects, all diagnosed from the SAME live Earth Engine
   browser run at Bocas del Toro, Panama (9.175, -81.981) that produced the
   v10.161 round. The on-screen output is quoted verbatim where it is the
