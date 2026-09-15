@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.167';
+var TOOL_VERSION = 'v10.168';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -3587,8 +3587,19 @@ function classifyDepthLabel(bv) {
   if(bv>10) return ' land / higher ground';
   if(bv>0) return ' intertidal / beach';
   if(bv>-50) return ' shallow reef zone';
-  if(bv>-200) return ' continental shelf';
-  if(bv>-1000) return ' continental slope';
+  // v10.168 DEPTH-02: these two bins used to be named "continental shelf" and
+  // "continental slope". Those are continental-margin landforms, and a large
+  // share of the world's reefs - every oceanic volcanic island, so all of
+  // Hawaii, French Polynesia, the Maldives, the Galapagos - has NO continental
+  // margin at all: the seafloor there is an insular slope rising from abyssal
+  // plain. A live Kona click printed "continental shelf" for a site 250 km from
+  // the nearest continental crust. The depth BINS and the colour ramp are
+  // unchanged (they are just depth); only the names are now depth descriptions
+  // rather than claims about geological setting. The S3 legend rows are edited
+  // to match in the same commit - the whole point of classifyDepthLabel() (see
+  // the v10.68 note above) is that the sidebar text and the legend agree.
+  if(bv>-200) return ' shelf-depth / deep fore-reef';
+  if(bv>-1000) return ' upper slope';
   if(bv>-2000) return ' deep ocean';
   return ' very deep ocean';
 }
@@ -9063,9 +9074,28 @@ var s7eRunBtn = ui.Button({
         var EXCLUDE_RADIUS_KM = 5;
         var excludedByHistoryCount = 0;
         var shallowCandidateCount = 0;
+        // v10.168 S7E-01: tally WHY each of the 40 probes was rejected. Through
+        // v10.167 a failed search printed only "no GEBCO shallow-water match",
+        // which is indistinguishable from a broken search. At Kona the search is
+        // in fact CORRECT to fail - Hawaii is a volcanic island with no shelf,
+        // so every probe is either dry land or already abyssal - but the user
+        // could not tell that from the message and reasonably asked whether it
+        // was a bug. These counters cost nothing (the elevations are already in
+        // hand) and turn a bare refusal into evidence for it.
+        var nLand=0, nTooDeep=0, nNoData=0;
+        var shallowestOceanElev=null, shallowestOceanKm=null;
         for(var i=0;i<feats.length;i++){
           var p=feats[i].properties;
           var elev=extractReduceRegionsValue(p,'elevation');
+          if(elev===null){ nNoData++; }
+          else if(elev>=0){ nLand++; }
+          else {
+            if(elev<=-50) nTooDeep++;
+            // shallowest (least negative) ocean probe, whatever ring it came from
+            if(shallowestOceanElev===null || elev>shallowestOceanElev){
+              shallowestOceanElev=elev; shallowestOceanKm=p.radiusKm;
+            }
+          }
           if(elev!==null && elev>-50 && elev<0){
             shallowCandidateCount++;
             var candLat=candidates[p.idx].lat, candLon=candidates[p.idx].lon;
@@ -9085,11 +9115,24 @@ var s7eRunBtn = ui.Button({
             'NO REFERENCE REEF FOUND within 160km - '+shallowCandidateCount+' shallow-water candidate(s) found, but ALL of them '+
             'coincide with a site already tested as a STUDY location this session (within '+EXCLUDE_RADIUS_KM+'km). '+
             'Try a different study site, or clear the session by reloading if you want to allow reuse.' :
-            'NO REFERENCE REEF FOUND within 160km (no GEBCO shallow-water match at 20/40/70/110/160km, 8 bearings each). Cannot classify local vs regional without a reference - try a different study site.';
+            ('NO REFERENCE REEF FOUND within 160km (no GEBCO shallow-water match at 20/40/70/110/160km, 8 bearings each).\n' +
+             'Of the '+feats.length+' probes: '+nLand+' on dry land, '+nTooDeep+' already deeper than 50 m, '+nNoData+' no GEBCO value.\n' +
+             (shallowestOceanElev!==null ?
+               'Shallowest water found anywhere in the search: '+Math.round(-shallowestOceanElev)+' m, at the '+shallowestOceanKm+' km ring.\n' :
+               'No probe returned a below-sea-level GEBCO value at all.\n') +
+             'If almost every probe is land-or-abyssal with nothing in between, that is the expected answer for an oceanic volcanic island ' +
+             '(Hawaii, the Marquesas, Reunion): the seafloor drops from the shoreline to abyssal depth with no shelf, so there is no distant ' +
+             'shallow reference reef to find and S7E genuinely cannot run here - it is not a failed lookup.\n' +
+             'S7D (within-reef nodes) still works at such a site; what you lose is only the local-vs-regional split, which needs a second reef.');
           s7eStatusV.setValue(noRefMsg);
           s7eStatusV.style().set('color','#cc0000'); s7eStatusV.style().set('backgroundColor','#ffd0d0');
           s7eStatusV.style().set('border','2px solid #cc0000'); s7eStatusV.style().set('whiteSpace','pre');
           print('=== S7E: no reference reef candidate found within 160km ('+excludedByHistoryCount+' excluded as prior study sites) ===');
+          // v10.168 S7E-01: the same tally to the console, so it survives in the
+          // run log after the on-screen label is overwritten by the next run.
+          print('  S7E probe tally: '+feats.length+' probed | '+nLand+' land | '+nTooDeep+' deeper than 50m | '+
+                nNoData+' no GEBCO value | shallowest water '+
+                (shallowestOceanElev!==null?(Math.round(-shallowestOceanElev)+'m at the '+shallowestOceanKm+'km ring'):'none'));
           return;
         }
 
@@ -10912,8 +10955,9 @@ panel.add(legDiv()); panel.add(sHead('6. S3 - Depth m (GEBCO, v10.68)','#003366'
 panel.add(lbl('Range: -200m to +100m | Deeper than -200m all shows as dark navy',7,'#336633'));
 panel.add(legRow('#023858','< -2000m','Very deep ocean (dark navy)'));
 panel.add(legRow('#0570b0','-2000 to -1000m','Deep ocean (blue)'));
-panel.add(legRow('#3690c0','-1000 to -200m','Continental slope (medium blue)'));
-panel.add(legRow('#41b6c4','-200 to -50m','Continental shelf (teal/cyan)'));
+panel.add(legRow('#3690c0','-1000 to -200m','Upper slope (medium blue)'));
+panel.add(legRow('#41b6c4','-200 to -50m','Shelf-depth / deep fore-reef (teal/cyan)'));
+panel.add(lbl('v10.168: the -200..-50m and -1000..-200m bins were labelled "continental shelf" and "continental slope" through v10.167. Renamed - they are depth bands, and an oceanic volcanic island (Hawaii, Maldives, Galapagos) has no continental margin for a reading to sit on. Colours and bin edges are unchanged.',7,'#886600'));
 panel.add(legRow('#74c476','-50 to 0m','SHALLOW REEF ZONE (green — ecologically critical)'));
 panel.add(legRow('#ffffb2','0 to 10m','Intertidal / beach (yellow)'));
 panel.add(legRow('#8c510a','> 10m','Land / higher ground (brown)'));
@@ -11184,7 +11228,6 @@ function analyzeLocation(lat, lon) {
   var rCHLc=chlaCoastal.reduceRegion({reducer:ee.Reducer.mean(),geometry:studySST,scale:4000,maxPixels:1e9});
   var rTR=sst_slope.reduceRegion({reducer:ee.Reducer.mean(),geometry:studySST,scale:4000,maxPixels:1e9});
   var rNO2=no2.reduceRegion({reducer:ee.Reducer.mean(),geometry:study,scale:1000,maxPixels:1e9});
-  var rBATH=GEBCO.rename('bedrock').reduceRegion({reducer:ee.Reducer.mean(),geometry:study,scale:1000,maxPixels:1e9});
   var rTURB=turbImg.reduceRegion({reducer:ee.Reducer.mean(),geometry:study,scale:100,maxPixels:1e9});
   var rDHW=dhwProperLocalCalc.reduceRegion({reducer:ee.Reducer.mean(),geometry:studySST,scale:4000,maxPixels:1e9});
   var rMMM=MMM_perpixel.reduceRegion({reducer:ee.Reducer.mean(),geometry:studySST,scale:4000,maxPixels:1e9});
@@ -11196,6 +11239,22 @@ function analyzeLocation(lat, lon) {
   var seismicZone=pt.buffer(200000), volcZone=pt.buffer(300000);
   var rEQ=ee.Dictionary({count:usgsEarthquakes.filterBounds(seismicZone).size(),maxMag:usgsEarthquakes.filterBounds(seismicZone).aggregate_max('mag')});
   var rVOLC=volcanicActivity.filterBounds(volcZone).size();
+  // v10.168 DEPTH-01 FIX: this is now the ONE AND ONLY GEBCO depth reduction.
+  // Until v10.167 there were TWO of them over the SAME geometry with the SAME
+  // mean reducer, differing only in scale: rBATH at scale 1000 fed the main
+  // sidebar "Depth:" row, this one at scale 500 fed the S16 "Seafloor depth
+  // (GEBCO)" row. On flat bathymetry they agree and nobody noticed. On a steep
+  // slope they do not: a live Kona click (19.711,-156.053) printed
+  // "-136 m (GEBCO) continental shelf" in the sidebar and "46.3 m (GEBCO)" in
+  // S16 ON THE SAME SCREEN - a 90 m contradiction between two rows of one
+  // report. GEBCO's native grid is 15 arc-seconds (~463 m), so scale=500 reads
+  // it at ~1:1 while scale=1000 forced a coarser pyramid level whose ~926 m
+  // cells average in offshore water from outside the 1 km study disc; on Kona's
+  // drop-off that pulled the mean down by ~90 m. The scale=500 reading is the
+  // defensible one, so the coarse call is gone and BOTH rows now read this.
+  // Same bug class as the v10.162 S17/S17b 27750m-vs-4000m footprint mismatch:
+  // two reductions that were always meant to be the same measurement.
+  // Bonus: one fewer EE call per click.
   var rGEBCO=GEBCO.rename('elevation').reduceRegion({reducer:ee.Reducer.mean(),geometry:study,scale:500,maxPixels:1e9});
 
   // S17 ToE precomputed images at clicked point
@@ -11326,7 +11385,11 @@ function analyzeLocation(lat, lon) {
   // Now: all 19 fire simultaneously, process when all arrive
   //   Total time = MAX of all 19 server calls (~5-15 seconds)
   // ============================================================
-  var _res={}, _pending=19;
+  // v10.168 DEPTH-01: 18, not 19 - rBATH was deleted (see the rGEBCO comment
+  // above). This counter is hand-maintained, so it MUST be decremented in the
+  // same edit that removes an .evaluate(); leaving it at 19 would mean
+  // _onAllDone() never fires and the whole sidebar silently stays blank.
+  var _res={}, _pending=18;
   function _got(key,val){ _res[key]=val; if(--_pending===0) _onAllDone(); }
 
   rSST.evaluate(function(v,e){   _got('s',   e?{}:v||{}); });
@@ -11335,7 +11398,6 @@ function analyzeLocation(lat, lon) {
   rCHLc.evaluate(function(v,e){  _got('cc',  e?{}:v||{}); });
   rTR.evaluate(function(v,e){    _got('tr',  e?{}:v||{}); });
   rNO2.evaluate(function(v,e){   _got('n',   e?{}:v||{}); });
-  rBATH.evaluate(function(v,e){  _got('b',   e?{}:v||{}); });
   rTURB.evaluate(function(v,e){  _got('t',   e?{}:v||{}); });
   rDHW.evaluate(function(v,e){   _got('d',   e?{}:v||{}); });
   rMMM.evaluate(function(v,e){   _got('mmm', e?{}:v||{}); });
@@ -11353,7 +11415,7 @@ function analyzeLocation(lat, lon) {
 
   function _onAllDone(){
     var s=_res.s, sp=_res.sp, c=_res.c, cc=_res.cc;
-    var tr=_res.tr, n=_res.n, b=_res.b, t=_res.t;
+    var tr=_res.tr, n=_res.n, t=_res.t;
     var d=_res.d, mmm=_res.mmm, fa=_res.fa, nc=_res.nc;
     var nw=_res.nw, cb=_res.cb, soilRes=_res.soilRes;
     var eqRes=_res.eqRes, volcRes=_res.volcRes;
@@ -11365,7 +11427,14 @@ function analyzeLocation(lat, lon) {
     var chlSource=(c&&c.chlor_a>0)?'ocean':(cc&&cc.chlor_a>0)?'coastal relaxed':'n/a';
     var tv=(tr&&tr.scale!==null)?tr.scale:null;
     var nv=(n&&n.NO2_column_number_density>0)?n.NO2_column_number_density:null;
-    var bv=(b&&b.bedrock!==null)?b.bedrock:null;
+    // v10.168 DEPTH-01: bv now comes from the same rGEBCO reduction that S16's
+    // "Seafloor depth (GEBCO)" row uses, so the two rows can no longer disagree.
+    // gebcoRes is destructured a few lines above, so it is already in scope.
+    // bv stays a SIGNED ELEVATION (negative below sea level) because every
+    // downstream consumer - fmtDepth(), classifyDepthLabel(), the S20e
+    // bleaching model's Math.abs() - was written against that sign convention;
+    // S16 flips it to a positive depth locally for display.
+    var bv=(gebcoRes&&gebcoRes.elevation!==null&&gebcoRes.elevation!==undefined)?gebcoRes.elevation:null;
     var turv=(t&&t.turbidity!==null)?t.turbidity:null;
     var dhwv_raw=(d&&d.dhw!==null)?d.dhw:null;
     var DHW_SANITY_CAP=60;
@@ -12290,6 +12359,52 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.168 DEPTH-01/DEPTH-02/S7E-01: one GEBCO depth instead of two that');
+print('  disagreed by 90 m on the same screen, depth-zone names that do not claim a');
+print('  continental margin where there is none, and an S7E refusal that shows its work.');
+print('');
+print('  DEPTH-01 (WRONG NUMBER ON SCREEN, found in a live run, not by review).');
+print('    REPORTED: a Kona click (19.711, -156.053) rendered TWO different GEBCO');
+print('    depths simultaneously - main sidebar "Depth: -136 m (GEBCO) continental');
+print('    shelf", S16 "Seafloor depth (GEBCO): 46.3 m". Same click, same report, 90 m');
+print('    apart. TRACED: there were two reduceRegion calls on the SAME GEBCO image');
+print('    over the SAME geometry (study = point.buffer(1000)) with the SAME mean');
+print('    reducer, differing in ONE argument - rBATH at scale:1000 fed the sidebar,');
+print('    rGEBCO at scale:500 fed S16. GEBCO native is 15 arc-seconds (~463 m), so');
+print('    scale=500 reads the grid at ~1:1 while scale=1000 forces a coarser pyramid');
+print('    level whose ~926 m cells average in water from outside the 1 km disc. On');
+print('    flat bathymetry the two agree, which is why this survived to v10.167; on');
+print('    Kona\'s drop-off the coarse read was 90 m too deep. FIXED: rBATH deleted,');
+print('    both rows now read rGEBCO, _pending 19 -> 18. Costs one fewer EE call per');
+print('    click. Same bug class as the v10.162 S17/S17b footprint mismatch.');
+print('    NOT CLAIMED: that 46.3 m is the depth AT the click - it is the mean over a');
+print('    1 km-radius disc, and on a steep slope the point itself is shallower. What');
+print('    is fixed is that the tool no longer prints two answers to one question.');
+print('');
+print('  DEPTH-02 (WRONG WORD, same run). The -200..-50 m and -1000..-200 m bins were');
+print('    labelled "continental shelf" and "continental slope" in BOTH the sidebar');
+print('    text and the S3 legend. Those are continental-margin landforms; Hawaii is a');
+print('    volcanic island ~3,200 km from continental crust and has no shelf at all,');
+print('    as does every oceanic island reef (Maldives, Marquesas, Galapagos). Renamed');
+print('    to "shelf-depth / deep fore-reef" and "upper slope", which describe depth');
+print('    without asserting a geological setting. Bin edges and the colour ramp are');
+print('    UNCHANGED - this is a naming fix, so the map colours you have seen before');
+print('    still mean exactly what they meant.');
+print('');
+print('  S7E-01 (A CORRECT REFUSAL THAT LOOKED LIKE A BUG). The same Kona run printed');
+print('    "NO REFERENCE REEF FOUND within 160km" with no evidence, which is');
+print('    indistinguishable from a broken lookup. The search is in fact RIGHT to fail');
+print('    there: it probes 5 rings x 8 bearings and needs GEBCO between -50 and 0 m,');
+print('    and off Kona each probe is either dry land or already abyssal. The refusal');
+print('    now reports the tally (how many probes were land, how many deeper than 50 m,');
+print('    how many had no value) and the shallowest water found anywhere in the');
+print('    search, then says that a land-or-abyssal split with nothing in between is');
+print('    the EXPECTED answer for an oceanic volcanic island, and that S7D still runs.');
+print('    Same tally also goes to the console so it outlives the on-screen label.');
+print('    NO change to the search itself: still 40 probes, still -50..0 m. It remains');
+print('    a sparse lattice, and a narrow shallow bank between two bearings would');
+print('    still be missed - that limit is unfixed, now merely visible.');
 print('');
 print('v10.167 FIX 21: the FAI multi-node fetch, diagnosed from the live evidence');
 print('  rather than from the span hypothesis - plus S7G, a new cross-index scatter');
