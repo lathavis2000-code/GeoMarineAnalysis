@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.169';
+var TOOL_VERSION = 'v10.171';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -1063,6 +1063,11 @@ function jsLag1PairAudit(times){
   }
   return out;
 }
+// v10.170 FAI-01: the variance-ratio denominator floor, named instead of being
+// a bare 1e-6 repeated in the divisor and described in prose by the artifact
+// rule. The artifact test needs to know EXACTLY what this number is - that is
+// the whole thing it is detecting - so the two must not be able to drift apart.
+var CSD_VAR_RATIO_FLOOR = 1e-6;
 function jsVarianceHalves(resid) {
   var n = resid.length;
   var half = Math.floor(n/2);
@@ -1074,7 +1079,7 @@ function jsVarianceHalves(resid) {
     return s/(arr.length-1);
   }
   var v0=sampleVar(first), v1=sampleVar(second);
-  return {varFirst:v0, varSecond:v1, ratio:v1/Math.max(v0,1e-6)};
+  return {varFirst:v0, varSecond:v1, ratio:v1/Math.max(v0,CSD_VAR_RATIO_FLOOR)};
 }
 function jsSkewness(resid) {
   var n = resid.length;
@@ -4209,10 +4214,68 @@ var CSD_VAR_ARTIFACT_VARFIRST = 0.001, CSD_VAR_ARTIFACT_MAG = 5;
 // reason is arithmetic rather than empirical: a genuine surge has a REAL first
 // half, and a real first half is not < 0.001. Re-ran the earlier sweep to confirm
 // on the shipped code path (see the v10.162 changelog for the measured rate).
-function isVarRatioArtifact(varFirst, magnitude) {
-  return varFirst!==null && varFirst!==undefined && !isNaN(varFirst) &&
-         varFirst < CSD_VAR_ARTIFACT_VARFIRST;
+// v10.170 FAI-01 - THE THRESHOLD HAD UNITS, AND FAI IS NOT IN THOSE UNITS.
+// REPORTED from live runs of v10.168/v10.169: EVERY S7D node was flagged
+// ⚠ARTIFACT at Hawaii (all 9) and again at Bocas del Toro. A flag that fires
+// on 100% of rows is not detecting anything - it had become a rename of "this
+// row is FAI" - and it cost the entire ΔVar column at both sites.
+// TRACED: CSD_VAR_ARTIFACT_VARFIRST is an ABSOLUTE variance threshold, 0.001,
+// and a variance carries the SQUARE of its variable's units. It was set on SST,
+// whose deseasonalized residual variance runs roughly 0.05-1.0 degC^2, so 0.001
+// sits far below any real SST first half and the rule discriminated properly
+// there. FAI is a dimensionless index: at Bocas the observed FAI spread across
+// all nine nodes is about +/-0.001 TOTAL, so its residual variance is ~1e-7, and
+// even at Hawaii (FAI 0.136) the first-half variance lands under 1e-3. Against a
+// 0.001 cut, "varFirst < 0.001" is simply ALWAYS TRUE for FAI. Nothing was
+// measured; the predicate was a constant.
+// FIXED, and deliberately NOT by retuning 0.001 to some smaller FAI-shaped
+// number - that would just move the same units bug to the next variable. The
+// test is now UNIT-FREE, and asks the two questions that actually make a ratio
+// untrustworthy:
+//   (a) DOES THE FLOOR BIND? ratio = v1 / max(v0, CSD_VAR_RATIO_FLOOR). Once v0
+//       reaches that floor the denominator is a CONSTANT and the ratio is an
+//       arbitrary rescaling of the second half alone. Testing v0 against a small
+//       multiple of the floor is unit-free because the floor is the thing being
+//       compared against, not a guess about the variable's scale.
+//   (b) IS THE DENOMINATOR DEGENERATE RELATIVE TO THIS SERIES' OWN SPREAD? Flag
+//       when the first half carries under CSD_VAR_ARTIFACT_REL_FRAC of the
+//       window's mean half-variance. Note what this reduces to algebraically:
+//       v0 < f*(v0+v1)/2  is EXACTLY  v1/v0 > 2/f - 1, so at f=0.02 it is the
+//       ratio exceeding 99x. That is stated plainly rather than dressed up - a
+//       99x variance ratio is a degenerate denominator, not a physical surge.
+// varScaleRef is OPTIONAL and every existing SST call site omits it, so those
+// keep the legacy absolute rule byte-for-byte and none of the v10.153 SST
+// calibration is touched by this commit. The FAI call sites (S7C, S7D) pass it.
+var CSD_VAR_ARTIFACT_FLOOR_MULT = 10;   // (a): v0 <= 10 * CSD_VAR_RATIO_FLOOR
+var CSD_VAR_ARTIFACT_REL_FRAC   = 0.02; // (b): v0 < 2% of mean half-variance (ratio > 99x)
+function isVarRatioArtifact(varFirst, magnitude, varScaleRef) {
+  if(varFirst===null || varFirst===undefined || isNaN(varFirst)) return false;
+  // unit-free branch - used wherever the caller can supply this series' own scale
+  if(typeof varScaleRef==='number' && isFinite(varScaleRef) && varScaleRef>0){
+    if(varFirst <= CSD_VAR_RATIO_FLOOR*CSD_VAR_ARTIFACT_FLOOR_MULT) return true;
+    return varFirst < CSD_VAR_ARTIFACT_REL_FRAC*varScaleRef;
+  }
+  // legacy absolute branch - unchanged, still what every SST call site gets
+  return varFirst < CSD_VAR_ARTIFACT_VARFIRST;
 }
+// Scale reference for the unit-free branch: the mean of this window's two half
+// variances. Returns null when either half is missing, which sends the caller
+// back to the legacy rule rather than silently passing a bogus scale.
+function varScaleRefOf(varFirst, varSecond){
+  if(varFirst===null||varFirst===undefined||isNaN(varFirst)) return null;
+  if(varSecond===null||varSecond===undefined||isNaN(varSecond)) return null;
+  var m=(varFirst+varSecond)/2;
+  return (isFinite(m)&&m>0)?m:null;
+}
+var CSD_VAR_ARTIFACT_MSG_RELATIVE =
+  '\u26A0 ARTIFACT RULE (v10.170, unit-free): a \u0394Var is flagged when the first-half variance either sits at the '+
+  'ratio floor ('+CSD_VAR_RATIO_FLOOR+', so the denominator is a constant and the ratio is an arbitrary rescaling of the '+
+  'second half) or falls under '+(CSD_VAR_ARTIFACT_REL_FRAC*100)+'% of this window\'s own mean half-variance - which is '+
+  'algebraically the same as a variance ratio above '+Math.round(2/CSD_VAR_ARTIFACT_REL_FRAC-1)+'x. Through v10.169 the '+
+  'test was an ABSOLUTE variance cut of '+CSD_VAR_ARTIFACT_VARFIRST+', set on SST (residual variance ~0.05-1.0 degC^2). '+
+  'FAI is dimensionless and its residual variance is orders of magnitude smaller, so that cut was TRUE FOR EVERY FAI ROW '+
+  'EVER TESTED - it flagged all 9 nodes at Hawaii and all 9 at Bocas, which is a constant, not a measurement. The rule '+
+  'above has no units and so cannot fail that way on the next variable either.';
 var CSD_VAR_ARTIFACT_MSG =
   '⚠ LIKELY ARTIFACT: first-half variance is near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), so the variance '+
   'ratio is divided by the 1e-6 floor rather than by a real number - treat this Var value with real caution, '+
@@ -8230,10 +8293,14 @@ var s7cRunBtn = ui.Button({
           // at 4.14x with the same 0.0000 first half that flagged North at
           // 12.08x. Now calls the SINGLE shared rule, so S7C, S7D and S13 cannot
           // drift apart again.
-          var artifactFlag = isVarRatioArtifact(vFirst, vRatio) ?
-            '  \u26A0 LIKELY ARTIFACT: first-half variance is near-zero ('+fmtN(vFirst,5)+'), so this ratio is '+
-            'divided by the 1e-6 floor, not by a real number - treat this Var value with real caution at ANY ratio, '+
-            'not as a genuine surge.' : '';
+          // v10.170 FAI-01: pass this node's OWN scale so the unit-free branch
+          // is used. The absolute 0.001 cut this used to hit was set on SST and
+          // is true of every FAI row ever computed, so it flagged all of them.
+          var artifactFlag = isVarRatioArtifact(vFirst, vRatio, varScaleRefOf(vFirst, vSecond)) ?
+            '  \u26A0 LIKELY ARTIFACT: the first-half variance ('+fmtN(vFirst,7)+') is degenerate for this series - it is at '+
+            'the '+CSD_VAR_RATIO_FLOOR+' ratio floor, or under '+(CSD_VAR_ARTIFACT_REL_FRAC*100)+'% of this window\'s own mean '+
+            'half-variance ('+fmtN(varScaleRefOf(vFirst,vSecond),7)+') - so this ratio is division by near-nothing, not a '+
+            'genuine surge, at ANY magnitude.' : '';
           return '  '+node+': AC1='+fmtN(ac.realAC1,3)+' Var='+fmtN(vRatio,2)+'x (1st-half='+fmtN(vFirst,4)+', 2nd-half='+fmtN(vSecond,4)+') Skew='+fmtN(ac.skewness,2)+artifactFlag;
         }
         lines.push(varLine('Center',acC));
@@ -8679,8 +8746,12 @@ var s7dRunBtn = ui.Button({
           // case that prompted the original fix.
           // v10.162 S6: second private copy of the same rule, with the same
           // leak. Routed through the shared isVarRatioArtifact().
+          // v10.170 FAI-01: same fix as S7C - hand the rule this node's own
+          // scale instead of letting it fall back to the SST-shaped absolute cut
+          // that is true of every FAI row. The BEFORE window is the denominator
+          // of dVar, so the BEFORE window's own halves are the right scale.
           var artifactFlag='';
-          if(isVarRatioArtifact(stB.varFirstHalf, dVar)){
+          if(isVarRatioArtifact(stB.varFirstHalf, dVar, varScaleRefOf(stB.varFirstHalf, stB.varSecondHalf))){
             artifactFlag=' \u26A0ARTIFACT';
           }
           rows.push(nd.label+repeatChar(' ',Math.max(1,7-nd.label.length))+'| '+
@@ -8690,7 +8761,7 @@ var s7dRunBtn = ui.Button({
             dCorrTxt+' ('+corrPTxt+')');
         }
         rows.push(repeatChar('\u2500',56));
-        rows.push('\u26A0ARTIFACT flag (v10.162): 1st-half FAI variance was near-zero (<'+CSD_VAR_ARTIFACT_VARFIRST+'), so the \u0394Var beside it is divided by the 1e-6 floor rather than by a real number - a division artifact (see S7C v10.105 note), not a genuine surge, at ANY magnitude. The flag no longer ALSO requires |\u0394Var|>'+CSD_VAR_ARTIFACT_MAG+'x: a live S7C run showed a 4.14x row and a 12.08x row with the same 0.0000 first half, and only the second was flagged.');
+        rows.push(CSD_VAR_ARTIFACT_MSG_RELATIVE);
         rows.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo | radius='+radiusKm+'km | NDVI check buffer='+ndviBufM.toFixed(0)+'m (scaled to avoid overlapping adjacent nodes)');
         rows.push('Method (v10.167): '+_s7dTotalCalls+' EE fetches for this run - '+_s7dSeriesCalls+
           ' CHUNKED series call(s) (reduceRegions+flatten, at most '+S7_FAI_MAX_MONTHS_PER_CALL+' months x '+
@@ -9236,8 +9307,25 @@ var s7eRunBtn = ui.Button({
             var _s7eThrA = getCalibratedThresholds(afterMonths);
             var _s7eAc1 = Math.max(_s7eThrB.ac1, _s7eThrA.ac1);
             var _s7eVar = Math.max(_s7eThrB.varr, _s7eThrA.varr);
-            var studySignal = (dAC1_study!==null&&dAC1_study>_s7eAc1) || (dVar_study!==null&&dVar_study>_s7eVar);
-            var refSignal = (dAC1_ref!==null&&dAC1_ref>_s7eAc1) || (dVar_ref!==null&&dVar_ref>_s7eVar);
+            // v10.170 FAI-01b: S7E had NO artifact check at all, and unlike S7F
+            // (which gates on permutation p-values, so a degenerate denominator
+            // cannot reach its verdict) this rule thresholds ΔVar DIRECTLY. A
+            // degenerate FAI variance ratio could therefore drive a headline of
+            // "LOCAL ANOMALY DETECTED" off division by near-nothing. S7C and S7D
+            // flagged the same condition on screen; here it silently decided.
+            // The BEFORE window is the denominator of ΔVar, so the BEFORE halves
+            // are the right scale, and the guard is per SITE - the study site's
+            // artifact must not suppress the reference's variance term or vice
+            // versa. Following the v10.157 precedent, an artifact removes only
+            // the VARIANCE term; the AC1 term is measured separately and stands.
+            var studyVarDegenerate = isVarRatioArtifact(studyB.varFirstHalf, dVar_study,
+                                       varScaleRefOf(studyB.varFirstHalf, studyB.varSecondHalf));
+            var refVarDegenerate   = isVarRatioArtifact(refB.varFirstHalf, dVar_ref,
+                                       varScaleRefOf(refB.varFirstHalf, refB.varSecondHalf));
+            var studySignal = (dAC1_study!==null&&dAC1_study>_s7eAc1) ||
+                              (!studyVarDegenerate && dVar_study!==null && dVar_study>_s7eVar);
+            var refSignal = (dAC1_ref!==null&&dAC1_ref>_s7eAc1) ||
+                            (!refVarDegenerate && dVar_ref!==null && dVar_ref>_s7eVar);
 
             function fmtN(v,d){ return (v!==null&&v!==undefined&&!isNaN(v))?v.toFixed(d):'n/a'; }
 
@@ -9345,8 +9433,13 @@ var s7eRunBtn = ui.Button({
                 'granule is ~110km across, so two sites this close normally share the same scene list.');
             }
             lines.push(repeatChar('\u2500',50));
-            lines.push('STUDY  : \u0394AC1='+fmtN(dAC1_study,3)+' \u0394Var='+fmtN(dVar_study,2)+'x -> '+(studySignal?'SIGNAL':'no signal'));
-            lines.push('REFERENCE: \u0394AC1='+fmtN(dAC1_ref,3)+' \u0394Var='+fmtN(dVar_ref,2)+'x -> '+(refSignal?'SIGNAL':'no signal'));
+            lines.push('STUDY  : \u0394AC1='+fmtN(dAC1_study,3)+' \u0394Var='+fmtN(dVar_study,2)+'x'+
+              (studyVarDegenerate?' \u26A0ARTIFACT (variance term EXCLUDED from this verdict)':'')+
+              ' -> '+(studySignal?'SIGNAL':'no signal'));
+            lines.push('REFERENCE: \u0394AC1='+fmtN(dAC1_ref,3)+' \u0394Var='+fmtN(dVar_ref,2)+'x'+
+              (refVarDegenerate?' \u26A0ARTIFACT (variance term EXCLUDED from this verdict)':'')+
+              ' -> '+(refSignal?'SIGNAL':'no signal'));
+            if(studyVarDegenerate||refVarDegenerate) lines.push(CSD_VAR_ARTIFACT_MSG_RELATIVE);
             lines.push(repeatChar('\u2500',50));
             lines.push('BEFORE: '+beforeStartTxt+' + '+beforeMonths+'mo | AFTER: '+afterStartTxt+' + '+afterMonths+'mo');
             lines.push('Decision rule (v10.153 CALIBRATED): study signal (\u0394AC1>'+_s7eAc1.toFixed(3)+
@@ -10615,6 +10708,46 @@ panel.add(lbl('Replaces S17\'s fixed SNR>=2.0 threshold with a genuine Kendall t
 var toeMkVerdictV=ui.Label('Click a location above, then press CHECK.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
 var toeMkDetailsV=ui.Label('',{fontSize:'7px',color:'#553377',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+// v10.171 S17B-01: S17b is BUTTON-DRIVEN and had NO staleness guard - the only
+// one in the file was STEP 3 COMPARE's. OBSERVED live: CHECK was pressed at
+// Bocas del Toro, then GO moved the click to Hawaii (19.711,-156.053). S17
+// above re-rendered with Hawaii's values; S17b kept Bocas's, including its own
+// "S17 last published at 9.17055,-81.98221" line - two sites' results stacked
+// in one report, 8,000 km apart. That is worse than an ordinary stale panel
+// because S17b's headline literally says "compare vs S17's SNR-based count
+// above": it INVITES the comparison that has just become wrong.
+// A fresh page load is fine (the panel starts blank); the trap needs the
+// sequence press-CHECK-at-A then move-to-B, which is the normal workflow.
+// These remember the point the CURRENT rendered result belongs to; null means
+// nothing has been computed yet, so there is nothing that could go stale.
+var _s17bComputedLat=null, _s17bComputedLon=null;
+// Same tolerance S17/S17b already use to decide whether two clicks are "the
+// same point" (see _sameClick), so the guard cannot disagree with the
+// cross-check note printed inside the panel about whether the click moved.
+var S17B_SAME_POINT_KM = 0.05;
+function s17bInvalidateIfMoved(newLat, newLon){
+  if(_s17bComputedLat===null || _s17bComputedLon===null) return;   // never run - nothing stale
+  if(newLat===null || newLat===undefined || newLon===null || newLon===undefined) return;
+  var movedKm = haversineKm(_s17bComputedLat, _s17bComputedLon, newLat, newLon);
+  if(movedKm <= S17B_SAME_POINT_KM) return;                        // same pixel, result still valid
+  // BLANK the numbers rather than greying them: a stale tau/p-value left on
+  // screen in any colour is still a number a reader can quote. The detail block
+  // goes too - it carries the per-variable p-values and the old coordinates.
+  toeMkVerdictV.setValue('\u26A0 CLEARED - THIS PANEL\'S RESULT WAS FOR A DIFFERENT PLACE.\n' +
+    'It was computed at '+_s17bComputedLat.toFixed(5)+', '+_s17bComputedLon.toFixed(5)+
+    ' and the click has since moved '+(movedKm<1?(Math.round(movedKm*1000)+' m'):(movedKm.toFixed(1)+' km'))+
+    ' to '+newLat.toFixed(5)+', '+newLon.toFixed(5)+'.\n' +
+    'Mann-Kendall does not re-run on a map click - press CHECK again for this location.\n' +
+    'The old numbers are removed rather than greyed out, because a stale tau or p-value is still\n' +
+    'quotable, and S17 directly above HAS refreshed - leaving both on screen would put two sites\n' +
+    'in one report and invite exactly the S17-vs-S17b comparison this panel asks you to make.');
+  toeMkVerdictV.style().set('color','#aa3300');
+  toeMkVerdictV.style().set('backgroundColor','#fff0e0');
+  toeMkVerdictV.style().set('border','2px solid #aa3300');
+  toeMkVerdictV.style().set('whiteSpace','pre');
+  toeMkDetailsV.setValue('');
+  _s17bComputedLat=null; _s17bComputedLon=null;   // cleared; nothing left to invalidate
+}
 var toeMkBtn=ui.Button({
   label:'CHECK REAL TREND SIGNIFICANCE',
   style:{fontSize:'11px',fontWeight:'bold',margin:'2px 4px',backgroundColor:'#e8d9f5',color:'#4a1a6a',stretch:'horizontal',padding:'6px 4px',border:'2px solid #663399'},
@@ -10784,6 +10917,13 @@ var toeMkBtn=ui.Button({
       toeMkVerdictV.style().set('color',(nMismatch>0||nDirConflict>0)?'#aa3300':nSig>=2?'#880000':nSig>=1?'#886600':'#115511');
       toeMkVerdictV.style().set('whiteSpace','pre');
       toeMkDetailsV.setValue(lines.join('\n'));
+      // v10.171 S17B-01: stamp the point THIS result belongs to. latM/lonM are
+      // the coordinates the fetch actually used, captured when CHECK was
+      // pressed - not lastClickLat/Lon, which may already have moved on by the
+      // time these callbacks return.
+      _s17bComputedLat=latM; _s17bComputedLon=lonM;
+      toeMkVerdictV.style().set('backgroundColor','#eeeeee');
+      toeMkVerdictV.style().set('border','2px solid #aaaaaa');
       print(lines.join('\n'));
     }
   }
@@ -11111,6 +11251,15 @@ function recordStudySite(lat, lon, label){
 }
 
 function analyzeLocation(lat, lon) {
+  // v10.171 S17B-01: invalidate S17b BEFORE lastClickLat/Lon move, and before
+  // anything else re-renders. S17b does not re-run on a click - it only runs
+  // when its own CHECK button is pressed - so without this the panel keeps
+  // showing the previous site's Mann-Kendall result while S17 directly above
+  // refreshes to this one. Deliberately NOT inside resetSidebarToComputing():
+  // that blanks rows this click is about to refill, whereas this panel is not
+  // going to be refilled by this click at all. It must therefore say CLEARED
+  // and why, not "computing...", which would be a promise nothing keeps.
+  s17bInvalidateIfMoved(lat, lon);
   lastClickLat = lat; lastClickLon = lon;
   startPipelineWatchdog(lat, lon);
   resetSidebarToComputing();
@@ -12373,6 +12522,78 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.171 S17B-01: S17b kept showing the PREVIOUS site\'s Mann-Kendall result.');
+print('');
+print('  OBSERVED live: CHECK was pressed at Bocas del Toro, then GO moved the click');
+print('    to Hawaii (19.711, -156.053). S17 re-rendered with Hawaii\'s values; S17b');
+print('    kept Bocas\'s - tau=+0.607 SST, tau=-0.368 Chl-a, and its own line reading');
+print('    "S17 last published at 9.17055,-81.98221". Two sites 8,000 km apart, stacked');
+print('    in one report, adjacent on screen.');
+print('    TRACED: S17b is BUTTON-DRIVEN and had NO staleness guard - the only one in');
+print('    the whole file was STEP 3 COMPARE\'s. A fresh page load is fine (the panel');
+print('    starts blank); the trap needs press-CHECK-at-A then move-to-B, which is the');
+print('    ordinary workflow. Worse than a plain stale panel because S17b\'s own');
+print('    headline says "compare vs S17\'s SNR-based count above" - it INVITES the');
+print('    comparison that has just silently become wrong.');
+print('    FIXED: the panel now records the point each result was computed at, and a');
+print('    map click more than '+S17B_SAME_POINT_KM+' km away CLEARS it with a message naming the old');
+print('    point, the distance moved, and the fact that CHECK must be pressed again.');
+print('    The numbers are BLANKED, not greyed: a stale tau or p-value is still');
+print('    quotable in any colour. Same tolerance the panel\'s own S17 cross-check');
+print('    already uses to decide whether two clicks are the same point, so the guard');
+print('    and that note cannot disagree about whether the click moved.');
+print('    The stamp uses the coordinates the FETCH used, not lastClickLat/Lon, which');
+print('    can already have moved on by the time the callbacks return.');
+print('    NOT CHANGED: S17b still does not auto-run on a click. Making it re-run would');
+print('    spend 5 Earth Engine calls on every click of a panel most runs never open.');
+print('');
+print('v10.170 FAI-01/FAI-01b: the variance-artifact threshold had UNITS, so on');
+print('  FAI it fired on every row ever tested - and in S7E it silently decided a');
+print('  verdict.');
+print('');
+print('  FAI-01 (REPORTED from live v10.168/v10.169 runs). EVERY S7D node came back');
+print('    flagged ARTIFACT - all 9 at Hawaii, all 9 again at Bocas del Toro. A flag');
+print('    that fires on 100% of rows measures nothing; it had become a rename of');
+print('    "this row is FAI", and it cost the whole DeltaVar column at both sites.');
+print('    TRACED: CSD_VAR_ARTIFACT_VARFIRST is an ABSOLUTE variance cut of 0.001,');
+print('    and a variance carries the SQUARE of its variable\'s units. It was set on');
+print('    SST, whose deseasonalized residual variance runs ~0.05-1.0 degC^2, so it');
+print('    discriminated properly there. FAI is dimensionless: at Bocas the observed');
+print('    FAI spread across all nine nodes is about +/-0.001 TOTAL, giving residual');
+print('    variance ~1e-7, and even at Hawaii (FAI 0.136) the first half lands under');
+print('    1e-3. "varFirst < 0.001" is therefore ALWAYS TRUE for FAI - a constant,');
+print('    not a measurement.');
+print('    FIXED, and deliberately NOT by retuning 0.001 to an FAI-shaped number,');
+print('    which would move the same units bug to the next variable. The test is now');
+print('    UNIT-FREE and asks the two things that actually break a ratio: (a) does');
+print('    the max(v0, 1e-6) floor BIND, making the denominator a constant; (b) is');
+print('    the first half under 2% of this window\'s own mean half-variance, which is');
+print('    algebraically just "ratio above 99x" - degenerate, not a physical surge.');
+print('    varScaleRef is OPTIONAL. Every SST call site omits it and keeps the legacy');
+print('    absolute rule byte-for-byte, so NO v10.153 SST calibration is touched.');
+print('    Only S7C and S7D (and S7E, below) pass it.');
+print('    MEASURED on the shipped predicate, not asserted: a first half of 1e-4 with');
+print('    a 3x rise - the Hawaii-scale FAI case - is flagged by the old rule and NOT');
+print('    by the new one; a first half of 1e-7 with a 4x rise - the Bocas-scale case -');
+print('    is flagged by both. The new rule is also STRICTER in one direction the old');
+print('    one leaked: v0=1e-3 with a 120x ratio passes the absolute cut and is caught');
+print('    by the relative one.');
+print('    NOT CLAIMED: that every currently-flagged Hawaii node will clear. That');
+print('    depends on each node\'s real first-half variance, which is not in hand here.');
+print('    What is fixed is that the test can now come out either way instead of');
+print('    always coming out flagged.');
+print('');
+print('  FAI-01b (FOUND while fixing FAI-01, not reported). S7E had NO artifact check');
+print('    at all. S7F is safe because it gates on permutation p-values, which are');
+print('    computed on residuals and cannot be inflated by the denominator - but S7E');
+print('    thresholds DeltaVar DIRECTLY, so a degenerate FAI variance ratio could');
+print('    produce a headline of "LOCAL ANOMALY DETECTED" off division by near-nothing.');
+print('    S7C and S7D at least flagged the condition on screen; S7E let it decide.');
+print('    The variance term is now dropped from the verdict when the artifact rule');
+print('    fires, PER SITE (the study site\'s artifact must not suppress the');
+print('    reference\'s term), and the AC1 term survives it - the same split v10.157');
+print('    established for STEP 4. The row prints which term was excluded.');
 print('');
 print('v10.169 S19-01: three S19 rows that said "computing..." forever.');
 print('');
