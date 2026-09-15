@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.165';
+var TOOL_VERSION = 'v10.166';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -5914,7 +5914,23 @@ function runControlCSD(bestCtrl, b, a) {
                   combinedCol='#555577'; combinedBg='#eeeef6';
                 }
               } else {
-                combinedTitle='NO RELIABLE CSD SIGNAL - primary indicator (AC1) not rising';
+                // v10.166: this arm is the catch-all for "the permutation test
+                // ran and found nothing significant". It used to assert
+                // "primary indicator (AC1) not rising" unconditionally - a
+                // claim about DIRECTION made by a branch that only knows about
+                // SIGNIFICANCE. A live run showed it printing "AC1 not rising"
+                // directly above "AC1 (primary): direction rising, but NOT
+                // significant", on a delta of +0.377. AC1 was rising; it just
+                // was not significant. Those are different statements and the
+                // headline now makes whichever one is true.
+                var _ac1Rose = (csdRegionalStudyDAC1!==null && csdRegionalStudyDAC1!==undefined &&
+                                !isNaN(csdRegionalStudyDAC1) && csdRegionalStudyDAC1>0);
+                combinedTitle = _ac1Rose
+                  ? ('NO STATISTICALLY SIGNIFICANT CSD SIGNAL - AC1 IS rising (\u0394='+
+                     (csdRegionalStudyDAC1>0?'+':'')+csdRegionalStudyDAC1.toFixed(3)+
+                     ') but the permutation test cannot separate that rise from ordinary noise. '+
+                     'Direction is not evidence on its own.')
+                  : 'NO RELIABLE CSD SIGNAL - primary indicator (AC1) did not rise, and nothing significant was found';
                 combinedCol='#226644'; combinedBg='#e8f4ff';
               }
               // v10.119 FIX: "Regional context: "+vTitle used to paste the
