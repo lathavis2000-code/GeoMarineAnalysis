@@ -14,6 +14,78 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.176 S20 REPLAY WINDOW extended from 2023-01 to 2018-01, so it finally
+  OVERLAPS the acoustic record instead of being disjoint from it.
+
+  THE PROBLEM IT FIXES. S20's historical replay accepted 2023-01..2024-12. Every
+  acoustic site in S21/S21b runs 2018-11..2022-06. The two windows did not share
+  a single month, so no site on Earth could show a real DHW reading and a real
+  biophony reading for the SAME month - the cross-instrument fusion this series
+  has been building toward was arithmetically impossible, not merely unbuilt.
+  They now overlap by 44 months (2018-11..2022-06), which is the entire acoustic
+  record.
+
+  IT WAS A UI LIMIT, NOT A DATA LIMIT. The replay path calls
+  getOISSTColl(start,end) with its own dates and never used the tool-wide
+  2023-2024 collection, and NOAA/CDR/OISST/V2_1 runs from 1981-09-01 - checked
+  against the Earth Engine catalogue rather than assumed. The 2023 floor was a
+  validation branch, and nothing but that branch had to change.
+
+  THE HONEST COST, DISCLOSED ON SCREEN FOR EVERY AFFECTED MONTH. DHW here is
+  max(SST) - (MMM + 1), and MMM is the per-pixel max across the 12
+  calendar-month means of 2003-2022. A replay month in 2018-2022 is therefore
+  ONE OF THE 20 YEARS FORMING THE BASELINE IT IS COMPARED AGAINST. This is new
+  with the widened window: 2023-2024 sits entirely after the baseline and is
+  clean, which is why the old window never needed the caveat.
+
+  WHEN IT BITES, and it is not a corner case. MMM takes the MAX over calendar
+  months, so the replayed month only perturbs it when that month's CALENDAR
+  month is the pixel's warmest - which is the bleaching season, i.e. precisely
+  when the reading is being consulted. Anyone replaying a summer month at a reef
+  is in the affected case by default, so the note is shown rather than buried.
+
+  MAGNITUDE, ANALYTIC AND LABELLED AS SUCH. Earth Engine is not run in this
+  environment, so this is derived from the formula, not measured: the replayed
+  year carries weight 1/20 in its calendar-month mean, so a month running D degC
+  above the other nineteen lifts its own baseline by D/20 and, through the 4.33
+  degC-weeks scaling, understates its own DHW by about 4.33*D/20 = 0.217*D. For
+  a +2 degC marine-heatwave month that is ~0.43 degC-weeks, against bleaching
+  thresholds of 4 and 8 - roughly a 5% relative effect at DHW=8.
+
+  DIRECTION IS THE SAFE ONE: SELF-SUPPRESSING. A hot month raises the baseline it
+  is judged against, so the bias can only UNDERSTATE heat stress and can never
+  inflate it. That asymmetry is why the window is widened WITH a disclosure
+  rather than the baseline being re-cut. Re-cutting the baseline to end before
+  2018 would remove the circularity, but it would also move every DHW number
+  elsewhere in the tool - S4, the bleaching map layer, and the cancer score's
+  25% thermal component - for a change that was asked of S20 alone. A quiet
+  global recalibration is not a side effect worth accepting.
+
+  THE NUMBERS ARE NOW CONSTANTS. MMM_BASELINE_START_YEAR, MMM_BASELINE_END_YEAR,
+  S20_REPLAY_MIN_YEAR and S20_REPLAY_MAX_YEAR were hardcoded across five places
+  between the collection definition, the panel label and the validation branch.
+  They are declared once, beside the baseline they describe, because the
+  RELATIONSHIP between them is what the disclosure depends on - the note fires
+  exactly when the replay year falls inside the baseline span, derived rather
+  than asserted.
+
+  NOT CHANGED: the MMM baseline itself, the DHW formula, the 4.33 scaling, the
+  tool-wide 2023-2024 collection used by the main click flow, and S20's LIVE
+  mode. The historical startup entries for v10.138 and earlier still quote
+  "2023-01 to 2024-12" and were deliberately left alone - they are history, not
+  identity, per the rule at the top of this file.
+
+  CI: 11 new checks (62 total, from 51). They drive the REAL button handler
+  across both window boundaries and both sides of the baseline, with ee
+  re-pointed so evaluate() yields a DHW and the success branch - the only one
+  carrying the note - actually runs. The overlap check asserts the RELATIONSHIP
+  (replay floor <= baseline end implies a disclosure exists) rather than the
+  sentence, so moving the baseline entirely before the replay floor fails loudly
+  instead of leaving a dead note behind. One check bounds every disclosure line
+  to 56 characters, because the label is whiteSpace:'pre' in a 256px panel and
+  an over-long line is silently CLIPPED rather than wrapped - the first draft of
+  the note had a 110-character line that would have been cut off on screen.
+
 v10.175 FK02 NEW: a third acoustic site, a second BIOPHONY site - and the honest
   finding that NO site in this archive can activate A1.
 

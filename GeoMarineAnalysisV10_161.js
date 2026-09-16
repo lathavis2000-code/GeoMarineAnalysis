@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.175';
+var TOOL_VERSION = 'v10.176';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -552,7 +552,23 @@ var sstPeakFinalSH = sstPeakSH.unmask(sstRaw.updateMask(oceanMask));
 // Toro, Panama - still renders sensibly without needing a hemisphere choice.
 var sstPeakFinal = sstPeakFinalNH;
 
-var mmmColl = getOISSTColl('2003-01-01','2022-12-31');
+// ============================================================
+// v10.176 - S20 REPLAY WINDOW AND THE MMM BASELINE IT IS MEASURED AGAINST
+// These four numbers were hardcoded in five places between the collection
+// definition, the panel label and the validation branch. They are declared once
+// here, beside the baseline itself, because the relationship BETWEEN them is
+// what the disclosure below depends on: a replay month inside the baseline
+// period is part of the climatology it is being compared against.
+// OISST V2.1 (NOAA/CDR/OISST/V2_1) runs from 1981-09-01, so the replay floor is
+// a choice about what is defensible, not a limit of the data.
+var MMM_BASELINE_START_YEAR = 2003;
+var MMM_BASELINE_END_YEAR   = 2022;
+var S20_REPLAY_MIN_YEAR     = 2018;   // v10.176: was 2023. Reaches the SanctSound
+                                      // acoustic record (FK01/FK02/SB02 all start
+                                      // 2018-11/12), which the old window missed
+                                      // entirely - the two were disjoint.
+var S20_REPLAY_MAX_YEAR     = 2024;
+var mmmColl = getOISSTColl(MMM_BASELINE_START_YEAR+'-01-01', MMM_BASELINE_END_YEAR+'-12-31');
 var monthList = ee.List.sequence(1,12);
 var monthlyMeans = ee.ImageCollection(monthList.map(function(mo){
   var moNum = ee.Number(mo);
@@ -11060,7 +11076,7 @@ panel.add(row('Validation status',ecoValStatusV)); panel.add(ecoValDetailsV);
 // now button-triggered like everything else in this family, so the
 // click-handler code that used to auto-populate it has been removed too.
 panel.add(sHead('S20 - SPECIES-WEIGHTED COMBINED RISK','#4a2a1a'));
-panel.add(lbl('Combines a real DHW reading with published dominant-species vulnerability data, where it exists (7 real sites: One Tree Reef, Florida Keys, Maldives, Bocas del Toro, Andaman/Nicobar, Brazil, Mesoamerican Reef). Leave the date field BLANK for LIVE (today, real current OISST data), or type a month (YYYY-MM, 2023-01 to 2024-12) for a HISTORICAL replay of that exact month - both use the same real satellite dataset and formula. NOT a satellite species-ID capability - hyperspectral species classification is only ~56-70% accurate currently, too unreliable to use as ground truth.',7,'#663311'));
+panel.add(lbl('Combines a real DHW reading with published dominant-species vulnerability data, where it exists (7 real sites: One Tree Reef, Florida Keys, Maldives, Bocas del Toro, Andaman/Nicobar, Brazil, Mesoamerican Reef). Leave the date field BLANK for LIVE (today, real current OISST data), or type a month (YYYY-MM, 2018-01 to 2024-12) for a HISTORICAL replay of that exact month - both use the same real satellite dataset and formula. v10.176 extended the floor from 2023-01 to 2018-01 so the window reaches the SanctSound acoustic record (S21/S21b), which it previously missed entirely - the two were disjoint, so no site could ever show both. DISCLOSED: the MMM baseline is 2003-2022, so a replay month in 2018-2022 is one of the 20 years forming the climatology it is compared against. That bias is self-suppressing (a hot month lifts its own baseline) and can only UNDERSTATE heat stress, never inflate it; the panel says so on any affected month. 2023-2024 replays are unaffected. NOT a satellite species-ID capability - hyperspectral species classification is only ~56-70% accurate currently, too unreliable to use as ground truth.',7,'#663311'));
 panel.add(lbl('v10.140 DISCLOSED CAVEAT: a real 2015-2017 Mesoamerican Reef study (Arias-Ortiz et al. 2024, Communications Biology, doi:10.1038/s42003-024-07128-y) found DHW alone explains LESS bleaching-severity variance than a combined model using 23 stress/sensitivity metrics (which reached 75%) - climatological warming rate and other heat metrics outperformed plain DHW. It also found a genuinely counter-intuitive result: DEEPER reefs with MORE diverse coral communities showed HIGHER vulnerability, not lower. This tool still uses a simple DHW>=4 threshold - a known, disclosed simplification, not the more sophisticated real model this paper describes.',7,'#885522'));
 var speciesDateInput = ui.Textbox({placeholder:'blank = LIVE (today) | or YYYY-MM for historical, e.g. 2024-02',style:{stretch:'horizontal',margin:'2px 4px',fontSize:'11px'}});
 panel.add(speciesDateInput);
@@ -11077,7 +11093,7 @@ var speciesRiskBtn=ui.Button({
     var latS=lastClickLat, lonS=lastClickLon;
     var dateTxt=(speciesDateInput.getValue()||'').trim();
     var isLive = (dateTxt==='');
-    var dS, deS, modeLabel;
+    var dS, deS, modeLabel, s20BaselineNote='';
     if(isLive){
       var todayEE=ee.Date(Date.now());
       dS=todayEE.advance(-35,'day'); deS=todayEE;
@@ -11087,12 +11103,51 @@ var speciesRiskBtn=ui.Button({
         speciesRiskStatusV.setValue('Enter a month as YYYY-MM (e.g. 2024-02), or leave blank for LIVE.'); speciesRiskStatusV.style().set('color','#cc0000'); return;
       }
       var yr=parseInt(dateTxt.slice(0,4),10), mo=parseInt(dateTxt.slice(5,7),10);
-      if(yr<2023||yr>2024||mo<1||mo>12){
-        speciesRiskStatusV.setValue('Historical month must be 2023-01 to 2024-12 - the real data window this tool uses.\nOutside that range, this feature has no real data to check (not a guess). Leave blank for LIVE instead.');
+      if(yr<S20_REPLAY_MIN_YEAR||yr>S20_REPLAY_MAX_YEAR||mo<1||mo>12){
+        speciesRiskStatusV.setValue('Historical month must be '+S20_REPLAY_MIN_YEAR+'-01 to '+
+          S20_REPLAY_MAX_YEAR+'-12.\nOutside that range this feature has no checked data (not a guess). Leave blank for LIVE instead.');
         speciesRiskStatusV.style().set('color','#cc0000'); return;
       }
       dS=ee.Date(dateTxt+'-01'); deS=dS.advance(1,'month');
       modeLabel='HISTORICAL '+dateTxt;
+      // BASELINE OVERLAP - the honest cost of reaching back past 2022.
+      // DHW here is max(SST) - (MMM + 1), and MMM is the per-pixel max across
+      // the 12 calendar-month means of MMM_BASELINE_START_YEAR..END_YEAR. A
+      // replay month inside that span is therefore one of the years making up
+      // its own comparison baseline. This does NOT apply to 2023-2024, which sit
+      // entirely after it - so it is new with this window and is disclosed.
+      // WHEN IT BITES: MMM takes the MAX over calendar months, so the replayed
+      // month only perturbs it when that month's CALENDAR month is the pixel's
+      // warmest - which is the bleaching season, i.e. exactly when the reading
+      // matters. It is not a corner case and is not described as one.
+      // MAGNITUDE, analytic rather than measured (Earth Engine is not run here):
+      // that calendar month's mean carries the replayed year at weight 1/N over
+      // N=END-START+1 years, so a month running D degC above the other years
+      // lifts its own baseline by D/N and, through the 4.33 degC-weeks scaling,
+      // understates its own DHW by about 4.33*D/N. At N=20 that is ~0.22*D
+      // degC-weeks: ~0.43 for a +2 degC marine-heatwave month, against bleaching
+      // thresholds of 4 and 8.
+      // DIRECTION: self-suppressing. A hot month raises the baseline it is
+      // judged against, so the bias can only UNDERSTATE heat stress, never
+      // inflate it. That is the safe direction, which is why the window is
+      // extended with a disclosure rather than the baseline being re-cut -
+      // re-cutting it would move every DHW number elsewhere in the tool (S4, the
+      // map layer, the cancer score's 25% thermal component) for a change that
+      // was asked of S20 alone.
+      if(yr>=MMM_BASELINE_START_YEAR&&yr<=MMM_BASELINE_END_YEAR){
+        var _nYr=MMM_BASELINE_END_YEAR-MMM_BASELINE_START_YEAR+1;
+        // Lines are kept short on purpose: this label is whiteSpace:'pre' in a
+        // 256px panel, so a long line is silently clipped rather than wrapped.
+        s20BaselineNote='\nBASELINE OVERLAP - read this DHW with it:\n'+
+          '  '+dateTxt+' is INSIDE the '+MMM_BASELINE_START_YEAR+'-'+MMM_BASELINE_END_YEAR+' MMM baseline,\n'+
+          '  so it is 1 of the '+_nYr+' years forming the\n'+
+          '  climatology it is compared against.\n'+
+          '  Bias is SELF-SUPPRESSING: a hot month lifts\n'+
+          '  its own baseline, so this DHW may be\n'+
+          '  UNDERSTATED by ~4.33/'+_nYr+' per degC of that\n'+
+          '  month\'s anomaly (~0.4 degC-wks at +2 degC).\n'+
+          '  It is never overstated. '+(MMM_BASELINE_END_YEAR+1)+'-'+S20_REPLAY_MAX_YEAR+' are free of it.';
+      }
     }
     speciesRiskStatusV.setValue('Fetching '+modeLabel+' OISST data at '+latS.toFixed(4)+', '+lonS.toFixed(4)+'...');
     speciesRiskStatusV.style().set('color','#334466'); speciesRiskStatusV.style().set('backgroundColor','#eeeeee');
@@ -11117,11 +11172,13 @@ var speciesRiskBtn=ui.Button({
       var combinedS=combineSpeciesAndDHW(speciesDataS, dhwS, isTropicalReefS);
       var dataThruTxt=(isLive&&v.latestDate)?(' (data through '+(new Date(v.latestDate)).toISOString().slice(0,10)+')'):'';
       speciesRiskStatusV.setValue(modeLabel+' DHW'+dataThruTxt+': '+dhwS.toFixed(2)+' deg C-wks\n'+
-        (combinedS.combinedRisk?('Combined risk: '+combinedS.combinedRisk):'(species data not checked)'));
+        (combinedS.combinedRisk?('Combined risk: '+combinedS.combinedRisk):'(species data not checked)')+
+        s20BaselineNote);
       speciesRiskStatusV.style().set('color',combinedS.combinedRisk==='ELEVATED'?'#880000':combinedS.combinedRisk==='MODERATE'?'#886600':'#115511');
       speciesRiskDetailsV.setValue(combinedS.text.slice(0,400));
       print('=== S20 COMBINED RISK ('+modeLabel+dataThruTxt+') ===');
       print('DHW='+dhwS.toFixed(2)+' deg C-wks | '+combinedS.text);
+      if(s20BaselineNote) print(s20BaselineNote.replace(/^\n/,''));
     });
   }
 });
@@ -13347,6 +13404,50 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.176 S20 REPLAY WINDOW extended 2023-01 -> 2018-01, so it finally');
+print('  OVERLAPS the acoustic record instead of being disjoint from it.');
+print('');
+print('  THE PROBLEM IT FIXES. S20 replayed 2023-01..2024-12; every acoustic site');
+print('    in S21/S21b runs 2018-11..2022-06. The two windows did not share a');
+print('    single month, so no site on Earth could show a real DHW reading and a');
+print('    real biophony reading for the SAME month - the fusion this tool has been');
+print('    building toward was arithmetically impossible. They now overlap by 44');
+print('    months (2018-11..2022-06), the whole acoustic record.');
+print('  IT WAS A UI LIMIT, NOT A DATA LIMIT. The replay path calls');
+print('    getOISSTColl(start,end) with its own dates - it never used the tool-wide');
+print('    2023-2024 collection - and NOAA/CDR/OISST/V2_1 runs from 1981-09-01.');
+print('    Checked against the Earth Engine catalogue, not assumed.');
+print('  THE HONEST COST, disclosed on screen for every affected month. DHW here is');
+print('    max(SST) - (MMM + 1), and MMM is the per-pixel max across the 12');
+print('    calendar-month means of '+MMM_BASELINE_START_YEAR+'-'+MMM_BASELINE_END_YEAR+'. A replay month in '+S20_REPLAY_MIN_YEAR+'-'+MMM_BASELINE_END_YEAR+' is');
+print('    therefore ONE OF THE '+(MMM_BASELINE_END_YEAR-MMM_BASELINE_START_YEAR+1)+' YEARS FORMING ITS OWN BASELINE. That is new with');
+print('    this window - 2023-2024 sits entirely after the baseline and is clean.');
+print('  WHEN IT BITES, and it is not a corner case: MMM takes the MAX over calendar');
+print('    months, so the replayed month only perturbs it when its calendar month is');
+print('    that pixel\'s warmest - which is the bleaching season, i.e. exactly when');
+print('    the reading matters.');
+print('  MAGNITUDE, analytic and labelled as such (Earth Engine is not run here):');
+print('    the replayed year carries weight 1/'+(MMM_BASELINE_END_YEAR-MMM_BASELINE_START_YEAR+1)+' in its calendar-month mean, so a');
+print('    month D degC above the other years lifts its own baseline by D/'+(MMM_BASELINE_END_YEAR-MMM_BASELINE_START_YEAR+1)+' and,');
+print('    through the 4.33 scaling, understates its own DHW by ~4.33*D/'+(MMM_BASELINE_END_YEAR-MMM_BASELINE_START_YEAR+1)+' - about');
+print('    0.4 degC-weeks for a +2 degC marine-heatwave month, against bleaching');
+print('    thresholds of 4 and 8.');
+print('  DIRECTION IS THE SAFE ONE: self-suppressing. A hot month raises the baseline');
+print('    it is judged against, so the bias can only UNDERSTATE heat stress, never');
+print('    inflate it. That is why the window is widened WITH a disclosure rather');
+print('    than the baseline being re-cut: re-cutting it would move every DHW number');
+print('    elsewhere in the tool - S4, the map layer, the cancer score\'s 25% thermal');
+print('    component - for a change that was asked of S20 alone.');
+print('  The four window/baseline numbers were hardcoded across five places and are');
+print('    now four constants declared beside the baseline they describe, because the');
+print('    RELATIONSHIP between them is what the disclosure depends on.');
+print('  CI: 11 new checks drive the real button handler across both boundaries and');
+print('    both sides of the baseline, and assert the overlap relationship rather');
+print('    than the sentence - so moving the baseline entirely before the replay');
+print('    floor fails loudly instead of leaving a dead note. One check bounds every');
+print('    disclosure line to 56 chars, since the label is whiteSpace:pre in a 256px');
+print('    panel and a long line is clipped, not wrapped.');
 print('');
 print('v10.175 FK02 NEW: a third acoustic site, a second BIOPHONY site - and the');
 print('  honest finding that NO site in this archive can activate A1.');
