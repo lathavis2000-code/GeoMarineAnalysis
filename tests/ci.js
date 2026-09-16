@@ -365,6 +365,50 @@ section('13. S21 panel text belongs to the site on screen');
   ok('no reef language reaches SB02',
     sbTxt.toLowerCase().indexOf('reef') === -1);
 
+  // The fingerprint checks above catch a figure from the WRONG site. They do
+  // not catch a sentence that contradicts its own live number - which is how
+  // the fifth instance shipped: the note read "Quality varies: 12/12 calendar
+  // months have 3+ years, so the rest lean on the fitted harmonic" at SB02,
+  // where there is no rest, while S21b two rows below said "0 fully imputed".
+  // Half the sentence was computed and half was not.
+  //
+  // Assert the BRANCH MARKER, not a phrase. The first version of this test
+  // grepped for 'leans on the fitted harmonic' and failed on the correct code,
+  // because that string also occurs inside the negation "so no month leans on
+  // the fitted harmonic". A substring cannot tell a claim from its denial -
+  // which is the same mistake, in a test, as the defect it guards against.
+  [{site: 'FK01', at: [24.43313, -81.93068],  clears: true,  thin: 4, absent: 1},
+   // FK02 has 20 valid months against CLIM_MIN_TOTAL_SAMPLES=26, so it never
+   // reaches the quality sentence at all. That is correct, not a gap.
+   {site: 'FK02', at: [24.4888, -81.66632],   clears: false, thin: 7, absent: 1},
+   {site: 'SB02', at: [42.470793, -70.24294], clears: true,  thin: 0, absent: 0}
+  ].forEach(function (s) {
+    updateS21Acoustic(s.at[0], s.at[1]);
+    var note = String(s21NoteV.getValue());
+    var varies  = note.indexOf('Quality VARIES') !== -1;
+    var uniform = note.indexOf('Quality is UNIFORM') !== -1;
+    var blocked = note.indexOf('does NOT clear the climatology gates') !== -1;
+
+    ok(s.site + ': the note takes the branch its gate arithmetic requires',
+      s.clears ? (!blocked && (varies || uniform)) : (blocked && !varies && !uniform),
+      'clears=' + s.clears + ' blocked=' + blocked + ' varies=' + varies + ' uniform=' + uniform);
+
+    if (s.clears) {
+      var shortfall = (s.thin + s.absent) > 0;
+      ok(s.site + ': VARIES only when some month is short of its own years',
+        varies === shortfall, 'thin=' + s.thin + ' absent=' + s.absent + ' varies=' + varies);
+      ok(s.site + ': UNIFORM only when every month carries its own years',
+        uniform === !shortfall, 'thin=' + s.thin + ' absent=' + s.absent + ' uniform=' + uniform);
+      // The exact wording that shipped: "the rest" with nothing left over.
+      ok(s.site + ': never says "the rest" of a complete climatology',
+        !(!shortfall && note.indexOf('the rest') !== -1));
+      // A count of 1 must not take a plural verb.
+      ok(s.site + ': agrees in number with the count it prints',
+        note.indexOf(' 1\n  have ') === -1 && note.indexOf(' 1\n  lean ') === -1,
+        note.replace(/\n/g, ' | ').slice(0, 160));
+    }
+  });
+
   // A click with no hydrophone in range must leave nothing behind from the last.
   updateS21Acoustic(0, 0);
   var empty = S21_LABELS.map(function (n) {
