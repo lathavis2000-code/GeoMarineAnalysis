@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.172';
+var TOOL_VERSION = 'v10.174';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -184,12 +184,17 @@ var ACOUSTIC_SITES = {
     source: 'NOAA/NPS SanctSound - gs://noaa-passive-bioacoustic/sanctsound/products/sound_level_metrics/fk01/',
     record: '2018-12-18 to 2022-06-15 (8 deployments, 16440 hourly TOL rows)',
     band: 'TOL_2000..TOL_20000 (snapping shrimp)',
+    varLabel: 'diel ratio (crepuscular minus night trough)',
+    varKind: 'diel_ratio', varUnit: 'dB',
     // NOTE ON DISTANCE: this is 55.0 km from the Looe Key SeapHOx station in
     // S19 (24.5463,-81.4014, radius 15 km). The two NEVER co-fire and this
     // panel must not be read as ground-truthing that one. The nearest FK
     // hydrophone to Looe Key is FK02 at 27.6 km - still outside S19's radius.
     // There is no co-located acoustic + carbonate-chemistry site in this archive.
-    diel: [
+    // v10.173: renamed from `diel`. SB02 below carries an ABSOLUTE BAND LEVEL,
+    // not a diel ratio, and a field named `diel` holding a non-diel quantity is
+    // exactly the kind of mislabelling this file has had to chase before.
+    series: [
     {m:'2018-12', v:1.104, nh:317, dep:'01'},
     {m:'2019-01', v:1.421, nh:744, dep:'01'},
     {m:'2019-02', v:1.397, nh:672, dep:'01'},
@@ -218,6 +223,89 @@ var ACOUSTIC_SITES = {
     {m:'2022-04', v:2.048, nh:720, dep:'11'},
     {m:'2022-05', v:1.957, nh:744, dep:'11'},
     {m:'2022-06', v:1.467, nh:349, dep:'11'}
+    ]
+  },
+  // ------------------------------------------------------------------
+  // SB02 - THE DESEASONALIZATION BENCHMARK (v10.173 NEW)
+  //
+  // Stellwagen Bank NMS, 42.470793 N, -70.24294. 21 deployments, 31,329 hourly
+  // TOL rows, 2018-11-12 .. 2022-06-13. The BEST-COVERED site in SanctSound and
+  // the only one that is genuinely continuous: deployments hand over with 2-3
+  // hour turnarounds, the single largest gap in the whole record is ~37 hours
+  // (dep19 ends 2022-02-15T01, dep20 starts 2022-02-16T14), and all 44 months
+  // clear a 72-hour floor. All 12 calendar months have 3+ years. That is what
+  // makes it a benchmark: computeUsableClimatology() runs here on 12/12
+  // WELL-SAMPLED months with NOTHING imputed, so the deseasonalized path can be
+  // compared against the seasonal path without the imputation caveat that
+  // applies at FK01.
+  //
+  // THE VARIABLE IS NOT BIOPHONY, AND MUST NOT BE READ AS BIOPHONY. FK01's
+  // snapping-shrimp index DOES NOT TRANSFER here and that was measured, not
+  // assumed: Stellwagen is at 42 N, well outside snapping shrimp range, and the
+  // high-frequency diel structure confirms it - TOL_2000 varies just 1.11 dB
+  // over the day here against 2.22 dB at FK01, and it peaks at local 04-05 and
+  // troughs at local 13, a day/night shape, NOT the dawn-and-dusk double peak
+  // that a shrimp chorus makes. What SanctSound detects at SB02 is baleen whales
+  // (humpback, fin, right, sei, minke, blue), Atlantic cod and ships - a
+  // LOW-frequency biophony sitting in the same bands as the Boston shipping
+  // lanes. Separating those two is a real research problem and is NOT attempted
+  // here. TOL_2000 at a temperate shelf site is dominated by wind and sea state.
+  // It is shipped as a PHYSICAL ambient series with a large, clean seasonal
+  // cycle (10.29 dB, February max, August min) - which is precisely what a
+  // deseasonalization benchmark needs, and it is honest about being that.
+  sanctsound_sb02: {
+    label: 'SanctSound SB02, Stellwagen Bank NMS (deseasonalization benchmark)',
+    lat: 42.470793, lon: -70.24294, radius_km: 25,
+    source: 'NOAA/NPS SanctSound - gs://noaa-passive-bioacoustic/sanctsound/products/sound_level_metrics/sb02/',
+    record: '2018-11-12 to 2022-06-13 (21 deployments, 31329 hourly TOL rows)',
+    band: 'TOL_2000 (2 kHz third-octave, wind/sea-state dominated)',
+    varLabel: 'ambient 2 kHz band level (NOT biophony)',
+    varKind: 'band_level', varUnit: 'dB re 1 uPa',
+    series: [
+    {m:'2018-11', v:91.599, nh:438, dep:'01'},
+    {m:'2018-12', v:89.561, nh:744, dep:'01'},
+    {m:'2019-01', v:91.510, nh:742, dep:'01+02'},
+    {m:'2019-02', v:91.461, nh:672, dep:'02'},
+    {m:'2019-03', v:89.797, nh:744, dep:'02'},
+    {m:'2019-04', v:88.676, nh:718, dep:'02+03'},
+    {m:'2019-05', v:84.883, nh:744, dep:'03'},
+    {m:'2019-06', v:82.412, nh:718, dep:'03+04'},
+    {m:'2019-07', v:81.325, nh:744, dep:'04'},
+    {m:'2019-08', v:82.088, nh:742, dep:'04+05'},
+    {m:'2019-09', v:85.118, nh:720, dep:'05'},
+    {m:'2019-10', v:88.806, nh:743, dep:'05+06'},
+    {m:'2019-11', v:90.347, nh:720, dep:'06'},
+    {m:'2019-12', v:93.180, nh:742, dep:'06+07'},
+    {m:'2020-01', v:92.625, nh:742, dep:'07+08'},
+    {m:'2020-02', v:92.993, nh:693, dep:'08'},
+    {m:'2020-03', v:93.178, nh:744, dep:'08'},
+    {m:'2020-04', v:91.579, nh:719, dep:'08+09'},
+    {m:'2020-05', v:86.392, nh:744, dep:'09'},
+    {m:'2020-06', v:84.872, nh:717, dep:'09+10'},
+    {m:'2020-07', v:85.519, nh:744, dep:'10'},
+    {m:'2020-08', v:84.972, nh:742, dep:'10+11'},
+    {m:'2020-09', v:87.521, nh:720, dep:'11+12'},
+    {m:'2020-10', v:90.774, nh:744, dep:'12'},
+    {m:'2020-11', v:91.671, nh:719, dep:'12+13'},
+    {m:'2020-12', v:90.965, nh:744, dep:'13'},
+    {m:'2021-01', v:91.383, nh:743, dep:'13+14'},
+    {m:'2021-02', v:94.227, nh:672, dep:'14'},
+    {m:'2021-03', v:93.540, nh:742, dep:'14+15'},
+    {m:'2021-04', v:88.116, nh:716, dep:'15'},
+    {m:'2021-05', v:87.149, nh:743, dep:'15+16'},
+    {m:'2021-06', v:86.421, nh:720, dep:'16'},
+    {m:'2021-07', v:86.693, nh:743, dep:'16+17'},
+    {m:'2021-08', v:80.954, nh:744, dep:'17'},
+    {m:'2021-09', v:85.701, nh:718, dep:'17+18'},
+    {m:'2021-10', v:91.932, nh:744, dep:'18'},
+    {m:'2021-11', v:93.234, nh:720, dep:'18'},
+    {m:'2021-12', v:92.104, nh:731, dep:'18+19'},
+    {m:'2022-01', v:91.775, nh:744, dep:'19'},
+    {m:'2022-02', v:93.173, nh:636, dep:'19+20'},
+    {m:'2022-03', v:93.055, nh:744, dep:'20'},
+    {m:'2022-04', v:92.197, nh:718, dep:'20+21'},
+    {m:'2022-05', v:86.076, nh:744, dep:'21'},
+    {m:'2022-06', v:81.747, nh:304, dep:'21'}
     ]
   }
 };
@@ -3853,6 +3941,106 @@ function scoreColors(s) {
   return         {text:'#7a0000',bg:'#ffd0d0',map:'#ff0000',bar:'#ff2222',lbl:'CRITICAL'};
 }
 
+
+// ============================================================
+// MODULE A13 - ACOUSTIC CORRECTION TO THE FUSED SCORE (A1, v10.174 NEW)
+//
+// Wires S21b's biophony result into the Coastal Cancer Score as a SIXTH
+// correction term alongside F1..F5, on exactly the contract v10.161 FIX 19
+// established for those: a term that moves the headline must be a real
+// measurement, must say how much of the move it is responsible for, and must
+// not buy an accuracy claim it has not earned.
+//
+// FOUR GUARDS, and the first two are the ones that matter.
+//
+// (1) VARIABLE KIND. Only a biophony index may touch a reef stress score.
+//     SB02 Stellwagen is REFUSED here BY CONSTRUCTION, not by omission: its
+//     series is an ambient 2 kHz band level driven by wind and sea state at a
+//     temperate 42 N site that is not a coral reef at all, and its own varLabel
+//     says NOT biophony. Feeding "ambient noise is rising" into a coral cancer
+//     score would be a category error, and it would be a LOUD one - SB02 is the
+//     only acoustic site in this tool with a significant trend (p=0.0219). The
+//     one site that would move the number is the one site that must not.
+// (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes EXACTLY
+//     ZERO. This is the v10.161 lesson restated: there, a placeholder moved a
+//     headline from 61 to 55 and the reader was told the answer had become 12
+//     points more accurate. A p=0.4330 null is not a small trend, and must not
+//     be allowed to nudge a score in the direction its tau happens to point.
+// (3) DESIGN FLOOR. The seasonal test's false-positive rate was measured at
+//     FK01's design (7 seasons, 3-4 years, 4.05% against nominal 5%). Below
+//     that much structure it has not been characterised, so a thinner series
+//     may report a trend in S21/S21b but may not move the SCORE.
+// (4) MAGNITUDE CAP. +-ACOUSTIC_MAX_POINTS, deliberately smaller than F3 (+-10)
+//     or F5 (+-8). The index's sensitivity to reef degradation is UNMEASURED -
+//     the FK01 record spans 1.40 dB with ~0.3 dB between-deployment scatter and
+//     contains no degradation event to calibrate against. An uncalibrated
+//     instrument gets a small vote, not a veto.
+//
+// DIRECTION: a FALLING crepuscular-minus-night ratio means the dawn/dusk chorus
+// is flattening toward the night floor - fewer animals calling, or calling less
+// - so it RAISES stress. A rising ratio lowers it. Positive A1 = more stress,
+// the same sign convention as F4 (metals) and the opposite of F1/F3/F5.
+var ACOUSTIC_MAX_POINTS = 5;      // cap on |A1|, in CCS points
+var ACOUSTIC_MIN_SEASONS = 5;     // below the design the FPR was measured at, no score influence
+var ACOUSTIC_MIN_PAIRS = 15;      // ditto, in comparable within-season pairs
+var ACOUSTIC_ACC_GAIN = 3;        // nominal accuracy credit, earned only if A1 is non-zero
+
+function computeAcousticCorrection(lat, lon){
+  // `matched` and `eligible` are NOT the same question and must not share a
+  // field. SB02 matches on distance and is then refused on variable kind; a UI
+  // that reads only `eligible` would print "no acoustic coverage" over a site
+  // with 31,329 hours of it. That is the same conflation the v10.173 verdict-line
+  // and gate-row fixes were about, so it gets its own flag here rather than a
+  // string test at the render site.
+  var none=function(reason, site){
+    return {A1:0, matched:!!site, eligible:false, applied:false, site:site||null, mk:null,
+            accNominal:0, accEarned:0, reason:reason};
+  };
+  if(lat===null||lat===undefined||lon===null||lon===undefined||isNaN(lat)||isNaN(lon))
+    return none('no click coordinates');
+  var site=getAcousticSite(lat,lon);
+  if(!site) return none('no hydrophone site within range - the acoustic layer covers 2 points on Earth and contributes nothing anywhere else');
+  // GUARD 1 - variable kind.
+  if(site.varKind!=='diel_ratio')
+    return none('site matched ('+site.label+') but its variable is a '+site.varKind+
+                ' ('+site.varLabel+'), not a biophony index. It is REFUSED from the score by '+
+                'construction: an ambient sound level at a non-reef site cannot inform a reef '+
+                'stress score, however significant its trend is.', site);
+  var mk=seasonalMannKendall(site.series);
+  if(mk.error) return none('acoustic series present but the seasonal test could not run: '+mk.error, site);
+  // GUARD 3 - design floor.
+  if(mk.seasonsUsed<ACOUSTIC_MIN_SEASONS||mk.nPairs<ACOUSTIC_MIN_PAIRS)
+    return none('acoustic series too thin to move a score: '+mk.seasonsUsed+' seasons / '+
+                mk.nPairs+' pairs, against floors of '+ACOUSTIC_MIN_SEASONS+' and '+
+                ACOUSTIC_MIN_PAIRS+'. The test is still reported in S21/S21b; it just does not '+
+                'vote here, because its false-positive rate has only been measured at or above '+
+                'that much structure.', site);
+  // GUARD 2 - significance.
+  if(mk.p>=0.05){
+    var r={A1:0, matched:true, eligible:true, applied:false, site:site, mk:mk, accNominal:ACOUSTIC_ACC_GAIN,
+      accEarned:0,
+      reason:'REAL MEASUREMENT, NULL RESULT. Seasonal Mann-Kendall on '+site.series.length+
+             ' months gives tau='+(mk.tau>=0?'+':'')+mk.tau.toFixed(3)+', p='+mk.p.toFixed(4)+
+             ' - not significant, so the acoustic term contributes EXACTLY 0 points and earns '+
+             'NO accuracy credit of its nominal +'+ACOUSTIC_ACC_GAIN+'%. A null is not a small '+
+             'trend. It also is not evidence of health: this index has no calibrated sensitivity '+
+             'to reef degradation, so it cannot yet rule one out.'};
+    return r;
+  }
+  // GUARD 4 - magnitude cap. Scaled by |tau|, which is bounded by 1 by construction.
+  var mag=Math.min(1,Math.abs(mk.tau))*ACOUSTIC_MAX_POINTS;
+  var A1=(mk.S<0? mag : -mag);   // falling ratio -> positive (more stress)
+  A1=Math.round(A1*10)/10;
+  return {A1:A1, matched:true, eligible:true, applied:true, site:site, mk:mk,
+    accNominal:ACOUSTIC_ACC_GAIN, accEarned:ACOUSTIC_ACC_GAIN,
+    reason:'ACOUSTIC TREND APPLIED: seasonal Mann-Kendall tau='+(mk.tau>=0?'+':'')+
+           mk.tau.toFixed(3)+', p='+mk.p.toFixed(4)+' over '+mk.seasonsUsed+' seasons / '+
+           mk.nPairs+' pairs. The biophony diel ratio is '+(mk.S<0?'FALLING':'RISING')+
+           ', which '+(mk.S<0?'raises':'lowers')+' stress by '+Math.abs(A1)+' point(s) (cap '+
+           ACOUSTIC_MAX_POINTS+'). DISCLOSED: this index has no calibrated sensitivity to reef '+
+           'degradation, so the SIGN is better supported than the MAGNITUDE.'};
+}
+
 function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var isReefZone=(lat!==undefined&&lon!==undefined)?((lat>-30&&lat<30)&&!isEBUS(lat,lon)):true;
   // ============================================================
@@ -4107,6 +4295,14 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
       _gainNominal+'%. The correction is still applied in full - it is the ACCURACY claim that is scaled.';
     if(_wMeas>_wEst) _fieldAttribNote='MIXED'+_fieldAttribNote.substring('MOSTLY PLACEHOLDER'.length);
   }
+  // v10.174: the acoustic term. Computed from lat/lon rather than passed in, so
+  // no call site changes and there is exactly one place that can decide whether
+  // acoustics touch the score. It is 0 at every point on Earth except within
+  // 20 km of FK01, and 0 there too unless the seasonal test clears every guard
+  // in computeAcousticCorrection() - which today it does not (p=0.4330).
+  var _ac=computeAcousticCorrection(lat,lon);
+  var A1=_ac.A1, accAcoustic=_ac.accEarned;
+
   // v10.156 BUG-05: no satellite input at all -> no score. Field corrections
   // (F1..F5, fcTotal) are still real and are returned unchanged; everything
   // downstream of the satellite composite is null, and the accuracy figures
@@ -4122,6 +4318,12 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
       acc_sat:0,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,
       fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
       fieldAttribNote:_fieldAttribNote,acc_total:0,
+      // v10.174: carried on the insufficient path too, so the return has ONE
+      // shape. acc_acoustic is 0 here for the same reason acc_sat is: with no
+      // satellite score there is nothing for an acoustic term to correct.
+      acousticA1:0, acousticApplied:false, acousticEligible:_ac.eligible,
+      acousticMatched:_ac.matched, acousticSite:(_ac.site?_ac.site.label:null),
+      acousticNote:_ac.reason, acc_acoustic:0, acc_acoustic_nominal:_ac.accNominal,
       insufficientData:true, lowConfidence:true, nInputs:nInputs, dataCompleteness:0,
       dataNote:noteTxt};
   };
@@ -4142,11 +4344,12 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   // off it. With the _has() guards above, csat can no longer go NaN from a
   // satellite input; this is now the genuine last resort, and it routes to the
   // SAME insufficient-data path as nInputs===0 instead of inventing a value.
-  var ccs=Math.max(0,Math.min(100,csat+fcT));
+  var ccs=Math.max(0,Math.min(100,csat+fcT+A1));
   if(!isFinite(ccs)||isNaN(ccs)){
     return _insufficient('INSUFFICIENT DATA - the Coastal Cancer Score was not computable. '+
       nInputs+' of 6 satellite inputs were present, but the composite still did not resolve to a '+
-      'number (satellite composite='+csat+', field correction='+fcT+'). No score, no bowl depth and '+
+      'number (satellite composite='+csat+', field correction='+fcT+', acoustic correction='+A1+
+      '). No score, no bowl depth and '+
       'no regime-shift probability are reported: a non-computable score is NOT a mid-range one. '+
       'Earlier versions substituted a hardcoded 30 here, which was indistinguishable on screen '+
       'from a genuinely measured low-stress reef.');
@@ -4181,7 +4384,14 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var tau=(B>0&&!isNaN(B))?Math.round(10/B)/10:99;
   return {s1:s1,s2:s2,s3:s3,s4:s4,s5:s5,s6:s6,sat_ccs:csat,ccs:ccs,B:B,mu:mu,deltaU:dU,
     meff:me,omega0:w0,k:k,p5yr:p5,ac1:ac1,tau:tau,fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
-    acc_sat:77,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,acc_total:77+accFieldEarned,
+    acc_sat:77,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,
+    acc_total:77+accFieldEarned+accAcoustic,
+    // v10.174 acoustic term. acc_acoustic is earned ONLY when A1 is non-zero,
+    // which is the same magnitude-apportioning rule v10.161 FIX 19 imposed on
+    // the field gain: a measurement that moves nothing claims no credit.
+    acousticA1:A1, acousticApplied:_ac.applied, acousticEligible:_ac.eligible,
+    acousticMatched:_ac.matched, acousticSite:(_ac.site?_ac.site.label:null),
+    acousticNote:_ac.reason, acc_acoustic:accAcoustic, acc_acoustic_nominal:_ac.accNominal,
     fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
     fieldAttribNote:_fieldAttribNote,
     // v10.156 BUG-05: reported on EVERY return so a partial-data score is
@@ -10674,7 +10884,16 @@ panel.add(fieldSourcesV); panel.add(fieldNotesV);
 panel.add(sHead('FIELD CORRECTIONS (valid data only)','#334422'));
 var fc1V=dynLbl('n/a','#888888'), fc3V=dynLbl('n/a','#888888'), fc4V=dynLbl('n/a','#888888'), fc5V=dynLbl('n/a','#888888'), fcTV=dynLbl('0 total','#222222');
 panel.add(row('F1 Urchin grazer',fc1V)); panel.add(row('F3 Anem density',fc3V));
-panel.add(row('F4 Metals',fc4V)); panel.add(row('F5 Recruitment',fc5V)); panel.add(row('Total correction',fcTV));
+panel.add(row('F4 Metals',fc4V)); panel.add(row('F5 Recruitment',fc5V));
+// v10.174: A1 sits with F1..F5 because it obeys the same contract - a real
+// measurement, an explicit magnitude, and no accuracy credit unless it moved
+// the score. It is listed separately from the field total because it is not
+// field data: it is a hydrophone, and it is null at all but one site on Earth.
+var acA1V=dynLbl('n/a','#888888');
+var acNoteV=ui.Label('',{fontSize:'7px',color:'#225566',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+panel.add(row('A1 Acoustic biophony',acA1V));
+panel.add(row('Total correction',fcTV));
+panel.add(acNoteV);
 
 // v10.144 NEW: S20e - Real Bleaching Probability (fitted model)
 panel.add(sHead('S20e - REAL BLEACHING PROBABILITY (fitted model)','#3a1a1a'));
@@ -11173,10 +11392,10 @@ panel.add(lbl('CAVEAT: point-source only. Compare vs S2/S18 (satellite/model) ab
 // blank at nearly every click, and both say so rather than interpolating.
 panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)','#0a3a3a'));
 panel.add(lbl('Real hydrophone data (NOT a model/satellite) - NOAA/NPS SanctSound',7,'#227777'));
-panel.add(lbl('Only populated within radius of an actual hydrophone site (1 site: FK01, Florida Keys)',7,'#227777'));
+panel.add(lbl('Only populated within radius of an actual hydrophone site (2 sites: FK01 Florida Keys - biophony diel ratio; SB02 Stellwagen Bank - ambient band level, NOT biophony, see S21b)',7,'#227777'));
 panel.add(lbl('STATE VARIABLE: diel ratio of the 2-20 kHz snapping-shrimp band - crepuscular (local dawn 05-07 + dusk 17-18) MINUS night trough (local 01-04), in dB. A RATIO, so it is unit-free and cancels any constant per-deployment calibration offset. It is NOT an absolute sound level: FK01 deployment 11 carries a measured low-frequency artifact (+16.95 dB at 25 Hz, +8.89 at 63 Hz, +2.90 at 125 Hz, ~0 above 500 Hz, 2022-05 vs 2021-05) that is flow noise or mooring strum, not vessel traffic. No anthropophony variable is shipped for exactly that reason.',7,'#0a5555'));
 panel.add(lbl('TEST: Seasonal (Hirsch-Slack) Mann-Kendall - each month is ranked ONLY against the same calendar month in other years. Plain Mann-Kendall on the pooled monthly levels returns tau=+0.227 p=0.0878, which is SAMPLING ALIASING: Jul/Aug/Sep/Oct/Nov each occur in exactly one year of this record and summer runs ~4 dB hotter, so the pooled series tilts upward on its own. April 2019-2022 reads 109.32/110.29/109.21/109.33 dB - tau exactly 0.000.',7,'#663388'));
-panel.add(lbl('NOT ROUTED TO S13 CSD OR THE CLIMATOLOGY PATH - ON PURPOSE. FK01 has 29 valid months, so it passes CLIM_MIN_TOTAL_SAMPLES=26, but only 7 of 12 calendar months reach CLIM_MIN_SAMPLES_PER_MONTH=3, against CLIM_MIN_DISTINCT_MONTHS=9 - computeUsableClimatology() refuses it, correctly. CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for ANY SanctSound site: the whole archive spans 2018-11 to 2022-06, 44 months end to end. The best site in it (SB02 Stellwagen, 44 continuous months, 12/12 calendar months) is still 4 short. The gates stay strict; this panel routes to S17b-style Mann-Kendall only.',7,'#aa5533'));
+panel.add(lbl('v10.173 CORRECTION - v10.172 SAID THE OPPOSITE OF THE TRUTH HERE AND IT SHOWED ON SCREEN. It claimed computeUsableClimatology() "refuses" FK01 and printed DISTINCT 7/9 FAIL. It does not refuse it. The real gate counts calendar months holding AT LEAST ONE valid sample (11 at FK01) against CLIM_MIN_DISTINCT_MONTHS=9; the 7 was months with 3+ years, which is CLIM_MIN_SAMPLES_PER_MONTH, an internal QUALITY counter that gates nothing. FK01 clears both floors and the climatology IS built - see S21b below, which now runs it. What remains true: CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for EVERY SanctSound site, because the archive spans 2018-11 to 2022-06, 44 months end to end, and the best-covered site in it (SB02 Stellwagen, 44 continuous months) is still 4 short. AC1/CSD stays out. No gate constant was changed.',7,'#aa5533'));
 var s21StatusV=dynLbl('checking...','#227777');
 var s21VerdictV=ui.Label('Click a location to check for hydrophone coverage.',
   {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
@@ -11195,6 +11414,143 @@ panel.add(row('CSD / climatology gates',s21GateV));
 panel.add(s21NoteV);
 panel.add(lbl('CAVEAT: one site, 3.5 years, 30 comparable within-season pairs. This is a case study, not a population inference. The index is also STABLE (total range 1.40 dB, between-deployment scatter ~0.3 dB) and this record contains no reef-degradation event, so its sensitivity to the thing it is meant to detect is UNMEASURED. A null result here is not evidence the reef is healthy.',7,'#aa6600'));
 
+// S21b - DESEASONALIZATION BENCHMARK (v10.173 NEW)
+// Runs the SAME acoustic series down BOTH principled paths and reports whether
+// they agree. This is the panel v10.172 should have had: it was written on the
+// false premise that computeUsableClimatology() refuses these sites, so it never
+// tried. It does not refuse them, and the comparison is the whole point.
+panel.add(sHead('S21b - DESEASONALIZATION BENCHMARK (v10.173)','#0a2a3a'));
+panel.add(lbl('Same real acoustic series, three ways: (A) Seasonal Mann-Kendall, no climatology, nothing imputed. (B) The tool\'s OWN computeUsableClimatology() + deseasonalizeSeries(), then plain Mann-Kendall on the anomalies. (C) plain Mann-Kendall on the RAW monthly values, with no seasonal handling at all - shown only as the control that demonstrates why A and B exist.',7,'#0a4455'));
+panel.add(lbl('SB02 Stellwagen is the benchmark site: 44 months, 21 deployments handing over with 2-3 hour turnarounds, largest gap in the whole record ~37 hours, and 12 of 12 calendar months carrying 3+ years. computeUsableClimatology() runs there on a complete, WELL-SAMPLED climatology with NOTHING imputed - the only site in SanctSound where that is true. FK01 by contrast clears the gates but leans on the harmonic fit for 5 of its 12 months and imputes one outright, so the same comparison there is a weaker test of the same machinery.',7,'#0a4455'));
+panel.add(lbl('SB02\'s VARIABLE IS NOT BIOPHONY. Stellwagen is at 42 N, outside snapping-shrimp range, and FK01\'s index does not transfer - measured, not assumed: TOL_2000 varies 1.11 dB over the day here vs 2.22 dB at FK01, and peaks at local 04-05 rather than at dawn AND dusk. SanctSound detects baleen whales, Atlantic cod and ships at SB02 - a LOW-frequency biophony sharing bands with the Boston shipping lanes, which this tool does not attempt to separate. TOL_2000 at a temperate shelf site is wind and sea state. It is used here as a physical series with a large clean seasonal cycle (10.29 dB, Feb max, Aug min), which is exactly what benchmarks deseasonalization.',7,'#885500'));
+var s21bStatusV=dynLbl('checking...','#0a4455');
+var s21bVerdictV=ui.Label('Click a location to run the benchmark.',
+  {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
+var s21bAV=dynLbl('--','#0a4455'), s21bBV=dynLbl('--','#0a4455'), s21bCV=dynLbl('--','#0a4455');
+var s21bClimV=dynLbl('--','#0a4455');
+var s21bNoteV=ui.Label('',{fontSize:'7px',color:'#225566',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+panel.add(row('Benchmark site',s21bStatusV));
+panel.add(s21bVerdictV);
+panel.add(row('A  seasonal MK',s21bAV));
+panel.add(row('B  deseasonalized MK',s21bBV));
+panel.add(row('C  raw MK (control)',s21bCV));
+panel.add(row('Climatology built',s21bClimV));
+panel.add(s21bNoteV);
+
+function updateS21bBenchmark(lat, lon){
+  var site=getAcousticSite(lat,lon);
+  if(!site){
+    s21bStatusV.setValue('No hydrophone site within range of this click');
+    s21bStatusV.style().set('color','#888888');
+    s21bVerdictV.setValue('NO ACOUSTIC COVERAGE HERE');
+    s21bVerdictV.style().set('color','#555555');
+    s21bVerdictV.style().set('backgroundColor','#eeeeee');
+    s21bVerdictV.style().set('border','2px solid #aaaaaa');
+    s21bAV.setValue('n/a'); s21bBV.setValue('n/a'); s21bCV.setValue('n/a'); s21bClimV.setValue('n/a');
+    s21bNoteV.setValue('Two sites carry acoustic series: FK01 Florida Keys (24.43313,-81.93068)\n'+
+      'and SB02 Stellwagen Bank (42.470793,-70.24294).');
+    return;
+  }
+  var rows=site.series, i, raw=[], tvs=[];
+  for(i=0;i<rows.length;i++){
+    raw.push(rows[i].v);
+    tvs.push({t:Date.parse(rows[i].m+'-15T00:00:00Z'), v:rows[i].v});
+  }
+  s21bStatusV.setValue(site.label+' - '+site.varLabel);
+  s21bStatusV.style().set('color','#115511');
+
+  var A=seasonalMannKendall(rows);
+  var C=mannKendallTest(raw);
+  var clim=computeUsableClimatology(tvs);
+  var B=null;
+  if(clim.ok){
+    var anom=deseasonalizeSeries(tvs, clim.climatology), av=[];
+    for(i=0;i<anom.length;i++) av.push(anom[i].v);
+    B=mannKendallTest(av);
+  }
+
+  s21bAV.setValue(A.error ? ('n/a - '+A.error) :
+    ('tau='+(A.tau>=0?'+':'')+A.tau.toFixed(3)+'  p='+A.p.toFixed(4)+
+     '  ('+A.seasonsUsed+' seasons, '+A.nPairs+' pairs)  slope '+
+     (A.slope>=0?'+':'')+A.slope.toFixed(3)+' '+site.varUnit+'/yr'+
+     (A.p<0.05?'   SIGNIFICANT':'   n.s.')));
+  s21bCV.setValue(C.error ? ('n/a - '+C.error) :
+    ('tau='+(C.tau>=0?'+':'')+C.tau.toFixed(3)+'  p='+C.p.toFixed(4)+'  n='+C.n+
+     (C.p<0.05?'   SIGNIFICANT':'   n.s.')+mkMethodTxt(C)));
+
+  if(!clim.ok){
+    s21bBV.setValue('n/a - climatology not available');
+    s21bClimV.setValue('REFUSED: '+clim.nTotalSamples+' valid months, '+clim.nDistinctMonths+
+      '/12 calendar months (floors '+CLIM_MIN_TOTAL_SAMPLES+' and '+CLIM_MIN_DISTINCT_MONTHS+')');
+    s21bClimV.style().set('color','#aa5533');
+    s21bVerdictV.setValue('ONLY THE SEASONAL PATH IS AVAILABLE AT THIS SITE');
+    s21bVerdictV.style().set('color','#664400');
+    s21bVerdictV.style().set('backgroundColor','#fff4dd');
+    s21bVerdictV.style().set('border','2px solid #ddaa44');
+    s21bNoteV.setValue('computeUsableClimatology() declined this series:\n  '+clim.reason);
+    return;
+  }
+  var meta=clim.climatology._meta;
+  s21bBV.setValue(B.error ? ('n/a - '+B.error) :
+    ('tau='+(B.tau>=0?'+':'')+B.tau.toFixed(3)+'  p='+B.p.toFixed(4)+'  n='+B.n+
+     (B.p<0.05?'   SIGNIFICANT':'   n.s.')+mkMethodTxt(B)));
+  s21bClimV.setValue('BUILT: '+meta.nTotalSamples+' months, '+meta.nDistinctMonths+
+    '/12 calendar months  |  '+meta.nWellSampledMonths+'/12 well-sampled ('+
+    CLIM_MIN_SAMPLES_PER_MONTH+'+ years), '+meta.nFullyImputedMonths+' fully imputed  |  order-'+
+    meta.harmonicOrder+' harmonics, prior weight '+meta.priorWeight);
+  s21bClimV.style().set('color', meta.nFullyImputedMonths===0 ? '#115511' : '#885500');
+
+  // THE BENCHMARK VERDICT is agreement between A and B, not either p-value.
+  var agree=(A.error||B.error) ? null : ((A.p<0.05)===(B.p<0.05));
+  if(agree===null){
+    s21bVerdictV.setValue('BENCHMARK INCOMPLETE - one path could not run');
+    s21bVerdictV.style().set('color','#664400');
+    s21bVerdictV.style().set('backgroundColor','#fff4dd');
+    s21bVerdictV.style().set('border','2px solid #ddaa44');
+  } else if(agree){
+    s21bVerdictV.setValue('PATHS AGREE: both say '+(A.p<0.05?'TREND':'no trend')+
+      '   (A p='+A.p.toFixed(4)+', B p='+B.p.toFixed(4)+')');
+    s21bVerdictV.style().set('color','#ffffff');
+    s21bVerdictV.style().set('backgroundColor','#226644');
+    s21bVerdictV.style().set('border','2px solid #112211');
+  } else {
+    s21bVerdictV.setValue('PATHS DISAGREE - A says '+(A.p<0.05?'trend':'no trend')+
+      ', B says '+(B.p<0.05?'trend':'no trend')+'   (A p='+A.p.toFixed(4)+', B p='+B.p.toFixed(4)+')');
+    s21bVerdictV.style().set('color','#ffffff');
+    s21bVerdictV.style().set('backgroundColor','#883322');
+    s21bVerdictV.style().set('border','2px solid #221111');
+  }
+
+  var ctrlTxt;
+  if(C.error) ctrlTxt='Control C could not run.';
+  else if(!A.error && (C.p<0.05)!==(A.p<0.05)){
+    ctrlTxt='CONTROL C DISAGREES WITH BOTH PRINCIPLED PATHS - which is the point of\n'+
+            '  having them. Raw p='+C.p.toFixed(4)+' vs A p='+A.p.toFixed(4)+' / B p='+B.p.toFixed(4)+'. A seasonal cycle of this\n'+
+            '  size inflates the variance the raw test divides by, so the raw test '+
+            (C.p<0.05?'INVENTS\n  a trend that neither principled path supports.':'MISSES a\n  real trend that both principled paths find.');
+  } else ctrlTxt='Control C happens to agree here; that is luck, not validation.';
+
+  s21bNoteV.setValue(
+    'Variable: '+site.varLabel+'  ['+site.varKind+', '+site.varUnit+']\n'+
+    'Band: '+site.band+'\n'+
+    ctrlTxt+'\n'+
+    (site.key==='sanctsound_sb02'
+      ? 'DISCLOSED FOR SB02, and it matters more than the p-values above: the rise is\n'+
+        '  BAND-SELECTIVE, which is the one thing that argues against a plain gain drift -\n'+
+        '  seasonal-MK slope is +0.089 dB/yr at TOL_63 and flat below, rising to +0.757 at\n'+
+        '  TOL_2000 and +0.760 at TOL_20000. A broadband calibration change would move every\n'+
+        '  band together. BUT: that was a 10-band scan, TOL_1000 (p=0.0382) and TOL_2000\n'+
+        '  (p=0.0219) were the only nominally significant bands, and NEITHER survives a\n'+
+        '  Benjamini-Hochberg correction across the 10 tests. AND the 21 deployments have\n'+
+        '  ZERO simultaneous overlap - they hand over back-to-back - so a cumulative,\n'+
+        '  frequency-dependent instrument drift is NOT separable from a real environmental\n'+
+        '  change with this record alone. Read the AGREEMENT as the result here, not the trend.'
+      : 'DISCLOSED FOR FK01: '+meta.nWellSampledMonths+'/12 calendar months carry '+
+        CLIM_MIN_SAMPLES_PER_MONTH+'+ years and '+meta.nFullyImputedMonths+' is imputed\n'+
+        '  outright, so path B leans on the fitted harmonic where the record is thin. SB02\n'+
+        '  is the stronger test of the same machinery.'));
+}
+
 // S21 updater. Synchronous JS, no evaluate() - same as S19, so there is never a
 // pending call and no row may sit on 'computing...'. Every branch below sets
 // EVERY row (the v10.169 S19-01 bug was exactly one branch forgetting three).
@@ -11210,13 +11566,15 @@ function updateS21Acoustic(lat, lon){
     s21NV.setValue('n/a'); s21RangeV.setValue('n/a'); s21TauV.setValue('n/a');
     s21SlopeV.setValue('n/a'); s21SeasonV.setValue('n/a'); s21GateV.setValue('n/a');
     s21NoteV.setValue('SanctSound covers US National Marine Sanctuaries only.\n'+
-      'The one site wired in here is FK01, Florida Keys (24.43313,-81.93068), radius 20 km.\n'+
+      'Two sites are wired in: FK01 Florida Keys (24.43313,-81.93068), radius 20 km,\n'+
+      'biophony diel ratio; and SB02 Stellwagen Bank (42.470793,-70.24294), radius\n'+
+      '25 km, ambient band level - a methods benchmark, NOT a biophony index.\n'+
       'There is NO SanctSound coverage of Bocas del Toro, Panama or anywhere in the\n'+
       'wider Caribbean outside the Florida Keys - that would need a hydrophone\n'+
       'deployment or a different archive, not a wider search radius.');
     return;
   }
-  var rows=site.diel, i;
+  var rows=site.series, i;
   s21StatusV.setValue(site.label+' ('+site.distance_km.toFixed(1)+' km away)');
   s21StatusV.style().set('color','#115511');
 
@@ -11244,13 +11602,20 @@ function updateS21Acoustic(lat, lon){
   } else {
     var sig=(mk.p<0.05);
     var dir=(mk.S>0?'RISING':(mk.S<0?'FALLING':'FLAT'));
+    // v10.173: this said 'BIOPHONY TREND' unconditionally. With SB02 added that
+    // became a lie on screen - SB02's series is a wind/sea-state ambient band
+    // level and its own label says NOT biophony, yet the headline called it
+    // biophony anyway. The verdict now names the site's actual variable. A
+    // hardcoded noun in a shared headline is exactly how a panel ends up
+    // asserting something the data underneath it never said.
+    var vname=(site.varKind==='diel_ratio')?'BIOPHONY DIEL RATIO':'AMBIENT BAND LEVEL';
     if(sig){
-      s21VerdictV.setValue('BIOPHONY TREND '+dir+'  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+')');
+      s21VerdictV.setValue(vname+' '+dir+'  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+')');
       s21VerdictV.style().set('color','#ffffff');
       s21VerdictV.style().set('backgroundColor',(mk.S<0?'#883322':'#226644'));
       s21VerdictV.style().set('border','2px solid #112211');
     } else {
-      s21VerdictV.setValue('NO DETECTABLE TREND  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+', n.s.)');
+      s21VerdictV.setValue('NO DETECTABLE TREND in '+vname+'  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+', n.s.)');
       s21VerdictV.style().set('color','#333333');
       s21VerdictV.style().set('backgroundColor','#e8eef0');
       s21VerdictV.style().set('border','2px solid #88aabb');
@@ -11266,33 +11631,56 @@ function updateS21Acoustic(lat, lon){
 
   // Gate status, RECOMPUTED from the embedded table rather than asserted, so it
   // cannot drift out of date if the table is ever extended.
-  var calCount={}, distinctOK=0, cm;
+  //
+  // v10.173 CORRECTION - v10.172 GOT THIS ROW WRONG AND THE ERROR WAS VISIBLE
+  // ON SCREEN. It counted a calendar month toward the DISTINCT gate only if that
+  // month had >=CLIM_MIN_SAMPLES_PER_MONTH (3) years, reported FK01 as
+  // "DISTINCT 7/9 FAIL", and the panel text claimed computeUsableClimatology()
+  // "refuses" the site. It does not. Read the real function (it is right there
+  // in this file): nDistinct counts calendar months with AT LEAST ONE valid
+  // sample, and is compared against CLIM_MIN_DISTINCT_MONTHS. FK01 has 11 such
+  // months and 28 valid months, so it clears both floors and the climatology is
+  // BUILT. CLIM_MIN_SAMPLES_PER_MONTH is not a gate at all - inside
+  // computeUsableClimatology() it only decides which months get counted as
+  // nWellSampledMonths in the explanatory note. Conflating an internal quality
+  // counter with the admission test made the panel assert a refusal that never
+  // happened. Both numbers are now shown, and only the real gate is labelled
+  // PASS/FAIL; the quality count is labelled as quality.
+  var calCount={}, distinctAny=0, wellSampled=0, cm;
   for(i=0;i<rows.length;i++){
     cm=parseInt(rows[i].m.substring(5,7),10);
     calCount[cm]=(calCount[cm]||0)+1;
   }
-  for(cm=1;cm<=12;cm++){ if((calCount[cm]||0)>=CLIM_MIN_SAMPLES_PER_MONTH) distinctOK++; }
+  for(cm=1;cm<=12;cm++){
+    if((calCount[cm]||0)>=1) distinctAny++;
+    if((calCount[cm]||0)>=CLIM_MIN_SAMPLES_PER_MONTH) wellSampled++;
+  }
   var passTotal=(rows.length>=CLIM_MIN_TOTAL_SAMPLES);
-  var passDistinct=(distinctOK>=CLIM_MIN_DISTINCT_MONTHS);
+  var passDistinct=(distinctAny>=CLIM_MIN_DISTINCT_MONTHS);
   var passAC1=(rows.length>=CSD_AC1_MIN_POOLED_MONTHS);
   s21GateV.setValue(
     'TOTAL '+rows.length+'/'+CLIM_MIN_TOTAL_SAMPLES+' '+(passTotal?'PASS':'FAIL')+
-    '  |  DISTINCT '+distinctOK+'/'+CLIM_MIN_DISTINCT_MONTHS+' '+(passDistinct?'PASS':'FAIL')+
-    '  |  AC1 '+rows.length+'/'+CSD_AC1_MIN_POOLED_MONTHS+' '+(passAC1?'PASS':'FAIL'));
-  s21GateV.style().set('color',(passDistinct&&passAC1)?'#115511':'#aa5533');
+    '  |  DISTINCT '+distinctAny+'/'+CLIM_MIN_DISTINCT_MONTHS+' '+(passDistinct?'PASS':'FAIL')+
+    '  |  AC1 '+rows.length+'/'+CSD_AC1_MIN_POOLED_MONTHS+' '+(passAC1?'PASS':'FAIL')+
+    '   [quality, not a gate: '+wellSampled+'/12 calendar months have '+
+    CLIM_MIN_SAMPLES_PER_MONTH+'+ years]');
+  s21GateV.style().set('color',(passTotal&&passDistinct)?'#115511':'#aa5533');
 
   s21NoteV.setValue(
     'Band: '+site.band+'  |  '+site.record+'\n'+
     'Source: '+site.source+'\n'+
-    ((!passDistinct||!passAC1)
-      ? 'Climatology/CSD correctly REFUSED for this site - this panel never asked them.\n'+
-        '  deseasonalizing needs '+CLIM_MIN_DISTINCT_MONTHS+' calendar months at >='+CLIM_MIN_SAMPLES_PER_MONTH+
-        ' years each; this site has '+distinctOK+'.\n'+
-        '  AC1/CSD needs '+CSD_AC1_MIN_POOLED_MONTHS+' pooled months; this site has '+rows.length+
-        ', and no SanctSound\n  site can reach it (whole archive = 44 months, 2018-11..2022-06).\n'
-      : 'This site clears the climatology gates; the seasonal test is still the primary read.\n')+
-    'The seasonal test needs NEITHER - it ranks each month only against the same\n'+
-    'calendar month in other years, so no climatology is built and nothing is imputed.');
+    (passTotal&&passDistinct
+      ? 'This site CLEARS the climatology gates ('+rows.length+' valid months, '+distinctAny+
+        '/12 calendar months\n  with at least one year). S21b below runs the deseasonalized path on it\n'+
+        '  and compares the two answers. Quality varies: '+wellSampled+'/12 calendar months have '+
+        CLIM_MIN_SAMPLES_PER_MONTH+'+ years,\n  so the rest lean on the fitted harmonic rather than on their own samples.\n'
+      : 'This site does NOT clear the climatology gates, so no deseasonalized\n'+
+        '  comparison is available for it.\n')+
+    (passAC1 ? ''
+      : '  AC1/CSD needs '+CSD_AC1_MIN_POOLED_MONTHS+' pooled months; this site has '+rows.length+
+        ', and NO SanctSound\n  site can reach it (whole archive = 44 months, 2018-11..2022-06).\n')+
+    'The seasonal test above needs NEITHER a climatology nor imputation - it ranks\n'+
+    'each month only against the same calendar month in other years.');
 }
 
 panel.add(sHead('ACCURACY','#222244'));
@@ -11673,6 +12061,7 @@ function analyzeLocation(lat, lon) {
   }
 
   updateS21Acoustic(lat,lon);
+  updateS21bBenchmark(lat,lon);
   locV.setValue(region); regV.setValue(region); coV.setValue('Lat:'+latR+' Lon:'+lonR);
   scoreBig.setValue('Computing...'); scoreBig.style().set('color','#333333'); scoreBig.style().set('backgroundColor','#eeeeee');
   scoreBarLbl.setValue('Computing...'); scoreInterp.setValue('Running pipeline...');
@@ -12039,6 +12428,24 @@ function analyzeLocation(lat, lon) {
         ('  [measured '+(sc.fc_measured>0?'+':'')+sc.fc_measured+
          ' | ESTIMATED/placeholder '+(sc.fc_estimated>0?'+':'')+sc.fc_estimated+']'):''));
     fcTV.style().set('color',(sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0&&sc.fc_estimated!==0)?'#aa6600':'#111111');
+    // v10.174 A1. Three visibly different states, because they mean different
+    // things: no coverage at all, a real measurement that found nothing, and a
+    // real measurement that moved the score. The middle one is the one a reader
+    // is most likely to misread as "healthy", so it is labelled explicitly.
+    if(!sc.acousticMatched){
+      acA1V.setValue('n/a - no acoustic coverage'); acA1V.style().set('color','#888888');
+    } else if(!sc.acousticEligible){
+      acA1V.setValue('n/a - hydrophone here, but REFUSED (not a biophony index)');
+      acA1V.style().set('color','#885500');
+    } else if(!sc.acousticApplied){
+      acA1V.setValue('0 (measured, no significant trend - NOT evidence of health)');
+      acA1V.style().set('color','#885500');
+    } else {
+      acA1V.setValue((sc.acousticA1>0?'+':'')+sc.acousticA1+
+        ' (acoustic trend applied, +'+sc.acc_acoustic+'% accuracy earned)');
+      acA1V.style().set('color','#115544');
+    }
+    acNoteV.setValue(sc.acousticNote?('A1: '+sc.acousticNote):'');
     fc1V.style().set('color',fp.urchin_N!==null?'#115511':'#888888');
     fc3V.style().set('color',fp.anem_N_estimated?'#aa6600':fp.anem_N!==null?'#115511':'#888888');
     fc4V.style().set('color',fp.Cd!==null?'#553300':'#888888');
@@ -12785,6 +13192,10 @@ function analyzeLocation(lat, lon) {
     // measurement and which part is an ESTIMATED PLACEHOLDER, and how much of
     // the nominal field accuracy gain that forfeits.
     print('FIELD ATTRIBUTION (v10.161): '+sc.fieldAttribNote);
+    print('ACOUSTIC A1 (v10.174): '+(sc.acousticA1>0?'+':'')+sc.acousticA1+' points'+
+      (sc.acousticApplied?(' APPLIED, +'+sc.acc_acoustic+'% of a nominal +'+sc.acc_acoustic_nominal+'% earned'):
+       (sc.acousticEligible?' (eligible, not applied - no accuracy credit)':' (no coverage)')));
+    print('  '+sc.acousticNote);
     if(sc.acc_field_nominal!==undefined&&sc.acc_field_nominal>sc.acc_field){
       print('  Field accuracy gain: +'+sc.acc_field+'% earned of a nominal +'+sc.acc_field_nominal+
         '% ('+(sc.acc_field_nominal-sc.acc_field)+'% forfeited). A correction derived from a placeholder does not make the answer more accurate.');
@@ -12823,6 +13234,7 @@ function analyzeLocation(lat, lon) {
       dhw_c_weeks:dhwv,dhw_raw_unfiltered:dhwv_raw,dhw_artifact_flagged:dhwFlaggedArtifact,
       mmm_local_c:mmmv,chl_a_mg_m3:cv,turbidity_ndti:turv,no2_mol_m2:nv,depth_m:bv,
       cancer_score_satellite:sc.sat_ccs,cancer_score_fused:sc.ccs,field_correction:sc.fcTotal,
+      acoustic_correction:sc.acousticA1,acoustic_applied:sc.acousticApplied,
       bowl_depth_B:sc.B,accuracy_pct:sc.acc_total,status_label:cols.lbl,
       ccs_insufficient_data:scInsuf, ccs_n_satellite_inputs:sc.nInputs, ccs_data_completeness_pct:sc.dataCompleteness,
       field_data_available:fp.hasField,field_species:fp.hasField?fp.species:'none',
@@ -12858,6 +13270,126 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.174 A1 NEW: the acoustic term is wired into the FUSED Coastal Cancer');
+print('  Score - and it changes no score anywhere on Earth today, which is the');
+print('  correct outcome and is asserted by test, not hoped for.');
+print('');
+print('  A1 joins F1..F5 on the contract v10.161 FIX 19 set for them: a term that');
+print('    moves the headline must be a real measurement, must state how much of the');
+print('    move it caused, and must not buy accuracy it has not earned.');
+print('    ccs = clamp(satellite composite + field correction + A1).');
+print('  FOUR GUARDS, and the first two are the ones that matter:');
+print('    (1) VARIABLE KIND. Only a biophony index may touch a reef stress score.');
+print('        SB02 Stellwagen is REFUSED BY CONSTRUCTION: its series is a wind- and');
+print('        sea-state-driven ambient band level at a temperate 42 N site that is not');
+print('        a coral reef, and its own label says NOT biophony. This guard matters');
+print('        precisely because SB02 is the ONE acoustic site in this tool with a');
+print('        significant trend (p=0.0219). The only site that would move the number');
+print('        is the only site that must not. Without the guard it would have moved');
+print('        a coral score by up to the full cap on the strength of wind noise.');
+print('    (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes');
+print('        EXACTLY 0. A p=0.4330 null is not a small trend and may not nudge a');
+print('        score in the direction its tau happens to point.');
+print('    (3) DESIGN FLOOR: >=5 seasons and >=15 within-season pairs, the structure');
+print('        at or above which this test\'s 4.05% false-positive rate was measured.');
+print('        A thinner series is still reported in S21/S21b - it just does not vote.');
+print('    (4) CAP: +-'+ACOUSTIC_MAX_POINTS+' points, deliberately below F3 (+-10) and F5 (+-8), because');
+print('        the index has NO calibrated sensitivity to reef degradation. An');
+print('        uncalibrated instrument gets a small vote, not a veto.');
+print('  DIRECTION: a FALLING crepuscular-minus-night ratio means the dawn/dusk chorus');
+print('    is flattening toward the night floor, so it RAISES stress (positive A1).');
+print('  ACCURACY IS EARNED, NOT GRANTED. acc_acoustic is the nominal +'+ACOUSTIC_ACC_GAIN+'% ONLY when');
+print('    A1 is non-zero - the same magnitude-apportioning rule v10.161 applied to the');
+print('    field gain. At FK01 today the measurement is real, the result is null, and');
+print('    the accuracy credit is therefore ZERO. A measurement that moves nothing');
+print('    claims nothing.');
+print('  STATE TODAY, asserted by test at every site: A1=0 everywhere. FK01 is');
+print('    eligible but null (p=0.4330); SB02 is matched and refused; everywhere else');
+print('    has no coverage. Verified in a Node harness that scores Bocas, Hawaii, SB02');
+print('    and FK01 and finds ccs and acc_total unchanged from the pre-A1 formula.');
+print('    The APPLIED path is exercised against synthetic falling/rising series:');
+print('    falling gives A1=+5 (72 -> 77, accuracy 77 -> 80), rising A1=-5 (72 -> 67),');
+print('    a thin series is refused by the design floor, and a tau=-1.000 series is');
+print('    held at the cap.');
+print('  UI HAS FOUR STATES, not three, and the distinction is the point: no coverage /');
+print('    hydrophone present but REFUSED / measured with no significant trend /');
+print('    applied. The middle two are the ones a reader would otherwise misread -');
+print('    "no coverage" over a site with 31,329 hours of it, or a null read as health.');
+print('    The null state says "NOT evidence of health" on screen, because this index');
+print('    cannot yet rule out a degradation it has never been calibrated against.');
+print('');
+print('v10.173 S21b NEW: the deseasonalization benchmark - plus a CORRECTION to');
+print('  v10.172, which asserted a gate refusal that never happened.');
+print('');
+print('  THE v10.172 ERROR, and it was visible on screen. S21 printed');
+print('    "DISTINCT 7/9 FAIL" for FK01 and its panel text claimed');
+print('    computeUsableClimatology() "refuses it, correctly". It does not refuse it.');
+print('    The real gate counts calendar months holding AT LEAST ONE valid sample -');
+print('    FK01 has 11 - against CLIM_MIN_DISTINCT_MONTHS=9. The 7 was months with');
+print('    3+ years, i.e. CLIM_MIN_SAMPLES_PER_MONTH, which inside that function only');
+print('    decides how many months are reported as nWellSampled in the note. It gates');
+print('    NOTHING. Run live against the shipped function, FK01 returns ok=true,');
+print('    nTotal=28, nDistinct=11, and a complete 12/12 climatology is built.');
+print('    An internal quality counter was mistaken for the admission test, and the');
+print('    panel then advertised a refusal the tool had never made. The row now shows');
+print('    the real gate as PASS/FAIL and the quality count labelled as quality.');
+print('    WITHDRAWN with it: the v10.172 claim that S21 is "not routed to the');
+print('    climatology path" because the gates forbid it. The gates permit it. S21b');
+print('    now runs it, which is what v10.172 should have done.');
+print('    STILL TRUE, and unaffected: CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for');
+print('    EVERY SanctSound site (archive = 44 months end to end), so AC1/CSD stays');
+print('    out; the dep11 low-frequency artifact; the seasonal-aliasing finding; and');
+print('    the 55.0 km FK01-to-Looe-Key distance. No gate constant was ever changed.');
+print('');
+print('  SB02 STELLWAGEN BANK, the benchmark site. 42.470793 N, -70.24294. 21');
+print('    deployments, 31,329 hourly TOL rows, 2018-11-12 .. 2022-06-13. The only');
+print('    genuinely continuous record in SanctSound: deployments hand over with 2-3');
+print('    hour turnarounds, the largest gap in 44 months is ~37 hours, every month');
+print('    clears a 72-hour floor, and all 12 calendar months carry 3+ years. The');
+print('    climatology is built there on 12/12 WELL-SAMPLED months with NOTHING');
+print('    imputed - true at no other site in the archive.');
+print('  SB02 IS NOT A BIOPHONY SITE AND THE PANEL SAYS SO IN ITS HEADLINE. FK01\'s');
+print('    snapping-shrimp index does NOT transfer, measured rather than assumed:');
+print('    Stellwagen is at 42 N, outside shrimp range, and TOL_2000 varies only');
+print('    1.11 dB over the day there against 2.22 dB at FK01, peaking at local 04-05');
+print('    instead of at dawn AND dusk. SanctSound detects baleen whales, Atlantic cod');
+print('    and ships at SB02 - low-frequency biophony sharing bands with the Boston');
+print('    shipping lanes, which this tool does not attempt to separate. TOL_2000 at a');
+print('    temperate shelf site is wind and sea state, and is shipped as a PHYSICAL');
+print('    ambient series with a 10.29 dB seasonal cycle (Feb max, Aug min) - exactly');
+print('    what benchmarks deseasonalization, and labelled as exactly that.');
+print('');
+print('  THE BENCHMARK RESULT, at SB02, all three run on the same 44 months:');
+print('    A  seasonal Mann-Kendall, no climatology : tau=+0.367  p=0.0219  SIGNIFICANT');
+print('    B  computeUsableClimatology + plain MK   : tau=+0.271  p=0.0099  SIGNIFICANT');
+print('    C  raw plain MK, no seasonal handling    : tau=+0.101  p=0.3366  n.s.');
+print('    The two principled paths AGREE. The control MISSES the trend both find,');
+print('    because a 10 dB seasonal cycle inflates the variance it divides by. Taken');
+print('    with FK01, where the raw test INVENTED a trend from seasonal aliasing');
+print('    (p=0.0878 on the pooled absolute levels), the control now has one failure');
+print('    of each kind on real data - a miss here, a false alarm there.');
+print('    At FK01 the paths also agree (A p=0.4330, B p=0.2438, both n.s.), but that');
+print('    is the weaker test: 7/12 months well-sampled and 1 imputed outright.');
+print('');
+print('  DISCLOSED FOR SB02, and it outweighs the p-values. The rise is BAND-SELECTIVE,');
+print('    which is the one thing arguing against a plain gain drift: flat at and below');
+print('    TOL_63 (+0.089 dB/yr), climbing to +0.757 at TOL_2000 and +0.760 at');
+print('    TOL_20000. A broadband calibration change moves every band together. BUT it');
+print('    came from a 10-band scan in which only TOL_1000 (p=0.0382) and TOL_2000');
+print('    (p=0.0219) were nominally significant, and NEITHER survives Benjamini-');
+print('    Hochberg across those 10 tests. AND the 21 deployments have ZERO simultaneous');
+print('    overlap, so a cumulative frequency-dependent instrument drift is NOT');
+print('    separable from a real environmental change with this record alone. The');
+print('    deliverable here is the AGREEMENT BETWEEN PATHS, not a claim about');
+print('    Stellwagen Bank getting louder.');
+print('');
+print('  ALSO FIXED: S21\'s verdict line said "BIOPHONY TREND" unconditionally. Adding');
+print('    SB02 made that a lie on screen - a series whose own label reads NOT biophony');
+print('    was being headlined as biophony. The verdict now names the site\'s actual');
+print('    variable, and the site record carries varKind/varLabel/varUnit so the two');
+print('    kinds cannot be confused again. The data field was renamed `diel` -> `series`');
+print('    for the same reason: SB02 holds an absolute band level, not a diel ratio.');
 print('');
 print('v10.172 S21 NEW: real passive-acoustic biophony, as a diel RATIO - and a');
 print('  deliberate refusal to route it through the climatology or CSD path.');

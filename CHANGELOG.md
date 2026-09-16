@@ -14,6 +14,172 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.174 A1 NEW: the acoustic result is wired into the FUSED Coastal Cancer Score
+  as a sixth correction term - and it moves no score anywhere on Earth today,
+  which is the correct outcome and is asserted by test rather than hoped for.
+
+  THE SHAPE. ccs = clamp(satellite composite + field correction + A1). A1 joins
+    F1..F5 on exactly the contract v10.161 FIX 19 established for them after a
+    placeholder moved a headline from 61 to 55 and the reader was told the answer
+    had become 12 points more accurate: a term that moves the headline must be a
+    real measurement, must state how much of the move it caused, and must not buy
+    an accuracy claim it has not earned. computeAcousticCorrection() derives A1
+    from the click coordinates, so no call site changed and there is exactly one
+    place in the file that can decide whether acoustics touch a score.
+
+  FOUR GUARDS. The first two are the ones that matter.
+    (1) VARIABLE KIND. Only a biophony index may touch a reef stress score. SB02
+        Stellwagen is REFUSED BY CONSTRUCTION - not by omission - because its
+        series is an ambient 2 kHz band level driven by wind and sea state at a
+        temperate 42 N site that is not a coral reef, and its own varLabel reads
+        NOT biophony. This guard exists precisely because SB02 is the ONE
+        acoustic site in this tool carrying a significant trend (p=0.0219,
+        +0.757 dB/yr). The only site that would move the number is the only site
+        that must not. Without the guard, wind noise at Stellwagen Bank would
+        have moved a coral stress score by up to the full cap.
+    (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes EXACTLY
+        ZERO. A p=0.4330 null is not a small trend, and is not permitted to nudge
+        a score in the direction its tau happens to point.
+    (3) DESIGN FLOOR: at least 5 seasons and 15 within-season pairs - the
+        structure at or above which this test's false-positive rate was actually
+        measured (4.05% against nominal 5%, v10.172). A thinner series is still
+        reported in S21/S21b; it simply does not vote in the score.
+    (4) MAGNITUDE CAP: +-5 points, deliberately smaller than F3 (+-10) and F5
+        (+-8), scaled by |tau|. The index has NO calibrated sensitivity to reef
+        degradation - the FK01 record spans 1.40 dB with ~0.3 dB
+        between-deployment scatter and contains no degradation event to calibrate
+        against. An uncalibrated instrument gets a small vote, not a veto.
+
+  DIRECTION. A FALLING crepuscular-minus-night ratio means the dawn/dusk chorus
+    is flattening toward the night floor - fewer animals calling, or calling less
+    - so it RAISES stress. Positive A1 = more stress, the same sign convention as
+    F4 (metals) and the opposite of F1/F3/F5.
+
+  ACCURACY IS EARNED, NOT GRANTED. acc_acoustic pays the nominal +3% ONLY when A1
+    is non-zero, which is the same magnitude-apportioning rule v10.161 imposed on
+    the field gain. At FK01 today the measurement is real, the result is null, and
+    the accuracy credit is therefore ZERO. A measurement that moves nothing claims
+    nothing. acc_acoustic_nominal is still returned so the forfeited part is
+    visible rather than quietly absent.
+
+  STATE TODAY, asserted by test at every site: A1 = 0 everywhere.
+      FK01   eligible, null result (p=0.4330)       A1=0, accuracy credit 0
+      SB02   matched, REFUSED on variable kind      A1=0
+      elsewhere  no coverage at all                 A1=0
+    Verified in a Node harness executing the whole file against stubbed ee/ui/Map:
+    Bocas, Hawaii, SB02 and FK01 all return ccs and acc_total identical to the
+    pre-A1 formula (sat_ccs+fcTotal), and acc_total stays 77.
+    The APPLIED path, which no real datum reaches today, is exercised against
+    synthetic series: a falling biophony gives A1=+5 and moves 72 -> 77 with
+    accuracy 77 -> 80; a rising one gives A1=-5 and moves 72 -> 67; a 2-season
+    series is refused by the design floor; and a tau=-1.000 series is held at the
+    cap rather than exceeding it.
+
+  UI HAS FOUR STATES, NOT THREE, and the distinction is the substance. An earlier
+    cut of this change printed "n/a - no acoustic coverage" at SB02 - a site with
+    31,329 hours of it - because `eligible` was doing double duty for "nothing
+    here" and "here but refused". That is the same conflation the v10.173
+    verdict-line and gate-row fixes were about, so `matched` is now its own flag
+    rather than a string test at the render site. The four states are: no
+    coverage / hydrophone present but REFUSED (not a biophony index) / measured
+    with no significant trend / applied. The null state reads "NOT evidence of
+    health" on screen, because an index with no calibrated sensitivity to
+    degradation cannot rule one out.
+
+  NOT CHANGED: the 15/15/15/25/20/10 satellite weights, every gate constant, and
+    the BUG-05 insufficient-data contract. A1 is carried on the insufficient-data
+    return too, so that return still has exactly one shape.
+
+v10.173 S21b NEW: the deseasonalization benchmark at SB02 Stellwagen Bank - and a
+  CORRECTION to v10.172, which asserted a gate refusal that never happened.
+
+  THE v10.172 ERROR, KEPT IN THE RECORD. S21 printed "DISTINCT 7/9 FAIL" for
+    FK01, and its panel text, its startup block, its changelog entry and its
+    commit message all claimed computeUsableClimatology() "refuses it, correctly".
+    It does not refuse it. The real gate, readable in this same file, counts
+    calendar months holding AT LEAST ONE valid sample - FK01 has 11 - against
+    CLIM_MIN_DISTINCT_MONTHS=9. The 7 was months carrying 3+ years, i.e.
+    CLIM_MIN_SAMPLES_PER_MONTH, which inside that function only decides how many
+    months are reported as nWellSampledMonths in its explanatory note. It gates
+    nothing at all. Run live against the shipped function, FK01 returns ok=true,
+    nTotalSamples=28, nDistinctMonths=11, and a complete 12/12 climatology is
+    built (7 months from 3+ own samples, 1 imputed outright, the rest blended
+    with an order-3 harmonic fit at prior weight 0.5).
+    An internal quality counter was mistaken for the admission test, and the
+    panel then advertised on screen a refusal the tool had never made.
+    FIXED: the gate row now shows the real gate as PASS/FAIL and prints the
+    quality count separately, labelled as quality and not as a gate.
+    WITHDRAWN: the v10.172 claim that S21 is "not routed to the climatology path"
+    because the gates forbid it. The gates permit it. S21b now runs it - which is
+    what v10.172 should have done instead of asserting it was impossible.
+    STILL TRUE and unaffected by this correction: CSD_AC1_MIN_POOLED_MONTHS=48 is
+    unreachable for EVERY SanctSound site (the archive spans 2018-11..2022-06, 44
+    months end to end, and the best-covered site reaches exactly 44), so AC1/CSD
+    remains out; the deployment-11 low-frequency artifact at FK01; the seasonal-
+    aliasing finding; and the 55.0 km FK01-to-Looe-Key distance. No gate constant
+    has been changed at any point in this series.
+
+  SB02 STELLWAGEN BANK NMS, 42.470793 N, -70.24294. 21 deployments, 31,329 hourly
+    TOL rows, 2018-11-12 .. 2022-06-13. The only genuinely continuous record in
+    SanctSound: deployments hand over with 2-3 hour turnarounds, the largest gap
+    across 44 months is ~37 hours (dep19 ends 2022-02-15T01, dep20 starts
+    2022-02-16T14), every month clears a 72-hour floor, and all 12 calendar
+    months carry 3+ years. The climatology is therefore built on 12/12
+    WELL-SAMPLED months with NOTHING imputed - true at no other site in the
+    archive, and the reason this is the benchmark.
+
+  THE SB02 VARIABLE IS NOT BIOPHONY, AND THE PANEL HEADLINE SAYS SO. FK01's
+    snapping-shrimp diel index does NOT transfer, measured rather than assumed:
+    Stellwagen sits at 42 N, outside snapping-shrimp range, and the high-frequency
+    diel structure confirms it - TOL_2000 varies 1.11 dB over the day there
+    against 2.22 dB at FK01, and peaks at local 04-05, a day/night shape, not the
+    dawn-and-dusk double peak a shrimp chorus makes. What SanctSound detects at
+    SB02 is baleen whales (humpback, fin, right, sei, minke, blue), Atlantic cod
+    and ships - a LOW-frequency biophony sitting in the same bands as the Boston
+    shipping lanes. Separating those is a real research problem and is NOT
+    attempted here. TOL_2000 at a temperate shelf site is dominated by wind and
+    sea state, and it is shipped as a PHYSICAL ambient series with a large clean
+    seasonal cycle (10.29 dB, February max, August min) - which is precisely what
+    a deseasonalization benchmark needs.
+
+  THE BENCHMARK RESULT at SB02, three paths over the same 44 months:
+      A  seasonal Mann-Kendall, no climatology  tau=+0.367  p=0.0219  SIGNIFICANT
+      B  computeUsableClimatology + plain MK    tau=+0.271  p=0.0099  SIGNIFICANT
+      C  raw plain MK, no seasonal handling     tau=+0.101  p=0.3366  n.s.
+    The two principled paths AGREE. The control MISSES the trend both of them
+    find, because a 10 dB seasonal cycle inflates the variance it divides by.
+    Taken together with FK01 - where the raw test INVENTED a trend out of seasonal
+    aliasing (tau=+0.227, p=0.0878 on the pooled absolute levels) - the naive path
+    now has one documented failure of each kind on real data: a false alarm at
+    FK01 and a miss at SB02. That pair is the actual argument for A and B.
+    At FK01 the two paths also agree (A p=0.4330, B p=0.2438, both n.s.), but it
+    is the weaker test of the same machinery: only 7/12 calendar months are
+    well-sampled there and 1 is imputed outright, so path B leans on the fitted
+    harmonic where the record is thin.
+
+  DISCLOSED FOR SB02, AND IT OUTWEIGHS THE p-VALUES. The rise is BAND-SELECTIVE,
+    which is the one thing that argues against a plain gain drift: the seasonal-MK
+    slope is flat at and below TOL_63 (+0.089 dB/yr, tau=+0.033, p=0.9131),
+    climbing to +0.757 dB/yr at TOL_2000 and +0.760 at TOL_20000. A broadband
+    calibration change would move every band together, and this does not.
+    BUT: that came from a 10-band scan in which only TOL_1000 (p=0.0382) and
+    TOL_2000 (p=0.0219) were nominally significant, and NEITHER survives a
+    Benjamini-Hochberg correction across those 10 tests. AND the 21 deployments
+    have ZERO simultaneous overlap - checked directly, 0 of 31,329 timestamps are
+    covered by two deployments - so a cumulative, frequency-dependent instrument
+    drift is NOT separable from a real environmental change with this record
+    alone. The deliverable of this entry is the AGREEMENT BETWEEN THE TWO PATHS,
+    not a claim that Stellwagen Bank is getting louder. It is not reported as one.
+
+  ALSO FIXED, and it was the same class of defect as the gate row: S21's verdict
+    line read "BIOPHONY TREND <dir>" unconditionally. Adding SB02 turned that into
+    a falsehood on screen - a series whose own label reads "NOT biophony" was
+    being headlined as biophony. The verdict now names the site's actual variable,
+    and each site record carries varKind / varLabel / varUnit so the two kinds
+    cannot be silently conflated again. The data field was renamed `diel` ->
+    `series` for the same reason: SB02 holds an absolute band level, and a field
+    named `diel` holding a non-diel quantity is how this starts.
+
 v10.172 S21 NEW: real passive-acoustic biophony at Florida Keys FK01, as a diel
   RATIO - plus a deliberate, documented REFUSAL to route it through the
   climatology or CSD/AC1 path, and a gate audit of the entire SanctSound archive.
