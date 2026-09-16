@@ -53,3 +53,49 @@ jobs:
 
       - name: Smoke tests (stub harness)
         run: node tests/ci.js
+
+      # Study scripts under studies/ are ALSO Earth Engine Code Editor code and
+      # carry the same ES5-only constraint as the main tool. node --check cannot
+      # catch ES6 methods (they parse fine and fail in the browser), so the same
+      # scanner runs over them. Added with the SB02 vessel-proxy study.
+      - name: ES5 gate over study GEE scripts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+          files=(studies/**/*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No study .js files found - nothing to scan."
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            echo "checking $f"
+            node --check "$f"
+            node -e "
+              var es5 = require('./tests/es5.js');
+              var src = require('fs').readFileSync(process.argv[1], 'utf8');
+              var hits = es5.scan(src);
+              if (hits.length) {
+                console.error('ES6 constructs found in ' + process.argv[1] + ':');
+                hits.slice(0, 20).forEach(function (h) {
+                  console.error('  line ' + h.line + ': ' + h.rule);
+                });
+                process.exit(1);
+              }
+              console.log('  ES5 clean');
+            " "$f"
+          done
+
+      # The offline analysis scripts carry their own self-tests. They have no
+      # third-party dependencies, so this stays a zero-install job.
+      - name: Study self-tests (Python)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in studies/sb02-vessel-proxy/acoustic_label.py studies/sb02-vessel-proxy/flag_ambiguities.py; do
+            [ -f "$f" ] || continue
+            echo "running $f"
+            out="$(python3 "$f")"
+            echo "$out"
+            echo "$out" | grep -qE 'all (property |self-)tests passed' || {
+              echo "SELF-TESTS DID NOT PASS in $f"; exit 1; }
+          done
