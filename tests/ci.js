@@ -560,6 +560,29 @@ section('15. Study scripts LOAD, not just parse');
           return String(e.opts.description) + ' -> ' + String(e.opts.assetId);
         }).join(' | '));
 
+      // A diagnostic must measure the computation it gates. CHECK 10/10b used
+      // to reduce at MASK_SCALE_M (30 m) while the mask applies at
+      // analysisScaleM (10 m) - so the histogram that decides whether
+      // persistenceThreshold = 0.20 is defensible was built by a detector with
+      // a 9x coarser grid (annulusKernel is a fixed PIXEL kernel with no
+      // reproject) or, in asset mode, from a block-averaged pyramid. Neither
+      // can show the bimodality the check exists to look for.
+      var src10 = fs.readFileSync(file, 'utf8');
+      var check10 = src10.slice(src10.indexOf('CHECK 10 - v3 PERSISTENCE DIAGNOSTIC'),
+                                src10.indexOf("CHECK 9 - exported column order"));
+      ok(rel + ': CHECK 10/10b reduce at the scale the mask is applied at',
+        check10.indexOf('scale: PARAMS.analysisScaleM') !== -1 &&
+        check10.indexOf('scale: CONFIG.MASK_SCALE_M') === -1,
+        'CHECK 10 block still references MASK_SCALE_M');
+
+      // A boolean mask pyramided with the default MEAN policy stops being a
+      // mask at every zoom above native scale.
+      var persistExport = assets.length ? assets[0].opts : {};
+      ok(rel + ': the persistence asset pins a pyramiding policy',
+        !!persistExport.pyramidingPolicy &&
+        persistExport.pyramidingPolicy.persist === 'mode',
+        JSON.stringify(persistExport.pyramidingPolicy || null));
+
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
     }
