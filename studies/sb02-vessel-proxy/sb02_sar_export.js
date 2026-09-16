@@ -145,7 +145,7 @@ var CONFIG = {
   //               This is the intended production path.
   PERSISTENCE_MODE: 'compute',
   EXPORT_PERSISTENCE_ASSETS: true,   // STAGE A; see section 13
-  PERSISTENCE_ASSET_PREFIX: 'users/CHANGE_ME/sb02_persist_orbit_',
+  PERSISTENCE_ASSET_PREFIX: 'projects/ee-lathavis/assets/sb02_persist_orbit_',
   RELATIVE_ORBITS: [142, 40, 62],       // verified: 93 / 92 / 93 scenes
   // ---- v3: per-detection long table ---------------------------------------
   // The spec's primary output. One row per DETECTION, not per scene, carrying
@@ -797,12 +797,17 @@ function buildPersistence(relOrbit, params) {
 var PERSIST = {};
 var PERSIST_FRAC = {};
 (function () {
-  var i, ro;
+  var i, ro, aid;
   for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
     ro = CONFIG.RELATIVE_ORBITS[i];
     if (CONFIG.PERSISTENCE_MODE === 'asset') {
-      PERSIST[ro] = ee.Image(CONFIG.PERSISTENCE_ASSET_PREFIX + ro).select('persist');
-      PERSIST_FRAC[ro] = ee.Image(CONFIG.PERSISTENCE_ASSET_PREFIX + ro).select('frac');
+      // The id MUST match what STAGE A writes, PARAM_SET_ID included. A mask
+      // built under one parameter set is not valid for another - that is the
+      // whole reason the asset name carries the id. Reading without the
+      // suffix asked for an asset STAGE A never wrote.
+      aid = CONFIG.PERSISTENCE_ASSET_PREFIX + ro + '_' + CONFIG.PARAM_SET_ID;
+      PERSIST[ro] = ee.Image(aid).select('persist');
+      PERSIST_FRAC[ro] = ee.Image(aid).select('frac');
     } else if (CONFIG.PERSISTENCE_MODE === 'compute') {
       var pb = buildPersistence(ro, PARAMS);
       PERSIST[ro] = pb.select('persist');
