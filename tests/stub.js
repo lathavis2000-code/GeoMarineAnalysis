@@ -10,7 +10,15 @@ function chain() {
   var f = function () { return chain(); };
   return new Proxy(f, {
     get: function (t, k) {
-      if (k === 'then' || k === 'toJSON' || k === Symbol.toPrimitive || k === Symbol.iterator) return undefined;
+      if (k === 'then' || k === 'toJSON' || k === Symbol.iterator) return undefined;
+      // A chainable must be coercible to a primitive. Returning undefined for
+      // Symbol.toPrimitive sends JS to valueOf/toString, which this proxy also
+      // answers with a proxy, so ANY string concatenation of an ee value threw
+      // "Cannot convert object to primitive value" - and a script that builds a
+      // description or an assetId by concatenation could not be loaded at all.
+      if (k === Symbol.toPrimitive) {
+        return function (hint) { return hint === 'number' ? 0 : '[ee]'; };
+      }
       if (k === 'evaluate') return function (cb) { if (cb) cb(null, null); };
       if (k === 'getInfo') return function () { return null; };
       return chain();
@@ -83,7 +91,18 @@ function install(g) {
     setControlVisibility: function () {}, centerObject: function () {}, unlisten: function () {}
   };
   g.print = function () { prints.push(Array.prototype.slice.call(arguments).join(' ')); };
-  g.Export = { table: { toDrive: function () {} }, image: { toDrive: function () {} } };
+  // Every Export target the Code Editor offers, recorded rather than ignored:
+  // a script that only calls toAsset (the SAR study's STAGE A) could not be
+  // loaded at all when toDrive was the only entry.
+  g.Export = { exports: [] };
+  ['table', 'image', 'video', 'map'].forEach(function (kind) {
+    g.Export[kind] = {};
+    ['toDrive', 'toAsset', 'toCloudStorage', 'toBigQuery', 'toDriveVideo'].forEach(function (dest) {
+      g.Export[kind][dest] = function (opts) {
+        g.Export.exports.push({ kind: kind, dest: dest, opts: opts || {} });
+      };
+    });
+  });
   return { prints: prints };
 }
 

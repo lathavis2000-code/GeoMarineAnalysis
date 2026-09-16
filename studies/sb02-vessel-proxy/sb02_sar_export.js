@@ -775,7 +775,13 @@ function detectVessels(img, aoi, params) {
  * error, not a caught one.
  * ------------------------------------------------------------------------- */
 function buildPersistence(relOrbit, params) {
-  var col = SCENES.filter(ee.Filter.eq('relativeOrbitNumber_start', relOrbit));
+  // s1Joined, not s1: every consumer downstream (the per-scene table, the
+  // detection table, the CHECK 8 preview) maps over s1Joined, and CHECK 6
+  // asserts it has the same size as s1. Building the mask from the same
+  // collection the detections come from means a scene lost in the ERA5 join
+  // is lost from both, and CHECK 6 reports it, instead of the mask quietly
+  // covering a scene set the detections never saw.
+  var col = s1Joined.filter(ee.Filter.eq('relativeOrbitNumber_start', relOrbit));
   var n = ee.Number(col.size()).max(1);
   var hits = ee.ImageCollection(col.map(function (img) {
     return buildDetectionImage(ee.Image(img), params)
@@ -791,33 +797,11 @@ function buildPersistence(relOrbit, params) {
   return persist.addBands(frac);
 }
 
-// One mask per relative orbit, built ONCE here rather than inside the per-scene
-// map. In 'asset' mode these are loaded instead of recomputed, which is the
-// whole point of STAGE A.
-var PERSIST = {};
-var PERSIST_FRAC = {};
-(function () {
-  var i, ro, aid;
-  for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
-    ro = CONFIG.RELATIVE_ORBITS[i];
-    if (CONFIG.PERSISTENCE_MODE === 'asset') {
-      // The id MUST match what STAGE A writes, PARAM_SET_ID included. A mask
-      // built under one parameter set is not valid for another - that is the
-      // whole reason the asset name carries the id. Reading without the
-      // suffix asked for an asset STAGE A never wrote.
-      aid = CONFIG.PERSISTENCE_ASSET_PREFIX + ro + '_' + CONFIG.PARAM_SET_ID;
-      PERSIST[ro] = ee.Image(aid).select('persist');
-      PERSIST_FRAC[ro] = ee.Image(aid).select('frac');
-    } else if (CONFIG.PERSISTENCE_MODE === 'compute') {
-      var pb = buildPersistence(ro, PARAMS);
-      PERSIST[ro] = pb.select('persist');
-      PERSIST_FRAC[ro] = pb.select('frac');
-    } else {
-      PERSIST[ro] = ee.Image.constant(0).rename('persist');
-      PERSIST_FRAC[ro] = ee.Image.constant(0).rename('frac');
-    }
-  }
-})();
+// The PERSIST tables are built further down, immediately before section 8,
+// because buildPersistence() reads s1Joined and that collection does not
+// exist yet at this point in the file. Do not move them back up here: this
+// block runs at module level, so it would read an undeclared variable and
+// the script would die before CHECK 1 prints.
 
 // Look the mask up from an image's own orbit. ee.Dictionary keys must be
 // strings; the relative orbit arrives as a number.
@@ -1107,6 +1091,39 @@ function indexOfRadius(r) {
 /* =============================================================================
  * 8. BUILD THE OUTPUT TABLE
  * ========================================================================== */
+
+// Built HERE, not beside buildPersistence(): this runs at module level and
+// buildPersistence() reads s1Joined, which is not assigned until the ERA5
+// join above. Sitting next to the function it calls, it ran ~115 lines too
+// early and the script threw before any CHECK could print. Everything that
+// consumes PERSIST (CHECK 9, the preview, STAGE A) comes after this point.
+// One mask per relative orbit, built ONCE here rather than inside the per-scene
+// map. In 'asset' mode these are loaded instead of recomputed, which is the
+// whole point of STAGE A.
+var PERSIST = {};
+var PERSIST_FRAC = {};
+(function () {
+  var i, ro, aid;
+  for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
+    ro = CONFIG.RELATIVE_ORBITS[i];
+    if (CONFIG.PERSISTENCE_MODE === 'asset') {
+      // The id MUST match what STAGE A writes, PARAM_SET_ID included. A mask
+      // built under one parameter set is not valid for another - that is the
+      // whole reason the asset name carries the id. Reading without the
+      // suffix asked for an asset STAGE A never wrote.
+      aid = CONFIG.PERSISTENCE_ASSET_PREFIX + ro + '_' + CONFIG.PARAM_SET_ID;
+      PERSIST[ro] = ee.Image(aid).select('persist');
+      PERSIST_FRAC[ro] = ee.Image(aid).select('frac');
+    } else if (CONFIG.PERSISTENCE_MODE === 'compute') {
+      var pb = buildPersistence(ro, PARAMS);
+      PERSIST[ro] = pb.select('persist');
+      PERSIST_FRAC[ro] = pb.select('frac');
+    } else {
+      PERSIST[ro] = ee.Image.constant(0).rename('persist');
+      PERSIST_FRAC[ro] = ee.Image.constant(0).rename('frac');
+    }
+  }
+})();
 
 var exportSource = s1Joined;
 if (CONFIG.TEST_LIMIT > 0) {

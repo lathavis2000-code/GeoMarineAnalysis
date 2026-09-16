@@ -497,6 +497,75 @@ section('14. Panel version stamps cannot go stale');
     SRC.indexOf("sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)'") !== -1);
 })();
 
+section('15. Study scripts LOAD, not just parse');
+// node --check proves a file is syntactically valid. It says nothing about an
+// identifier that is never defined, or one that is read before it is assigned.
+// sb02_sar_export.js shipped with both: buildPersistence() read a collection
+// named SCENES that exists nowhere in the file, and the block calling it ran at
+// module level ~115 lines before s1Joined was assigned. Both passed node --check
+// and the ES5 gate, and the script died in the Code Editor on line 778 before
+// CHECK 1 could print. Executing the file under the stub catches that class.
+//
+// Each script runs in its OWN vm context so it cannot clobber the globals the
+// sections above rely on.
+(function () {
+  var dir = path.join(ROOT, 'studies');
+  if (!fs.existsSync(dir)) { ok('no studies/ directory to load', true); return; }
+
+  var scripts = [];
+  (function walk(d) {
+    fs.readdirSync(d).forEach(function (f) {
+      var full = path.join(d, f);
+      if (fs.statSync(full).isDirectory()) return walk(full);
+      if (/\.js$/.test(f)) scripts.push(full);
+    });
+  })(dir);
+
+  ok('studies/ contains at least one script to load', scripts.length > 0);
+
+  scripts.forEach(function (file) {
+    var rel = path.relative(ROOT, file);
+    var sandbox = { console: { log: function () {}, error: function () {} } };
+    vm.createContext(sandbox);
+    stub.install(sandbox);
+    var threw = null;
+    try {
+      vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: rel });
+    } catch (e) {
+      threw = e.constructor.name + ': ' + e.message;
+    }
+    ok(rel + ' executes without throwing', threw === null, threw);
+
+    if (threw === null && /sb02_sar_export/.test(rel)) {
+      var exps = sandbox.Export.exports;
+      // STAGE A writes one persistence asset per relative orbit.
+      var assets = exps.filter(function (e) { return e.dest === 'toAsset'; });
+      ok(rel + ': STAGE A exports one asset per relative orbit',
+        assets.length === 3, 'got ' + assets.length);
+
+      // PR #19: the write path appends _<PARAM_SET_ID> and the read path did
+      // not, so asset mode asked for images STAGE A never wrote. Both build the
+      // id from one expression now - assert the written id still carries it.
+      ok(rel + ': every persistence assetId carries the parameter set id',
+        assets.every(function (e) { return /_p\d+$/.test(String(e.opts.assetId)); }),
+        assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
+
+      // And the asset id must end with the same suffix as its description, so
+      // the two cannot drift apart the way they did before.
+      ok(rel + ': assetId and description agree',
+        assets.every(function (e) {
+          return String(e.opts.assetId).indexOf(String(e.opts.description)) !== -1;
+        }),
+        assets.map(function (e) {
+          return String(e.opts.description) + ' -> ' + String(e.opts.assetId);
+        }).join(' | '));
+
+      ok(rel + ': the placeholder asset root is gone',
+        !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
+    }
+  });
+})();
+
 function report() {
   console.log('\n' + '-'.repeat(60));
   if (failures.length === 0) {

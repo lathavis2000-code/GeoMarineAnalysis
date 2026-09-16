@@ -53,6 +53,22 @@ Running step 5 in `'compute'` mode is legal and gives identical numbers, but it
 re-evaluates the detector over every scene of every orbit inside every scene's
 own computation. On 278 scenes at 10 m it is very unlikely to finish.
 
+## Known-bad versions
+
+The copy before commit `HEAD` died in the Code Editor on line 778 with
+`SCENES is not defined`, before CHECK 1 could print. Two separate defects:
+
+1. `buildPersistence()` read a collection named `SCENES`, which appears nowhere
+   else in the file.
+2. The block that calls it ran at module level, ~115 lines *above* the line
+   that assigns `s1Joined`. Fixing the name alone would have swapped the
+   `ReferenceError` for `Cannot read properties of undefined (reading 'filter')`.
+
+Both passed `node --check` and the ES5 gate. `tests/ci.js` section 15 now
+*executes* every script under `studies/` against the Earth Engine stub, which
+catches an undefined identifier and a use-before-assignment alike. Run
+`node tests/ci.js` before pasting this file into the Code Editor.
+
 ## Things that will bite you
 
 **The persistence mask can delete real signal.** SB02 sits *in* a shipping lane.
