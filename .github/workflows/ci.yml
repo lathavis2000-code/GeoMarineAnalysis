@@ -1,0 +1,55 @@
+# CI for the STEMGeoHS Marine Earth Engine script.
+#
+# WHAT THIS CAN AND CANNOT COVER. The tool runs in the Google Earth Engine Code
+# Editor against an authenticated account, which CI has no access to, so nothing
+# that depends on a real reduceRegions/evaluate result is tested here and nothing
+# here should be read as saying the Earth Engine paths work. What it does cover
+# is the part that is plain JavaScript and has repeatedly broken in the past:
+#   - the file failing to parse at all,
+#   - a ReferenceError at load (v10.164 shipped one that broke FIND SWEET SPOT),
+#   - ES6 that the Code Editor rejects at RUNTIME but node --check accepts
+#     (v10.149 String.repeat, v10.158 Object.assign - both browser-only failures),
+#   - the statistics, the score guards, and whether click handlers are wired.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Parse, ES5 subset and smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Every snapshot at the repo root must parse, not just the live file - a
+      # historical copy that no longer parses is a broken artifact in the repo
+      # even if nobody pastes it into the Code Editor today. All four parse as
+      # of v10.174. No dependencies are installed: the suite has none on purpose,
+      # so CI cannot break on an unrelated registry outage.
+      - name: node --check every tool snapshot
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(GeoMarineAnalysisV10_*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No GeoMarineAnalysisV10_*.js found at the repo root."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "node --check $f"
+            node --check "$f"
+          done
+
+      - name: Smoke tests (stub harness)
+        run: node tests/ci.js
