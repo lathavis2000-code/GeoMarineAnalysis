@@ -406,6 +406,31 @@ section('13. S21 panel text belongs to the site on screen');
       ok(s.site + ': agrees in number with the count it prints',
         note.indexOf(' 1\n  have ') === -1 && note.indexOf(' 1\n  lean ') === -1,
         note.replace(/\n/g, ' | ').slice(0, 160));
+
+      // S21b describes FK01's climatology too, and says it "leans on the
+      // harmonic fit for 5 of its 12 months and imputes one outright" - all
+      // five non-well-sampled months, one of them wholly. v10.179's note
+      // counted only the four PARTIAL ones, so the tool printed 4 and 5 for
+      // the same set on the same screen. Neither was false; they defined
+      // "lean" differently and said nothing about it. The headline count must
+      // match the convention the other panel already uses.
+      if (shortfall) {
+        var head = note.match(/the other (\d+)\s*\n\s*leans? on the fitted harmonic/);
+        ok(s.site + ': the leaner count matches S21b (every month short of 3 years)',
+          !!head && parseInt(head[1], 10) === (s.thin + s.absent),
+          'headline=' + (head ? head[1] : 'not found') +
+          ' expected=' + (s.thin + s.absent));
+        // And the split must add back up to the headline.
+        // [\s\S] not . - the split wraps a line ("their own thin\n  samples"),
+        // and JS dot does not cross a newline without the s flag. The first
+        // version of this check used .*? and failed on correct output.
+        var split = note.match(/- (\d+) blended with [\s\S]*?, and (\d+) with none at all/);
+        if (s.thin > 0 && s.absent > 0) {
+          ok(s.site + ': the split sums to the headline',
+            !!split && (parseInt(split[1], 10) + parseInt(split[2], 10)) === (s.thin + s.absent),
+            split ? split[1] + '+' + split[2] : 'split not found');
+        }
+      }
     }
   });
 

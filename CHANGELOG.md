@@ -14,6 +14,40 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.181 S21/S21b RECONCILED: the two panels printed different counts for the
+  same set of FK01 months, on the same screen.
+
+    S21b (static text):  "leans on the harmonic fit for 5 of its 12 months and
+                          imputes one outright" - all five months short of 3
+                          years, one of them wholly.
+    S21 note (v10.179):  "4 lean on the fitted harmonic ... and 1 has no
+                          samples at all" - the four PARTIAL months only.
+
+  NEITHER IS FALSE. They define "lean" differently and neither says so. This is
+  not the defect the last five entries were about - no statement here is untrue
+  - but it costs a reader the same thing: two numbers for one quantity, with no
+  way to tell which is meant without reading the source. Worth fixing on those
+  grounds alone, and the note is the one I wrote, so it is mine to reconcile.
+
+  MEASURED, FK01: 7 calendar months carry 3+ years (Jan Feb Mar Apr May Jun
+  Dec), 4 carry exactly one year (Jul Aug Sep Nov), and Oct carries none.
+
+  FIXED: the note leads with the same count S21b uses and then shows the split
+  - "the other 5 lean on the fitted harmonic - 4 blended with their own thin
+  samples, and 1 with none at all, imputed outright." The panels reconcile on
+  screen instead of leaving a reader to reconcile them.
+
+  CI 91 -> 93. The headline count must equal every month short of 3 years, and
+  the split must sum back to it. Verified by restoring the v10.179 convention:
+  node --check and the ES5 gate pass on it, and one new check fails.
+
+  AN ERROR IN MY OWN TEST, the third release running. The split regex used .*?
+  across a line break; JS dot does not cross a newline without the s flag, so
+  it failed on CORRECT output. It uses a character class that spans newlines
+  now. Three releases, three test bugs - each one a test asserting something
+  subtly different from what it meant to assert, which is the same failure the
+  tests exist to catch, one level up.
+
 v10.180 VERSION-STAMP: the S21 panel header read "(v10.178)" while the tool ran
   v10.179. That stamp was my own regression, introduced in v10.178.
 

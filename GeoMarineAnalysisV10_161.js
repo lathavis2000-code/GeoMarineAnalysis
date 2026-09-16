@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.180';
+var TOOL_VERSION = 'v10.181';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -11927,6 +11927,36 @@ function updateS21Acoustic(lat, lon){
   }
   s21CaveatV.setValue(cav);
 
+  // v10.181: headline the SAME count S21b uses. Both texts describe FK01's
+  // climatology and they printed different numbers for it: S21b says it "leans
+  // on the harmonic fit for 5 of its 12 months and imputes one outright"
+  // (all 5 non-well-sampled months, one of them wholly), while v10.179's note
+  // said 4 lean and 1 is imputed (the 4 partial ones only). Neither is false -
+  // they define "lean" differently - but a reader comparing the two panels sees
+  // 4 and 5 for the same set with nothing saying why. FK01 measured: 7 months
+  // carry 3+ years (Jan Feb Mar Apr May Jun Dec), 4 carry 1 (Jul Aug Sep Nov),
+  // and Oct carries none. The note now leads with 5 and shows the split, so the
+  // two panels reconcile on screen instead of needing a reader to reconcile them.
+  var _thin=distinctAny-wellSampled, _absent=12-distinctAny, _lean=_thin+_absent;
+  var qualityLine;
+  if(_lean===0){
+    qualityLine='  Quality is UNIFORM here: all 12 calendar months carry '+
+      CLIM_MIN_SAMPLES_PER_MONTH+'+ years, so no month\n  leans on the fitted harmonic and nothing is imputed.\n';
+  } else {
+    qualityLine='  Quality VARIES: '+wellSampled+'/12 calendar months carry '+
+      CLIM_MIN_SAMPLES_PER_MONTH+'+ years; the other '+_lean+'\n  '+
+      (_lean===1?'leans':'lean')+' on the fitted harmonic';
+    if(_thin>0&&_absent>0){
+      qualityLine+=' - '+_thin+' blended with '+(_thin===1?'its':'their')+' own thin\n'+
+        '  samples, and '+_absent+' with none at all, imputed outright.\n';
+    } else if(_absent>0){
+      qualityLine+=' - '+(_absent===1?'it has':'they have')+' no samples at all,\n'+
+        '  imputed outright.\n';
+    } else {
+      qualityLine+=', blended with '+(_thin===1?'its':'their')+' own thin samples.\n';
+    }
+  }
+
   s21NoteV.setValue(
     'Band: '+site.band+'  |  '+site.record+'\n'+
     'Source: '+site.source+'\n'+
@@ -11940,20 +11970,7 @@ function updateS21Acoustic(lat, lon){
         // the panel printed "12/12 ... so the rest lean on the harmonic" when
         // there is no rest, directly contradicting S21b two rows below ("0
         // fully imputed"). Both halves are computed now.
-        ((distinctAny-wellSampled)===0&&(12-distinctAny)===0
-          ? '  Quality is UNIFORM here: all 12 calendar months carry '+
-            CLIM_MIN_SAMPLES_PER_MONTH+'+ years, so no month\n  leans on the fitted harmonic and nothing is imputed.\n'
-          // Agreement with the count, for the same reason as everything else in
-          // this panel: "and 1 have no samples" is the same defect in miniature.
-          : '  Quality VARIES: '+wellSampled+'/12 calendar months carry '+
-            CLIM_MIN_SAMPLES_PER_MONTH+'+ years; '+(distinctAny-wellSampled)+
-            ((distinctAny-wellSampled)===1?'\n  leans':'\n  lean')+
-            ' on the fitted harmonic rather than on their own samples'+
-            ((12-distinctAny)>0
-              ? ', and '+(12-distinctAny)+
-                ((12-distinctAny)===1?'\n  has no samples at all and is':'\n  have no samples at all and are')+
-                ' imputed outright.\n'
-              : '.\n'))
+        qualityLine
       : 'This site does NOT clear the climatology gates, so no deseasonalized\n'+
         '  comparison is available for it.\n')+
     (passAC1 ? ''
@@ -13550,6 +13567,32 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.181 S21/S21b RECONCILED: the two panels printed DIFFERENT counts');
+print('  for the same set of FK01 months, on the same screen.');
+print('    S21b (static): "leans on the harmonic fit for 5 of its 12 months');
+print('      and imputes one outright" - all 5 months short of 3 years, one');
+print('      of them wholly.');
+print('    S21 note (v10.179, mine): "4 lean on the fitted harmonic ... and 1');
+print('      has no samples at all" - the 4 PARTIAL months only.');
+print('  NEITHER IS FALSE. They define "lean" differently and say nothing');
+print('  about it, so a reader comparing the panels sees 4 and 5 for one set.');
+print('  That is not the earlier defect - no statement here is untrue - but it');
+print('  costs a reader the same thing: they cannot tell which number to');
+print('  trust without reading the source.');
+print('  MEASURED, FK01: 7 months carry 3+ years (Jan Feb Mar Apr May Jun');
+print('    Dec), 4 carry exactly 1 (Jul Aug Sep Nov), and Oct carries none.');
+print('  FIXED: the note leads with the SAME count S21b uses and then shows');
+print('    the split - "the other 5 lean on the fitted harmonic - 4 blended');
+print('    with their own thin samples, and 1 with none at all, imputed');
+print('    outright". The panels now reconcile on screen.');
+print('  CI 91 -> 93: the headline count must equal every month short of 3');
+print('    years, and the split must sum back to it. Verified by restoring');
+print('    the v10.179 convention: node --check and the ES5 gate pass, one');
+print('    new check fails.');
+print('  AN ERROR IN MY OWN TEST, third release running: the split regex used');
+print('    .*? across a line break. JS dot does not cross a newline without');
+print('    the s flag, so it failed on CORRECT output. Uses [^] style now.');
 print('');
 print('v10.180 VERSION-STAMP: the S21 header read "(v10.178)" while the tool');
 print('  ran v10.179. That stamp was MY regression, introduced in v10.178.');
