@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.174';
+var TOOL_VERSION = 'v10.175';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -223,6 +223,82 @@ var ACOUSTIC_SITES = {
     {m:'2022-04', v:2.048, nh:720, dep:'11'},
     {m:'2022-05', v:1.957, nh:744, dep:'11'},
     {m:'2022-06', v:1.467, nh:349, dep:'11'}
+    ]
+  },
+  // ------------------------------------------------------------------
+  // FK02 - SECOND BIOPHONY SITE, FLORIDA KEYS (v10.175 NEW)
+  //
+  // 24.4888 N, -81.66632. 5 deployments, 12,654 hourly TOL rows, 2018-12-18 ..
+  // 2021-05-15, reduced to 20 monthly values (2019-10 and 2020-05 dropped: fewer
+  // than 20 hours on one side of the ratio). 27.5 km from FK01, so their 20 km
+  // radii overlap and getAcousticSite() resolves a click in the overlap to the
+  // NEARER site - deterministic, not arbitrary.
+  //
+  // WHY THIS SITE AND NOT A BETTER-COVERED ONE. The selection rule was fixed
+  // BEFORE any trend was computed, because choosing a site by whether it yields
+  // p<0.05 is the garden of forking paths, and the seasonal test exists to stop
+  // exactly that: (1) inside the tool's own reef zone, (2) clears the A1 design
+  // floor, (3) best coverage among those. GR01 Gray's Reef has the best coverage
+  // in the whole archive for a warm-water site - 33 months, 12 seasons, 33 pairs
+  // - and is EXCLUDED, because at 31.4 N it fails computeScore()'s own
+  // isReefZone test (lat>-30 && lat<30). Excluding the best-covered candidate is
+  // what applying the rule consistently costs.
+  //
+  // THE CREPUSCULAR SIGNATURE IS VERIFIED HERE, NOT ASSUMED - and that check is
+  // what disqualified Hawaii. Shrimp-band level relative to the night trough
+  // (01-04 local), measured over each site's whole record:
+  //     FK01  dawn +2.21 dB   dusk +2.19 dB   <- both peaks, index valid
+  //     FK02  dawn +1.54 dB   dusk +1.45 dB   <- both peaks, index valid
+  //     HI01  dawn -0.59 dB   dusk +0.70 dB   <- NO dawn peak
+  //     HI03  dawn -0.09 dB   dusk +0.40 dB   <- NO dawn peak
+  //     HI04  dawn -0.02 dB   dusk +1.01 dB   <- NO dawn peak
+  // All three Hawaii sites peak once, at local 19, and sit at or BELOW the night
+  // floor at dawn. This index is (dawn+dusk) MINUS night; where dawn contributes
+  // nothing or contributes negatively it is not the same quantity, whatever the
+  // site's p-value would have been. HI03 and HI04 both clear the A1 design floor
+  // on coverage (24 and 22 pairs) and were still rejected on this measurement
+  // alone - the same lesson SB02 taught: the index transfers on measured diel
+  // structure, never on "it is a coral reef".
+  //
+  // DISCLOSED: this site does NOT activate A1 and was never expected to be
+  // chosen for that. It has 5 seasons but only 13 comparable pairs, against the
+  // ACOUSTIC_MIN_PAIRS=15 floor, so it is refused from the score before
+  // significance is even consulted - and its seasonal test is p=0.6134 anyway.
+  // Its climatology is refused too (20 valid months against
+  // CLIM_MIN_TOTAL_SAMPLES=26), so S21b shows only the seasonal path here. It
+  // earns its place as a genuine SECOND, INDEPENDENT Florida Keys reef reading
+  // that also finds no trend, not as a way to make A1 fire.
+  // Per-deployment mean ratio - no calibration step, unlike FK01's dep11:
+  // dep01 +1.35, dep03 +1.50, dep04 +1.60, dep05 +1.54, dep06 +1.63 dB.
+  sanctsound_fk02: {
+    label: 'SanctSound FK02, Florida Keys NMS (Eastern Dry Rocks)',
+    lat: 24.4888, lon: -81.66632, radius_km: 20,
+    source: 'NOAA/NPS SanctSound - gs://noaa-passive-bioacoustic/sanctsound/products/sound_level_metrics/fk02/',
+    record: '2018-12-18 to 2021-05-15 (5 deployments, 12654 hourly TOL rows)',
+    band: 'TOL_2000..TOL_20000 (snapping shrimp)',
+    varLabel: 'diel ratio (crepuscular minus night trough)',
+    varKind: 'diel_ratio', varUnit: 'dB',
+    series: [
+    {m:'2018-12', v:1.057, nh:321, dep:'01'},
+    {m:'2019-01', v:1.396, nh:744, dep:'01'},
+    {m:'2019-02', v:1.402, nh:672, dep:'01'},
+    {m:'2019-03', v:1.576, nh:738, dep:'01'},
+    {m:'2019-04', v:1.303, nh:489, dep:'01'},
+    {m:'2019-11', v:1.793, nh:720, dep:'03'},
+    {m:'2019-12', v:1.378, nh:744, dep:'03'},
+    {m:'2020-01', v:1.318, nh:744, dep:'03'},
+    {m:'2020-02', v:1.314, nh:691, dep:'03+04'},
+    {m:'2020-03', v:1.781, nh:744, dep:'04'},
+    {m:'2020-04', v:1.426, nh:720, dep:'04'},
+    {m:'2020-07', v:1.492, nh:414, dep:'05'},
+    {m:'2020-08', v:1.433, nh:744, dep:'05'},
+    {m:'2020-09', v:1.598, nh:720, dep:'05'},
+    {m:'2020-10', v:1.645, nh:426, dep:'05'},
+    {m:'2021-01', v:1.421, nh:390, dep:'06'},
+    {m:'2021-02', v:1.270, nh:672, dep:'06'},
+    {m:'2021-03', v:1.751, nh:744, dep:'06'},
+    {m:'2021-04', v:1.742, nh:716, dep:'06'},
+    {m:'2021-05', v:1.988, nh:340, dep:'06'}
     ]
   },
   // ------------------------------------------------------------------
@@ -11392,7 +11468,7 @@ panel.add(lbl('CAVEAT: point-source only. Compare vs S2/S18 (satellite/model) ab
 // blank at nearly every click, and both say so rather than interpolating.
 panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)','#0a3a3a'));
 panel.add(lbl('Real hydrophone data (NOT a model/satellite) - NOAA/NPS SanctSound',7,'#227777'));
-panel.add(lbl('Only populated within radius of an actual hydrophone site (2 sites: FK01 Florida Keys - biophony diel ratio; SB02 Stellwagen Bank - ambient band level, NOT biophony, see S21b)',7,'#227777'));
+panel.add(lbl('Only populated within radius of an actual hydrophone site (3 sites: FK01 and FK02 Florida Keys - biophony diel ratio; SB02 Stellwagen Bank - ambient band level, NOT biophony, see S21b)',7,'#227777'));
 panel.add(lbl('STATE VARIABLE: diel ratio of the 2-20 kHz snapping-shrimp band - crepuscular (local dawn 05-07 + dusk 17-18) MINUS night trough (local 01-04), in dB. A RATIO, so it is unit-free and cancels any constant per-deployment calibration offset. It is NOT an absolute sound level: FK01 deployment 11 carries a measured low-frequency artifact (+16.95 dB at 25 Hz, +8.89 at 63 Hz, +2.90 at 125 Hz, ~0 above 500 Hz, 2022-05 vs 2021-05) that is flow noise or mooring strum, not vessel traffic. No anthropophony variable is shipped for exactly that reason.',7,'#0a5555'));
 panel.add(lbl('TEST: Seasonal (Hirsch-Slack) Mann-Kendall - each month is ranked ONLY against the same calendar month in other years. Plain Mann-Kendall on the pooled monthly levels returns tau=+0.227 p=0.0878, which is SAMPLING ALIASING: Jul/Aug/Sep/Oct/Nov each occur in exactly one year of this record and summer runs ~4 dB hotter, so the pooled series tilts upward on its own. April 2019-2022 reads 109.32/110.29/109.21/109.33 dB - tau exactly 0.000.',7,'#663388'));
 panel.add(lbl('v10.173 CORRECTION - v10.172 SAID THE OPPOSITE OF THE TRUTH HERE AND IT SHOWED ON SCREEN. It claimed computeUsableClimatology() "refuses" FK01 and printed DISTINCT 7/9 FAIL. It does not refuse it. The real gate counts calendar months holding AT LEAST ONE valid sample (11 at FK01) against CLIM_MIN_DISTINCT_MONTHS=9; the 7 was months with 3+ years, which is CLIM_MIN_SAMPLES_PER_MONTH, an internal QUALITY counter that gates nothing. FK01 clears both floors and the climatology IS built - see S21b below, which now runs it. What remains true: CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for EVERY SanctSound site, because the archive spans 2018-11 to 2022-06, 44 months end to end, and the best-covered site in it (SB02 Stellwagen, 44 continuous months) is still 4 short. AC1/CSD stays out. No gate constant was changed.',7,'#aa5533'));
@@ -11447,8 +11523,8 @@ function updateS21bBenchmark(lat, lon){
     s21bVerdictV.style().set('backgroundColor','#eeeeee');
     s21bVerdictV.style().set('border','2px solid #aaaaaa');
     s21bAV.setValue('n/a'); s21bBV.setValue('n/a'); s21bCV.setValue('n/a'); s21bClimV.setValue('n/a');
-    s21bNoteV.setValue('Two sites carry acoustic series: FK01 Florida Keys (24.43313,-81.93068)\n'+
-      'and SB02 Stellwagen Bank (42.470793,-70.24294).');
+    s21bNoteV.setValue('Three sites carry acoustic series: FK01 Florida Keys (24.43313,-81.93068),\n'+
+      'FK02 Florida Keys (24.4888,-81.66632) and SB02 Stellwagen Bank (42.470793,-70.24294).');
     return;
   }
   var rows=site.series, i, raw=[], tvs=[];
@@ -11566,9 +11642,10 @@ function updateS21Acoustic(lat, lon){
     s21NV.setValue('n/a'); s21RangeV.setValue('n/a'); s21TauV.setValue('n/a');
     s21SlopeV.setValue('n/a'); s21SeasonV.setValue('n/a'); s21GateV.setValue('n/a');
     s21NoteV.setValue('SanctSound covers US National Marine Sanctuaries only.\n'+
-      'Two sites are wired in: FK01 Florida Keys (24.43313,-81.93068), radius 20 km,\n'+
-      'biophony diel ratio; and SB02 Stellwagen Bank (42.470793,-70.24294), radius\n'+
-      '25 km, ambient band level - a methods benchmark, NOT a biophony index.\n'+
+      'Three sites are wired in: FK01 (24.43313,-81.93068) and FK02 (24.4888,-81.66632),\n'+
+      'Florida Keys, radius 20 km each, biophony diel ratio; and SB02 Stellwagen Bank\n'+
+      '(42.470793,-70.24294), radius 25 km, ambient band level - a methods benchmark,\n'+
+      'NOT a biophony index.\n'+
       'There is NO SanctSound coverage of Bocas del Toro, Panama or anywhere in the\n'+
       'wider Caribbean outside the Florida Keys - that would need a hydrophone\n'+
       'deployment or a different archive, not a wider search radius.');
@@ -13270,6 +13347,55 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.175 FK02 NEW: a third acoustic site, a second BIOPHONY site - and the');
+print('  honest finding that NO site in this archive can activate A1.');
+print('');
+print('  THE ASK WAS "add a site so A1 is not dead code". The site is added and A1');
+print('    is still dead, because the archive cannot supply what would wake it.');
+print('    Nothing was loosened to change that: ACOUSTIC_MIN_PAIRS, ACOUSTIC_MIN_SEASONS,');
+print('    ACOUSTIC_MAX_POINTS and every climatology gate are untouched.');
+print('  SELECTION RULE FIXED BEFORE ANY TREND WAS COMPUTED, because picking a site by');
+print('    whether it yields p<0.05 is the garden of forking paths, and the seasonal');
+print('    test exists to stop precisely that: (1) inside the tool\'s own reef zone,');
+print('    (2) clears the A1 design floor, (3) best coverage among those.');
+print('  GR01 GRAY\'S REEF IS EXCLUDED DESPITE HAVING THE BEST COVERAGE of any');
+print('    warm-water site in the archive - 33 months, 12 seasons, 33 pairs. At');
+print('    31.4 N it fails computeScore()\'s own isReefZone test (lat>-30 && lat<30).');
+print('    Dropping the best-covered candidate is what applying the rule costs.');
+print('  HAWAII IS EXCLUDED ON A MEASUREMENT, not on coverage. Shrimp-band level');
+print('    relative to the night trough (01-04 local), whole record:');
+print('      FK01 dawn +2.21 dusk +2.19 | FK02 dawn +1.54 dusk +1.45  <- index valid');
+print('      HI01 dawn -0.59 dusk +0.70 | HI03 dawn -0.09 dusk +0.40');
+print('      HI04 dawn -0.02 dusk +1.01                               <- NO dawn peak');
+print('    All three Hawaii sites peak ONCE, at local 19, and sit at or below the');
+print('    night floor at dawn. The index is (dawn+dusk) MINUS night, so where dawn');
+print('    contributes nothing it is not the same quantity. HI03 and HI04 both CLEAR');
+print('    the A1 design floor on coverage (24 and 22 pairs) and were rejected on');
+print('    this alone - the SB02 lesson again: the index transfers on measured diel');
+print('    structure, never on "it is a coral reef".');
+print('  FK02, 24.4888 -81.66632, 5 deployments, 12,654 hourly TOL rows,');
+print('    2018-12-18..2021-05-15, 20 monthly values. Crepuscular signature VERIFIED');
+print('    (dawn +1.54, dusk +1.45 dB). Per-deployment means +1.35/+1.50/+1.60/');
+print('    +1.54/+1.63 dB - no calibration step, unlike FK01\'s dep11. 27.5 km from');
+print('    FK01, so the 20 km radii overlap and a click in the overlap resolves to');
+print('    the NEARER site.');
+print('  FK02 DOES NOT ACTIVATE A1 EITHER, and is not offered as if it might: 5');
+print('    seasons but only 13 comparable pairs against ACOUSTIC_MIN_PAIRS=15, so it');
+print('    is refused from the score before significance is consulted - and its');
+print('    seasonal test is p=0.6134 regardless. Its climatology is refused too (20');
+print('    valid months vs CLIM_MIN_TOTAL_SAMPLES=26), which makes it the first REAL');
+print('    series to exercise S21b\'s seasonal-path-only branch. It earns its place as');
+print('    an independent SECOND Florida Keys reading that also finds no trend.');
+print('  THE COMPLETE AUDIT: FK01 passes the floor and is null (p=0.4330). FK02, FK03,');
+print('    FK04, HI05/06 and all four PM sites fail the floor. HI01/03/04 fail the');
+print('    diel check. GR01-03 and every temperate sanctuary fail the reef zone. The');
+print('    ONLY site with both a significant trend and enough structure to vote is');
+print('    SB02 (p=0.0219) - refused on varKind, because wind noise at a 42 N non-reef');
+print('    site must not move a coral score. That refusal is the feature working.');
+print('  CONCLUSION, stated rather than buried: A1 is a tested, dormant capability.');
+print('    Waking it needs a longer tropical-reef record than SanctSound holds, not');
+print('    another site from it and not a lower threshold.');
 print('');
 print('v10.174 A1 NEW: the acoustic term is wired into the FUSED Coastal Cancer');
 print('  Score - and it changes no score anywhere on Earth today, which is the');

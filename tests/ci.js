@@ -152,13 +152,33 @@ Object.keys(ACOUSTIC_SITES).forEach(function (k) {
     return true;
   })());
 });
-// Regression on the v10.172 error: the climatology gate counts calendar months
-// with >=1 sample, NOT months with >=CLIM_MIN_SAMPLES_PER_MONTH. Both shipped
-// sites clear it, and a panel must never again claim otherwise.
+// Regression on the v10.172 error. The point is NOT that every site passes -
+// FK02 has 20 valid months and is correctly refused - but that the gate's
+// decision matches the gate's own rule: nTotal against CLIM_MIN_TOTAL_SAMPLES,
+// and calendar months holding AT LEAST ONE sample against
+// CLIM_MIN_DISTINCT_MONTHS. v10.172 asserted a refusal by counting months with
+// >=CLIM_MIN_SAMPLES_PER_MONTH instead, which is an internal quality counter
+// and gates nothing. Asserting "all sites pass" would have re-hidden that, and
+// would break the moment a legitimately-thin site is added.
 Object.keys(ACOUSTIC_SITES).forEach(function (k) {
-  var tv = ACOUSTIC_SITES[k].series.map(function (r) { return { t: Date.parse(r.m + '-15T00:00:00Z'), v: r.v }; });
+  var series = ACOUSTIC_SITES[k].series;
+  var tv = series.map(function (r) { return { t: Date.parse(r.m + '-15T00:00:00Z'), v: r.v }; });
   var c = computeUsableClimatology(tv);
-  ok('computeUsableClimatology accepts ' + k, c.ok === true, c.ok ? '' : c.reason);
+  var cal = {}, distinctAny = 0;
+  series.forEach(function (r) { var m = parseInt(r.m.substring(5, 7), 10); cal[m] = (cal[m] || 0) + 1; });
+  for (var m2 = 1; m2 <= 12; m2++) if ((cal[m2] || 0) >= 1) distinctAny++;
+  var shouldPass = series.length >= CLIM_MIN_TOTAL_SAMPLES && distinctAny >= CLIM_MIN_DISTINCT_MONTHS;
+  ok('climatology gate on ' + k + ' matches its own rule (expect ' + (shouldPass ? 'accept' : 'refuse') + ')',
+    c.ok === shouldPass,
+    'ok=' + c.ok + ' nTotal=' + c.nTotalSamples + ' nDistinct=' + c.nDistinctMonths +
+    ' (>=1-sample months=' + distinctAny + ')');
+  // And the gate must never be decided by the quality counter.
+  var wellSampled = 0;
+  for (var m3 = 1; m3 <= 12; m3++) if ((cal[m3] || 0) >= CLIM_MIN_SAMPLES_PER_MONTH) wellSampled++;
+  if (shouldPass && wellSampled < CLIM_MIN_DISTINCT_MONTHS) {
+    ok('gate on ' + k + ' is not decided by CLIM_MIN_SAMPLES_PER_MONTH', c.ok === true,
+      'wellSampled=' + wellSampled + ' would fail a >=3-years reading, but the real gate accepts');
+  }
 });
 
 section('7. Acoustic correction guards (A1)');
