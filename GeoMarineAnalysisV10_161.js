@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.171';
+var TOOL_VERSION = 'v10.172';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -136,6 +136,214 @@ function getInSituBaseline(lat, lon) {
     }
   }
   return best;
+}
+
+// ============================================================
+// MODULE A12 - REAL PASSIVE-ACOUSTIC BASELINE (S21, v10.172 NEW)
+//
+// SOURCE: NOAA/NPS SanctSound, public GCS bucket noaa-passive-bioacoustic,
+// products/sound_level_metrics/fk01/ - the hourly THIRD-OCTAVE LEVEL (TOL_1h)
+// product. 8 deployments, 16,440 hourly rows, 30 bands (TOL_25..TOL_20000),
+// 2018-12-18T19:00Z .. 2022-06-15T12:00Z. Pulled and reduced OUTSIDE Earth
+// Engine (the Code Editor sandbox has no fetch/XHR); what is embedded below is
+// the reduced monthly table, exactly as S19's IN_SITU_BASELINES embeds cleaned
+// SECOORA/GEM sensor stats rather than fetching them live.
+//
+// WHY THE VARIABLE IS A DIEL RATIO AND NOT AN ABSOLUTE SOUND LEVEL.
+// MEASURED, not assumed. Absolute monthly levels at FK01 carry a large
+// instrument artifact in deployment 11 (2022-03..2022-06). Comparing the same
+// calendar month across years, 2022-05 minus 2021-05, per band:
+//     TOL_25  +16.95 dB   TOL_63  +8.89 dB   TOL_125 +2.90 dB
+//     TOL_500  -0.44 dB   TOL_2000 -1.10 dB  TOL_20000 -1.02 dB
+// A monotonic rise that grows as frequency falls and vanishes above 500 Hz is
+// flow noise / mooring strum, NOT vessel traffic - a vessel lifts 63-500 Hz
+// broadly. Any anthropophony variable built on TOL_63/TOL_125 across these
+// deployments would have reported a ~5 dB traffic increase that did not happen.
+// That is why NO anthropophony variable is shipped here at all.
+// The diel ratio is immune to it twice over: it lives in the 2-20 kHz snapping
+// shrimp band (unaffected, see the deltas above), and it is a DIFFERENCE, so
+// any constant per-deployment calibration offset cancels. Per-deployment means
+// of the ratio confirm this empirically - dep01 +1.56, dep04 +1.75, dep06
+// +1.51, dep08 +1.82, dep10 +1.79, dep11 +1.74 dB. Deployment 11 is ordinary.
+//
+// DEFINITION: power-domain mean of TOL_2000..TOL_20000 over the crepuscular
+// hours (10,11,12,22,23 UTC ~ local dawn 05-07 and dusk 17-18) MINUS the same
+// over the night trough (06,07,08,09 UTC ~ local 01-04), in dB. Snapping shrimp
+// at FK01 are crepuscular: pooled over the whole record the band peaks at local
+// 06 (110.43 dB) and local 18 (110.41 dB) and troughs at local 03 (108.22 dB).
+// dB values are averaged in the POWER domain (10*log10(mean(10^(x/10)))), never
+// arithmetically - a decibel is a logarithm and arithmetic means of dB are wrong.
+//
+// 2020-10 is ABSENT on purpose: only 7 crepuscular and 4 trough hours were
+// recorded (deployment 06 started 2020-10-30), below the >=20-hour floor each
+// side of the ratio needs. 28 of the record's 29 months survive.
+var ACOUSTIC_SITES = {
+  sanctsound_fk01: {
+    label: 'SanctSound FK01, Florida Keys NMS (Western Dry Rocks)',
+    lat: 24.43313, lon: -81.93068, radius_km: 20,
+    source: 'NOAA/NPS SanctSound - gs://noaa-passive-bioacoustic/sanctsound/products/sound_level_metrics/fk01/',
+    record: '2018-12-18 to 2022-06-15 (8 deployments, 16440 hourly TOL rows)',
+    band: 'TOL_2000..TOL_20000 (snapping shrimp)',
+    // NOTE ON DISTANCE: this is 55.0 km from the Looe Key SeapHOx station in
+    // S19 (24.5463,-81.4014, radius 15 km). The two NEVER co-fire and this
+    // panel must not be read as ground-truthing that one. The nearest FK
+    // hydrophone to Looe Key is FK02 at 27.6 km - still outside S19's radius.
+    // There is no co-located acoustic + carbonate-chemistry site in this archive.
+    diel: [
+    {m:'2018-12', v:1.104, nh:317, dep:'01'},
+    {m:'2019-01', v:1.421, nh:744, dep:'01'},
+    {m:'2019-02', v:1.397, nh:672, dep:'01'},
+    {m:'2019-03', v:1.987, nh:737, dep:'01'},
+    {m:'2019-04', v:1.871, nh:451, dep:'01'},
+    {m:'2020-02', v:1.667, nh:221, dep:'04'},
+    {m:'2020-03', v:1.993, nh:744, dep:'04'},
+    {m:'2020-04', v:1.840, nh:720, dep:'04'},
+    {m:'2020-05', v:1.645, nh:739, dep:'04'},
+    {m:'2020-06', v:1.581, nh:281, dep:'04'},
+    {m:'2020-11', v:1.388, nh:720, dep:'06'},
+    {m:'2020-12', v:1.660, nh:744, dep:'06'},
+    {m:'2021-01', v:1.637, nh:744, dep:'06'},
+    {m:'2021-02', v:1.336, nh:122, dep:'06'},
+    {m:'2021-03', v:2.179, nh:348, dep:'07'},
+    {m:'2021-04', v:2.508, nh:698, dep:'07+08'},
+    {m:'2021-05', v:1.798, nh:744, dep:'08'},
+    {m:'2021-06', v:1.537, nh:720, dep:'08'},
+    {m:'2021-07', v:2.123, nh:744, dep:'08'},
+    {m:'2021-08', v:2.170, nh:659, dep:'08+09'},
+    {m:'2021-09', v:2.068, nh:409, dep:'09'},
+    {m:'2021-12', v:2.000, nh:607, dep:'10'},
+    {m:'2022-01', v:1.416, nh:744, dep:'10'},
+    {m:'2022-02', v:1.967, nh:459, dep:'10'},
+    {m:'2022-03', v:1.497, nh:509, dep:'11'},
+    {m:'2022-04', v:2.048, nh:720, dep:'11'},
+    {m:'2022-05', v:1.957, nh:744, dep:'11'},
+    {m:'2022-06', v:1.467, nh:349, dep:'11'}
+    ]
+  }
+};
+
+// Same matcher shape as getInSituBaseline() above - nearest site whose own
+// radius contains the click, or null. ES5 shallow copy, no Object.assign.
+function getAcousticSite(lat, lon){
+  var best=null, bestDist=Infinity;
+  for(var key in ACOUSTIC_SITES){
+    if(!Object.prototype.hasOwnProperty.call(ACOUSTIC_SITES,key)) continue;
+    var st=ACOUSTIC_SITES[key];
+    var d=haversineKm(lat,lon,st.lat,st.lon);
+    if(d<=st.radius_km && d<bestDist){
+      var _st={key:key, distance_km:d};
+      for(var _sk in st){ if(Object.prototype.hasOwnProperty.call(st,_sk)) _st[_sk]=st[_sk]; }
+      best=_st; bestDist=d;
+    }
+  }
+  return best;
+}
+
+// SEASONAL (HIRSCH-SLACK) MANN-KENDALL.
+// S and var(S) are computed WITHIN each calendar month across years, then
+// summed. Nothing is deseasonalized, nothing is imputed, and no climatology is
+// built - which is the point, because FK01 CANNOT build one (see S21 panel text).
+//
+// WHY THIS AND NOT THE PLAIN mannKendallTest() ABOVE. MEASURED on this exact
+// table's underlying absolute levels: plain Mann-Kendall over the 29 pooled
+// monthly snapping-shrimp means returns tau=+0.227, p=0.0878 - close enough to
+// look like an emerging trend. It is sampling aliasing. FK01's deployments are
+// seasonally unbalanced (July, August, September, October and November each
+// occur in exactly ONE year), and the shrimp band runs ~4 dB hotter in summer,
+// so the later-weighted summer coverage tilts the pooled series upward on its
+// own. Comparing like with like kills it: April across 2019-2022 reads
+// 109.32, 110.29, 109.21, 109.33 dB - tau exactly 0.000. One more summer
+// deployment would have pushed that pooled p under 0.05 and meant nothing.
+// The seasonal test cannot make that mistake: a value is only ever ranked
+// against the SAME calendar month in another year.
+//
+// DISCLOSED LIMIT: with 3-4 years per season the per-season S values are tiny
+// and the normal approximation to their SUM is the standard (Hirsch & Slack
+// 1984) but not exact. The inter-season covariance correction for serially
+// dependent seasons is NOT applied - at n=3-4 per season it is estimated far
+// too noisily to help, and omitting it is the conventional choice. Treat a
+// borderline p from this test as borderline.
+//
+// FALSE-POSITIVE RATE, MEASURED - not assumed, and not inherited from the plain
+// Mann-Kendall's calibration. Monte Carlo in a Node harness against THIS
+// function, at FK01's exact design (7 seasons of 3,4,4,4,3,3,3 years), pure
+// uniform noise, 4000 draws: 4.05% of draws returned p<0.05, against a nominal
+// 5%. Slightly CONSERVATIVE, which is the safe direction - this test does not
+// over-trigger at the sample size it is actually being used at. Contrast S17's
+// SNR>=2.0 rule, which is calibrated to no false-positive rate at all (see the
+// S17b panel text, v10.145).
+function seasonalMannKendall(rows){
+  var bySeason={}, i;
+  for(i=0;i<(rows||[]).length;i++){
+    var r=rows[i];
+    if(r===null||r===undefined||r.v===null||r.v===undefined||isNaN(r.v)) continue;
+    var cm=parseInt(r.m.substring(5,7),10);
+    if(!bySeason[cm]) bySeason[cm]=[];
+    bySeason[cm].push(r.v);
+  }
+  var Stot=0, Vtot=0, nPairs=0, seasonsUsed=0, seasonsSkipped=0, detail=[];
+  for(var cm2=1; cm2<=12; cm2++){
+    var v=bySeason[cm2];
+    if(!v||v.length<2){ if(v){ seasonsSkipped++; } continue; }
+    var n=v.length, S=0, a, b;
+    for(a=0;a<n-1;a++){
+      for(b=a+1;b<n;b++){
+        var diff=v[b]-v[a];
+        if(diff>0) S++; else if(diff<0) S--;
+      }
+    }
+    // per-season tie correction, same formula the main mannKendallTest() uses
+    var sorted=v.slice().sort(function(x,y){return x-y;});
+    var tieTerm=0, runLen=1;
+    for(var s2=1;s2<=n;s2++){
+      if(s2<n && sorted[s2]===sorted[s2-1]){ runLen++; }
+      else { if(runLen>1){ tieTerm+=runLen*(runLen-1)*(2*runLen+5); } runLen=1; }
+    }
+    var V=(n*(n-1)*(2*n+5)-tieTerm)/18;
+    Stot+=S; Vtot+=V; nPairs+=n*(n-1)/2; seasonsUsed++;
+    detail.push({cm:cm2, n:n, S:S});
+  }
+  // TWO DISTINCT FAILURE MODES, and they must not share a message. Too few
+  // seasons is a coverage problem; zero pooled variance is a TIE problem - every
+  // season's values are identical across years, so the ranks carry no
+  // information at all. Calling the second one "insufficient seasons" would
+  // send a reader looking for more data when more data is not the issue.
+  if(seasonsUsed<2){
+    return {tau:null,S:null,z:null,p:null,seasonsUsed:seasonsUsed,
+            seasonsSkipped:seasonsSkipped,nPairs:nPairs,slope:null,
+            error:'insufficient seasons (need >=2 with >=2 years each; got '+seasonsUsed+')'};
+  }
+  if(Vtot<=0){
+    return {tau:null,S:null,z:null,p:null,seasonsUsed:seasonsUsed,
+            seasonsSkipped:seasonsSkipped,nPairs:nPairs,slope:null,
+            error:'zero variance - every season is fully tied across years ('+
+                  seasonsUsed+' season(s), '+nPairs+' pairs, all ties)'};
+  }
+  var z=0;
+  if(Stot>0) z=(Stot-1)/Math.sqrt(Vtot); else if(Stot<0) z=(Stot+1)/Math.sqrt(Vtot);
+  var p=2*(1-normalCDF(Math.abs(z)));
+  if(p>1) p=1;
+  // Pooled seasonal Sen slope: median of within-season year-normalised slopes.
+  var slopes=[];
+  for(var cm3=1; cm3<=12; cm3++){
+    var rs=[];
+    for(i=0;i<rows.length;i++){ if(parseInt(rows[i].m.substring(5,7),10)===cm3) rs.push(rows[i]); }
+    for(a=0;a<rs.length;a++){
+      for(b=a+1;b<rs.length;b++){
+        var dy=parseInt(rs[b].m.substring(0,4),10)-parseInt(rs[a].m.substring(0,4),10);
+        if(dy!==0) slopes.push((rs[b].v-rs[a].v)/dy);
+      }
+    }
+  }
+  var slope=null;
+  if(slopes.length){
+    slopes.sort(function(x,y){return x-y;});
+    var mid=Math.floor(slopes.length/2);
+    slope=(slopes.length%2)?slopes[mid]:(slopes[mid-1]+slopes[mid])/2;
+  }
+  return {tau:Stot/nPairs, S:Stot, z:z, p:p, seasonsUsed:seasonsUsed,
+          seasonsSkipped:seasonsSkipped, nPairs:nPairs, slope:slope,
+          nSlopes:slopes.length, detail:detail, error:null};
 }
 
 function getOISSTColl(startDate, endDate) {
@@ -10960,6 +11168,133 @@ panel.add(row('Turbidity FTU (in-situ)',s19TurbV));
 panel.add(s19NoteV);
 panel.add(lbl('CAVEAT: point-source only. Compare vs S2/S18 (satellite/model) above.',7,'#aa6600'));
 
+// S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172 NEW)
+// Deliberately placed next to S19: both are sparse real-sensor panels that are
+// blank at nearly every click, and both say so rather than interpolating.
+panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)','#0a3a3a'));
+panel.add(lbl('Real hydrophone data (NOT a model/satellite) - NOAA/NPS SanctSound',7,'#227777'));
+panel.add(lbl('Only populated within radius of an actual hydrophone site (1 site: FK01, Florida Keys)',7,'#227777'));
+panel.add(lbl('STATE VARIABLE: diel ratio of the 2-20 kHz snapping-shrimp band - crepuscular (local dawn 05-07 + dusk 17-18) MINUS night trough (local 01-04), in dB. A RATIO, so it is unit-free and cancels any constant per-deployment calibration offset. It is NOT an absolute sound level: FK01 deployment 11 carries a measured low-frequency artifact (+16.95 dB at 25 Hz, +8.89 at 63 Hz, +2.90 at 125 Hz, ~0 above 500 Hz, 2022-05 vs 2021-05) that is flow noise or mooring strum, not vessel traffic. No anthropophony variable is shipped for exactly that reason.',7,'#0a5555'));
+panel.add(lbl('TEST: Seasonal (Hirsch-Slack) Mann-Kendall - each month is ranked ONLY against the same calendar month in other years. Plain Mann-Kendall on the pooled monthly levels returns tau=+0.227 p=0.0878, which is SAMPLING ALIASING: Jul/Aug/Sep/Oct/Nov each occur in exactly one year of this record and summer runs ~4 dB hotter, so the pooled series tilts upward on its own. April 2019-2022 reads 109.32/110.29/109.21/109.33 dB - tau exactly 0.000.',7,'#663388'));
+panel.add(lbl('NOT ROUTED TO S13 CSD OR THE CLIMATOLOGY PATH - ON PURPOSE. FK01 has 29 valid months, so it passes CLIM_MIN_TOTAL_SAMPLES=26, but only 7 of 12 calendar months reach CLIM_MIN_SAMPLES_PER_MONTH=3, against CLIM_MIN_DISTINCT_MONTHS=9 - computeUsableClimatology() refuses it, correctly. CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for ANY SanctSound site: the whole archive spans 2018-11 to 2022-06, 44 months end to end. The best site in it (SB02 Stellwagen, 44 continuous months, 12/12 calendar months) is still 4 short. The gates stay strict; this panel routes to S17b-style Mann-Kendall only.',7,'#aa5533'));
+var s21StatusV=dynLbl('checking...','#227777');
+var s21VerdictV=ui.Label('Click a location to check for hydrophone coverage.',
+  {fontSize:'11px',fontWeight:'bold',color:'#555555',backgroundColor:'#eeeeee',padding:'6px 8px',margin:'2px 0',whiteSpace:'pre',border:'2px solid #aaaaaa'});
+var s21NV=dynLbl('--','#227777'), s21RangeV=dynLbl('--','#227777');
+var s21TauV=dynLbl('--','#227777'), s21SlopeV=dynLbl('--','#227777');
+var s21SeasonV=dynLbl('--','#227777'), s21GateV=dynLbl('--','#227777');
+var s21NoteV=ui.Label('',{fontSize:'7px',color:'#225566',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+panel.add(row('Matched hydrophone',s21StatusV));
+panel.add(s21VerdictV);
+panel.add(row('Months / deployments',s21NV));
+panel.add(row('Diel ratio (mean, range)',s21RangeV));
+panel.add(row('Seasonal Kendall tau',s21TauV));
+panel.add(row('Seasonal Sen slope',s21SlopeV));
+panel.add(row('Seasons used',s21SeasonV));
+panel.add(row('CSD / climatology gates',s21GateV));
+panel.add(s21NoteV);
+panel.add(lbl('CAVEAT: one site, 3.5 years, 30 comparable within-season pairs. This is a case study, not a population inference. The index is also STABLE (total range 1.40 dB, between-deployment scatter ~0.3 dB) and this record contains no reef-degradation event, so its sensitivity to the thing it is meant to detect is UNMEASURED. A null result here is not evidence the reef is healthy.',7,'#aa6600'));
+
+// S21 updater. Synchronous JS, no evaluate() - same as S19, so there is never a
+// pending call and no row may sit on 'computing...'. Every branch below sets
+// EVERY row (the v10.169 S19-01 bug was exactly one branch forgetting three).
+function updateS21Acoustic(lat, lon){
+  var site=getAcousticSite(lat,lon);
+  if(!site){
+    s21StatusV.setValue('No hydrophone site within range of this click');
+    s21StatusV.style().set('color','#888888');
+    s21VerdictV.setValue('NO ACOUSTIC COVERAGE HERE');
+    s21VerdictV.style().set('color','#555555');
+    s21VerdictV.style().set('backgroundColor','#eeeeee');
+    s21VerdictV.style().set('border','2px solid #aaaaaa');
+    s21NV.setValue('n/a'); s21RangeV.setValue('n/a'); s21TauV.setValue('n/a');
+    s21SlopeV.setValue('n/a'); s21SeasonV.setValue('n/a'); s21GateV.setValue('n/a');
+    s21NoteV.setValue('SanctSound covers US National Marine Sanctuaries only.\n'+
+      'The one site wired in here is FK01, Florida Keys (24.43313,-81.93068), radius 20 km.\n'+
+      'There is NO SanctSound coverage of Bocas del Toro, Panama or anywhere in the\n'+
+      'wider Caribbean outside the Florida Keys - that would need a hydrophone\n'+
+      'deployment or a different archive, not a wider search radius.');
+    return;
+  }
+  var rows=site.diel, i;
+  s21StatusV.setValue(site.label+' ('+site.distance_km.toFixed(1)+' km away)');
+  s21StatusV.style().set('color','#115511');
+
+  var vals=[], deps={}, nDep=0;
+  for(i=0;i<rows.length;i++){
+    vals.push(rows[i].v);
+    var dparts=rows[i].dep.split('+');
+    for(var d=0;d<dparts.length;d++){ if(!deps[dparts[d]]){ deps[dparts[d]]=1; nDep++; } }
+  }
+  var mn=vals[0], mx=vals[0], sum=0;
+  for(i=0;i<vals.length;i++){ if(vals[i]<mn) mn=vals[i]; if(vals[i]>mx) mx=vals[i]; sum+=vals[i]; }
+  var mean=sum/vals.length;
+
+  var mk=seasonalMannKendall(rows);
+  s21NV.setValue(rows.length+' months, '+nDep+' deployments  ('+rows[0].m+' .. '+rows[rows.length-1].m+')');
+  s21RangeV.setValue(mean.toFixed(2)+' dB  (range '+mn.toFixed(2)+' .. '+mx.toFixed(2)+', span '+(mx-mn).toFixed(2)+' dB)');
+
+  if(mk.error){
+    s21VerdictV.setValue('INSUFFICIENT DATA FOR A SEASONAL TEST');
+    s21VerdictV.style().set('color','#664400');
+    s21VerdictV.style().set('backgroundColor','#fff4dd');
+    s21VerdictV.style().set('border','2px solid #ddaa44');
+    s21TauV.setValue('n/a - '+mk.error);
+    s21SlopeV.setValue('n/a'); s21SeasonV.setValue(mk.seasonsUsed+' usable');
+  } else {
+    var sig=(mk.p<0.05);
+    var dir=(mk.S>0?'RISING':(mk.S<0?'FALLING':'FLAT'));
+    if(sig){
+      s21VerdictV.setValue('BIOPHONY TREND '+dir+'  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+')');
+      s21VerdictV.style().set('color','#ffffff');
+      s21VerdictV.style().set('backgroundColor',(mk.S<0?'#883322':'#226644'));
+      s21VerdictV.style().set('border','2px solid #112211');
+    } else {
+      s21VerdictV.setValue('NO DETECTABLE TREND  (seasonal Mann-Kendall p='+mk.p.toFixed(4)+', n.s.)');
+      s21VerdictV.style().set('color','#333333');
+      s21VerdictV.style().set('backgroundColor','#e8eef0');
+      s21VerdictV.style().set('border','2px solid #88aabb');
+    }
+    s21TauV.setValue('tau='+(mk.tau>=0?'+':'')+mk.tau.toFixed(3)+'  S='+(mk.S>=0?'+':'')+mk.S+
+      '  z='+(mk.z>=0?'+':'')+mk.z.toFixed(3)+'  p='+mk.p.toFixed(4)+(sig?'  SIGNIFICANT':'  not significant'));
+    s21SlopeV.setValue(mk.slope===null?'n/a':
+      ((mk.slope>=0?'+':'')+mk.slope.toFixed(4)+' dB/yr  (median of '+mk.nSlopes+' within-season slopes)'));
+    s21SeasonV.setValue(mk.seasonsUsed+' of 12 calendar months have >=2 years  |  '+
+      mk.nPairs+' comparable within-season pairs'+
+      (mk.seasonsSkipped>0?'  |  '+mk.seasonsSkipped+' season(s) skipped at 1 year':''));
+  }
+
+  // Gate status, RECOMPUTED from the embedded table rather than asserted, so it
+  // cannot drift out of date if the table is ever extended.
+  var calCount={}, distinctOK=0, cm;
+  for(i=0;i<rows.length;i++){
+    cm=parseInt(rows[i].m.substring(5,7),10);
+    calCount[cm]=(calCount[cm]||0)+1;
+  }
+  for(cm=1;cm<=12;cm++){ if((calCount[cm]||0)>=CLIM_MIN_SAMPLES_PER_MONTH) distinctOK++; }
+  var passTotal=(rows.length>=CLIM_MIN_TOTAL_SAMPLES);
+  var passDistinct=(distinctOK>=CLIM_MIN_DISTINCT_MONTHS);
+  var passAC1=(rows.length>=CSD_AC1_MIN_POOLED_MONTHS);
+  s21GateV.setValue(
+    'TOTAL '+rows.length+'/'+CLIM_MIN_TOTAL_SAMPLES+' '+(passTotal?'PASS':'FAIL')+
+    '  |  DISTINCT '+distinctOK+'/'+CLIM_MIN_DISTINCT_MONTHS+' '+(passDistinct?'PASS':'FAIL')+
+    '  |  AC1 '+rows.length+'/'+CSD_AC1_MIN_POOLED_MONTHS+' '+(passAC1?'PASS':'FAIL'));
+  s21GateV.style().set('color',(passDistinct&&passAC1)?'#115511':'#aa5533');
+
+  s21NoteV.setValue(
+    'Band: '+site.band+'  |  '+site.record+'\n'+
+    'Source: '+site.source+'\n'+
+    ((!passDistinct||!passAC1)
+      ? 'Climatology/CSD correctly REFUSED for this site - this panel never asked them.\n'+
+        '  deseasonalizing needs '+CLIM_MIN_DISTINCT_MONTHS+' calendar months at >='+CLIM_MIN_SAMPLES_PER_MONTH+
+        ' years each; this site has '+distinctOK+'.\n'+
+        '  AC1/CSD needs '+CSD_AC1_MIN_POOLED_MONTHS+' pooled months; this site has '+rows.length+
+        ', and no SanctSound\n  site can reach it (whole archive = 44 months, 2018-11..2022-06).\n'
+      : 'This site clears the climatology gates; the seasonal test is still the primary read.\n')+
+    'The seasonal test needs NEITHER - it ranks each month only against the same\n'+
+    'calendar month in other years, so no climatology is built and nothing is imputed.');
+}
+
 panel.add(sHead('ACCURACY','#222244'));
 panel.add(lbl('STEP 1: Click coastal locations to log data',8,'#884400'));
 panel.add(lbl('STEP 2: Click Export button below',8,'#884400'));
@@ -11337,6 +11672,7 @@ function analyzeLocation(lat, lon) {
     s19NoteV.setValue('Not within radius of Looe Key FL, Agua Hedionda CA, Scripps Pier CA,\nMarineBasis Nuuk GF3 (40km), or Zackenberg Young Sound (30km).');
   }
 
+  updateS21Acoustic(lat,lon);
   locV.setValue(region); regV.setValue(region); coV.setValue('Lat:'+latR+' Lon:'+lonR);
   scoreBig.setValue('Computing...'); scoreBig.style().set('color','#333333'); scoreBig.style().set('backgroundColor','#eeeeee');
   scoreBarLbl.setValue('Computing...'); scoreInterp.setValue('Running pipeline...');
@@ -12522,6 +12858,65 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.172 S21 NEW: real passive-acoustic biophony, as a diel RATIO - and a');
+print('  deliberate refusal to route it through the climatology or CSD path.');
+print('');
+print('  DATA, pulled and reduced outside Earth Engine (the Code Editor sandbox has no');
+print('    fetch/XHR, so this embeds a reduced table exactly as S19 embeds cleaned');
+print('    SECOORA/GEM stats): NOAA/NPS SanctSound, bucket noaa-passive-bioacoustic,');
+print('    site FK01 Florida Keys. 8 deployments, 16,440 hourly third-octave rows,');
+print('    30 bands, 2018-12-18 .. 2022-06-15. 28 monthly values survive.');
+print('  WHY A RATIO AND NOT A SOUND LEVEL. MEASURED: deployment 11 (2022-03..06)');
+print('    carries a low-frequency artifact. Same calendar month across years,');
+print('    2022-05 minus 2021-05: TOL_25 +16.95 dB, TOL_63 +8.89, TOL_125 +2.90,');
+print('    TOL_500 -0.44, TOL_2000 -1.10, TOL_20000 -1.02. A rise that grows as');
+print('    frequency falls and dies above 500 Hz is flow noise or mooring strum, not');
+print('    vessel traffic - a vessel lifts 63-500 Hz broadly. An anthropophony');
+print('    variable on TOL_63/125 would have reported a ~5 dB traffic increase that');
+print('    did not happen, so NO anthropophony variable is shipped. The diel ratio is');
+print('    immune twice over: it sits in the unaffected 2-20 kHz shrimp band, and it');
+print('    is a DIFFERENCE, so a constant per-deployment offset cancels. Confirmed');
+print('    empirically - dep01 +1.56, dep04 +1.75, dep06 +1.51, dep08 +1.82,');
+print('    dep10 +1.79, dep11 +1.74 dB. Deployment 11 is ordinary in the ratio.');
+print('  WHY SEASONAL MANN-KENDALL. Plain Mann-Kendall over the 29 pooled monthly');
+print('    shrimp levels returns tau=+0.227, p=0.0878 - close enough to look like an');
+print('    emerging trend. It is SAMPLING ALIASING: Jul/Aug/Sep/Oct/Nov each occur in');
+print('    exactly ONE year and summer runs ~4 dB hotter, so the later-weighted summer');
+print('    coverage tilts the pooled series on its own. Like against like kills it -');
+print('    April 2019-2022 reads 109.32, 110.29, 109.21, 109.33 dB, tau exactly 0.000.');
+print('    One more summer deployment would have pushed that pooled p under 0.05 and');
+print('    meant nothing. The seasonal test ranks a month ONLY against the same');
+print('    calendar month in other years, so it cannot make that mistake.');
+print('  FPR MEASURED, not assumed: 4000 Node draws of pure noise at FK01\'s exact');
+print('    design (7 seasons, 3-4 years each) returned p<0.05 in 4.05% of draws,');
+print('    against a nominal 5% - conservative, the safe direction.');
+print('  THE GATES STAY STRICT AND THEY REFUSE THIS SITE. FK01 has 28 valid months so');
+print('    it passes CLIM_MIN_TOTAL_SAMPLES=26, but only 7 of 12 calendar months reach');
+print('    CLIM_MIN_SAMPLES_PER_MONTH=3 against CLIM_MIN_DISTINCT_MONTHS=9 -');
+print('    computeUsableClimatology() refuses it, correctly, and S21 never asks. The');
+print('    seasonal test needs no climatology and imputes nothing.');
+print('  CSD/AC1 IS UNREACHABLE FOR THE WHOLE ARCHIVE, not just this site. All 28');
+print('    SanctSound sites were gate-checked against real hourly coverage this');
+print('    session: CSD_AC1_MIN_POOLED_MONTHS=48 is impossible because SanctSound');
+print('    spans 2018-11..2022-06, 44 months end to end. The best site in it (SB02');
+print('    Stellwagen: 44 months, ZERO gaps, 12/12 calendar months) is still 4 short.');
+print('    MB01 Monterey (36 months, 11/12) clears climatology but not AC1. Olympic');
+print('    Coast is the thinnest sanctuary in the archive - OC01 is 1 deployment,');
+print('    6 months. A CSD-capable acoustic record needs a continuous archive');
+print('    (MBARI MARS, Ocean Networks Canada), not another SanctSound site.');
+print('  RESULT AT FK01: tau=+0.200, S=+6, z=+0.784, p=0.4330 over 7 seasons and 30');
+print('    comparable within-season pairs; Sen slope +0.100 dB/yr. NO detectable');
+print('    trend. DISCLOSED: the index range is only 1.40 dB with ~0.3 dB');
+print('    between-deployment scatter, and this record contains no reef-degradation');
+print('    event, so its sensitivity to what it is meant to detect is UNMEASURED.');
+print('    A null here is NOT evidence the reef is healthy.');
+print('  NOT CO-LOCATED WITH S19, and the panel says so. FK01 is 55.0 km from the Looe');
+print('    Key SeapHOx station (S19 radius 15 km); the nearest FK hydrophone to Looe');
+print('    Key is FK02 at 27.6 km, still outside. The two panels never co-fire. There');
+print('    is no co-located acoustic + carbonate-chemistry site in this archive.');
+print('  NOT CHANGED: no Earth Engine calls are added - S21 is synchronous JS over an');
+print('    embedded table, like S19. No gate constant was touched.');
 print('');
 print('v10.171 S17B-01: S17b kept showing the PREVIOUS site\'s Mann-Kendall result.');
 print('');

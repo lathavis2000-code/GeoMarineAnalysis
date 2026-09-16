@@ -14,6 +14,118 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.172 S21 NEW: real passive-acoustic biophony at Florida Keys FK01, as a diel
+  RATIO - plus a deliberate, documented REFUSAL to route it through the
+  climatology or CSD/AC1 path, and a gate audit of the entire SanctSound archive.
+
+  EVIDENCE BASIS. Every number below was derived THIS session from the live
+  public bucket gs://noaa-passive-bioacoustic (SanctSound, NOAA/NPS), or from a
+  Node harness executing the shipped functions. Earth Engine itself was NOT run:
+  S21 adds no Earth Engine calls at all, being synchronous JS over an embedded
+  table exactly as S19 is. Nothing here is asserted from memory.
+
+  THE DATA. Site FK01 (24.43313, -81.93068), Florida Keys National Marine
+    Sanctuary. 8 deployments, 16,440 hourly third-octave (TOL_1h) rows across 30
+    bands TOL_25..TOL_20000, 2018-12-18T19:00Z .. 2022-06-15T12:00Z. Reduced
+    outside Earth Engine - the Code Editor sandbox has no fetch/XHR - into 28
+    monthly values. 2020-10 is dropped on purpose: deployment 06 started
+    2020-10-30, leaving 7 crepuscular and 4 trough hours, below the >=20-hour
+    floor each side of the ratio needs.
+
+  WHY THE STATE VARIABLE IS A RATIO AND NOT A SOUND LEVEL. Deployment 11
+    (2022-03..2022-06) carries a low-frequency instrument artifact. Comparing the
+    same calendar month across years, 2022-05 minus 2021-05, per band:
+      TOL_25  +16.95 dB   TOL_63  +8.89 dB   TOL_125 +2.90 dB
+      TOL_500  -0.44 dB   TOL_2000 -1.10 dB  TOL_20000 -1.02 dB
+    A monotonic rise that grows as frequency falls and vanishes above 500 Hz is
+    flow noise or mooring strum - a vessel lifts 63-500 Hz broadly. An
+    anthropophony variable built on the TOL_63/TOL_125 vessel indicator bands
+    would have reported a ~5 dB traffic increase that did not happen, so NO
+    anthropophony variable is shipped. The diel ratio is immune twice over: it
+    lives in the unaffected 2-20 kHz snapping-shrimp band, and it is a
+    DIFFERENCE, so any constant per-deployment calibration offset cancels.
+    Confirmed empirically - per-deployment mean ratio dep01 +1.56, dep04 +1.75,
+    dep06 +1.51, dep08 +1.82, dep10 +1.79, dep11 +1.74 dB. In the ratio,
+    deployment 11 is unremarkable.
+
+  DEFINITION. Power-domain mean of TOL_2000..TOL_20000 over crepuscular hours
+    (10,11,12,22,23 UTC ~ local dawn 05-07 and dusk 17-18) MINUS the same over
+    the night trough (06,07,08,09 UTC ~ local 01-04), in dB. Shrimp at FK01 are
+    crepuscular: pooled over the record the band peaks at local 06 (110.43 dB)
+    and local 18 (110.41 dB), troughing at local 03 (108.22 dB). All dB averaging
+    is done in the POWER domain, 10*log10(mean(10^(x/10))) - a decibel is a
+    logarithm and an arithmetic mean of dB is simply wrong.
+
+  WHY SEASONAL (HIRSCH-SLACK) MANN-KENDALL AND NOT THE EXISTING ENGINE. Plain
+    mannKendallTest() over the 29 pooled monthly shrimp levels returns
+    tau=+0.227, p=0.0878 - close enough to read as an emerging trend. It is
+    SAMPLING ALIASING. FK01's deployments are seasonally unbalanced: July,
+    August, September, October and November each occur in exactly ONE year, and
+    the shrimp band runs ~4 dB hotter in summer, so the later-weighted summer
+    coverage tilts the pooled series upward by itself. Comparing like with like
+    destroys it - April across 2019-2022 reads 109.32, 110.29, 109.21, 109.33 dB,
+    tau exactly 0.000. One more summer deployment would have pushed that pooled
+    p under 0.05 and meant nothing at all. The seasonal test ranks a value ONLY
+    against the same calendar month in other years, so it cannot make that
+    mistake, and it builds no climatology and imputes nothing.
+    DISCLOSED: the inter-season covariance correction for serially dependent
+    seasons is NOT applied - at 3-4 years per season it is estimated far too
+    noisily to help, and omitting it is the conventional choice.
+
+  FALSE-POSITIVE RATE, MEASURED. 4000 Monte Carlo draws of pure uniform noise at
+    FK01's exact design (7 seasons of 3,4,4,4,3,3,3 years), run in Node against
+    the shipped function: 4.05% returned p<0.05, against a nominal 5%. Slightly
+    conservative, which is the safe direction. Contrast S17's SNR>=2.0 rule,
+    calibrated to no false-positive rate at all (see v10.145).
+
+  THE GATES STAY STRICT, AND THEY REFUSE THIS SITE. FK01 has 28 valid months, so
+    it passes CLIM_MIN_TOTAL_SAMPLES=26 - but only 7 of 12 calendar months reach
+    CLIM_MIN_SAMPLES_PER_MONTH=3, against CLIM_MIN_DISTINCT_MONTHS=9.
+    computeUsableClimatology() refuses it, correctly. S21 never asks it. No gate
+    constant was changed, loosened, or special-cased.
+
+  CSD/AC1 IS UNREACHABLE FOR THE WHOLE ARCHIVE, NOT JUST THIS SITE. All 28
+    SanctSound sites were gate-checked against real hourly coverage this session
+    (>=72 h before a month counts). CSD_AC1_MIN_POOLED_MONTHS=48 cannot be met by
+    any of them, because SanctSound spans 2018-11..2022-06 - 44 months end to
+    end. Best in archive: SB02 Stellwagen Bank, 44 months, ZERO gaps, 12/12
+    calendar months - still 4 short of the floor. MB01 Monterey Bay (36 months,
+    11/12 calendar months, one 1-month gap) clears the climatology gates but not
+    AC1. Olympic Coast, suggested as a candidate, is the THINNEST sanctuary in
+    the archive: OC01 is 1 deployment and 6 months. Only MB01 and SB02 clear
+    climatology at all; 26 of 28 sites fail it. A CSD-capable acoustic record
+    requires a continuous archive (MBARI MARS, Ocean Networks Canada), not
+    another SanctSound site.
+
+  RESULT AT FK01. tau=+0.200, S=+6, z=+0.784, p=0.4330 across 7 usable seasons
+    and 30 comparable within-season pairs; pooled seasonal Sen slope
+    +0.100 dB/yr. NO DETECTABLE TREND.
+    DISCLOSED LIMIT: the index spans only 1.40 dB with ~0.3 dB between-deployment
+    scatter, and this record contains no reef-degradation event, so its
+    sensitivity to the thing it is meant to detect is UNMEASURED. A null result
+    here is NOT evidence that the reef is healthy, and the panel says so.
+
+  NOT CO-LOCATED WITH S19, AND THE PANEL SAYS SO. An earlier plan in this session
+    claimed FK gave a triple overlap with the Looe Key SeapHOx baseline. Measured,
+    that is false: FK01 is 55.0 km from Looe Key (S19 radius 15 km), and the
+    nearest FK hydrophone to it is FK02 at 27.6 km - still outside. The panels
+    never co-fire. There is no co-located acoustic + carbonate-chemistry site in
+    this archive, and S21 must not be read as ground-truthing S19.
+
+  ALSO FIXED, found by its own test: seasonalMannKendall() returned
+    "insufficient seasons" for a fully-tied series, where the real cause is zero
+    pooled variance - every season identical across years, ranks carrying no
+    information. Coverage and ties are different problems and the first message
+    would have sent a reader hunting for more data that would not have helped.
+    They are now separate branches with separate messages.
+
+  NO SanctSound COVERAGE EXISTS FOR BOCAS DEL TORO, PANAMA, or anywhere in the
+    wider Caribbean outside the Florida Keys. SanctSound is US National Marine
+    Sanctuaries only. The S21 no-match branch states this explicitly rather than
+    leaving a blank panel, because the site this tool is most often driven at is
+    precisely the one with no coverage. Closing that gap needs a hydrophone
+    deployment or a different archive - not a wider search radius.
+
 v10.167 FIX 21: the FAI multi-node fetch, diagnosed from the live evidence
   instead of from the span hypothesis - plus S7G, a new cross-index scatter
   panel that spends no Earth Engine calls at all.
