@@ -14,6 +14,82 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.174 A1 NEW: the acoustic result is wired into the FUSED Coastal Cancer Score
+  as a sixth correction term - and it moves no score anywhere on Earth today,
+  which is the correct outcome and is asserted by test rather than hoped for.
+
+  THE SHAPE. ccs = clamp(satellite composite + field correction + A1). A1 joins
+    F1..F5 on exactly the contract v10.161 FIX 19 established for them after a
+    placeholder moved a headline from 61 to 55 and the reader was told the answer
+    had become 12 points more accurate: a term that moves the headline must be a
+    real measurement, must state how much of the move it caused, and must not buy
+    an accuracy claim it has not earned. computeAcousticCorrection() derives A1
+    from the click coordinates, so no call site changed and there is exactly one
+    place in the file that can decide whether acoustics touch a score.
+
+  FOUR GUARDS. The first two are the ones that matter.
+    (1) VARIABLE KIND. Only a biophony index may touch a reef stress score. SB02
+        Stellwagen is REFUSED BY CONSTRUCTION - not by omission - because its
+        series is an ambient 2 kHz band level driven by wind and sea state at a
+        temperate 42 N site that is not a coral reef, and its own varLabel reads
+        NOT biophony. This guard exists precisely because SB02 is the ONE
+        acoustic site in this tool carrying a significant trend (p=0.0219,
+        +0.757 dB/yr). The only site that would move the number is the only site
+        that must not. Without the guard, wind noise at Stellwagen Bank would
+        have moved a coral stress score by up to the full cap.
+    (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes EXACTLY
+        ZERO. A p=0.4330 null is not a small trend, and is not permitted to nudge
+        a score in the direction its tau happens to point.
+    (3) DESIGN FLOOR: at least 5 seasons and 15 within-season pairs - the
+        structure at or above which this test's false-positive rate was actually
+        measured (4.05% against nominal 5%, v10.172). A thinner series is still
+        reported in S21/S21b; it simply does not vote in the score.
+    (4) MAGNITUDE CAP: +-5 points, deliberately smaller than F3 (+-10) and F5
+        (+-8), scaled by |tau|. The index has NO calibrated sensitivity to reef
+        degradation - the FK01 record spans 1.40 dB with ~0.3 dB
+        between-deployment scatter and contains no degradation event to calibrate
+        against. An uncalibrated instrument gets a small vote, not a veto.
+
+  DIRECTION. A FALLING crepuscular-minus-night ratio means the dawn/dusk chorus
+    is flattening toward the night floor - fewer animals calling, or calling less
+    - so it RAISES stress. Positive A1 = more stress, the same sign convention as
+    F4 (metals) and the opposite of F1/F3/F5.
+
+  ACCURACY IS EARNED, NOT GRANTED. acc_acoustic pays the nominal +3% ONLY when A1
+    is non-zero, which is the same magnitude-apportioning rule v10.161 imposed on
+    the field gain. At FK01 today the measurement is real, the result is null, and
+    the accuracy credit is therefore ZERO. A measurement that moves nothing claims
+    nothing. acc_acoustic_nominal is still returned so the forfeited part is
+    visible rather than quietly absent.
+
+  STATE TODAY, asserted by test at every site: A1 = 0 everywhere.
+      FK01   eligible, null result (p=0.4330)       A1=0, accuracy credit 0
+      SB02   matched, REFUSED on variable kind      A1=0
+      elsewhere  no coverage at all                 A1=0
+    Verified in a Node harness executing the whole file against stubbed ee/ui/Map:
+    Bocas, Hawaii, SB02 and FK01 all return ccs and acc_total identical to the
+    pre-A1 formula (sat_ccs+fcTotal), and acc_total stays 77.
+    The APPLIED path, which no real datum reaches today, is exercised against
+    synthetic series: a falling biophony gives A1=+5 and moves 72 -> 77 with
+    accuracy 77 -> 80; a rising one gives A1=-5 and moves 72 -> 67; a 2-season
+    series is refused by the design floor; and a tau=-1.000 series is held at the
+    cap rather than exceeding it.
+
+  UI HAS FOUR STATES, NOT THREE, and the distinction is the substance. An earlier
+    cut of this change printed "n/a - no acoustic coverage" at SB02 - a site with
+    31,329 hours of it - because `eligible` was doing double duty for "nothing
+    here" and "here but refused". That is the same conflation the v10.173
+    verdict-line and gate-row fixes were about, so `matched` is now its own flag
+    rather than a string test at the render site. The four states are: no
+    coverage / hydrophone present but REFUSED (not a biophony index) / measured
+    with no significant trend / applied. The null state reads "NOT evidence of
+    health" on screen, because an index with no calibrated sensitivity to
+    degradation cannot rule one out.
+
+  NOT CHANGED: the 15/15/15/25/20/10 satellite weights, every gate constant, and
+    the BUG-05 insufficient-data contract. A1 is carried on the insufficient-data
+    return too, so that return still has exactly one shape.
+
 v10.173 S21b NEW: the deseasonalization benchmark at SB02 Stellwagen Bank - and a
   CORRECTION to v10.172, which asserted a gate refusal that never happened.
 

@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.173';
+var TOOL_VERSION = 'v10.174';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -3941,6 +3941,106 @@ function scoreColors(s) {
   return         {text:'#7a0000',bg:'#ffd0d0',map:'#ff0000',bar:'#ff2222',lbl:'CRITICAL'};
 }
 
+
+// ============================================================
+// MODULE A13 - ACOUSTIC CORRECTION TO THE FUSED SCORE (A1, v10.174 NEW)
+//
+// Wires S21b's biophony result into the Coastal Cancer Score as a SIXTH
+// correction term alongside F1..F5, on exactly the contract v10.161 FIX 19
+// established for those: a term that moves the headline must be a real
+// measurement, must say how much of the move it is responsible for, and must
+// not buy an accuracy claim it has not earned.
+//
+// FOUR GUARDS, and the first two are the ones that matter.
+//
+// (1) VARIABLE KIND. Only a biophony index may touch a reef stress score.
+//     SB02 Stellwagen is REFUSED here BY CONSTRUCTION, not by omission: its
+//     series is an ambient 2 kHz band level driven by wind and sea state at a
+//     temperate 42 N site that is not a coral reef at all, and its own varLabel
+//     says NOT biophony. Feeding "ambient noise is rising" into a coral cancer
+//     score would be a category error, and it would be a LOUD one - SB02 is the
+//     only acoustic site in this tool with a significant trend (p=0.0219). The
+//     one site that would move the number is the one site that must not.
+// (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes EXACTLY
+//     ZERO. This is the v10.161 lesson restated: there, a placeholder moved a
+//     headline from 61 to 55 and the reader was told the answer had become 12
+//     points more accurate. A p=0.4330 null is not a small trend, and must not
+//     be allowed to nudge a score in the direction its tau happens to point.
+// (3) DESIGN FLOOR. The seasonal test's false-positive rate was measured at
+//     FK01's design (7 seasons, 3-4 years, 4.05% against nominal 5%). Below
+//     that much structure it has not been characterised, so a thinner series
+//     may report a trend in S21/S21b but may not move the SCORE.
+// (4) MAGNITUDE CAP. +-ACOUSTIC_MAX_POINTS, deliberately smaller than F3 (+-10)
+//     or F5 (+-8). The index's sensitivity to reef degradation is UNMEASURED -
+//     the FK01 record spans 1.40 dB with ~0.3 dB between-deployment scatter and
+//     contains no degradation event to calibrate against. An uncalibrated
+//     instrument gets a small vote, not a veto.
+//
+// DIRECTION: a FALLING crepuscular-minus-night ratio means the dawn/dusk chorus
+// is flattening toward the night floor - fewer animals calling, or calling less
+// - so it RAISES stress. A rising ratio lowers it. Positive A1 = more stress,
+// the same sign convention as F4 (metals) and the opposite of F1/F3/F5.
+var ACOUSTIC_MAX_POINTS = 5;      // cap on |A1|, in CCS points
+var ACOUSTIC_MIN_SEASONS = 5;     // below the design the FPR was measured at, no score influence
+var ACOUSTIC_MIN_PAIRS = 15;      // ditto, in comparable within-season pairs
+var ACOUSTIC_ACC_GAIN = 3;        // nominal accuracy credit, earned only if A1 is non-zero
+
+function computeAcousticCorrection(lat, lon){
+  // `matched` and `eligible` are NOT the same question and must not share a
+  // field. SB02 matches on distance and is then refused on variable kind; a UI
+  // that reads only `eligible` would print "no acoustic coverage" over a site
+  // with 31,329 hours of it. That is the same conflation the v10.173 verdict-line
+  // and gate-row fixes were about, so it gets its own flag here rather than a
+  // string test at the render site.
+  var none=function(reason, site){
+    return {A1:0, matched:!!site, eligible:false, applied:false, site:site||null, mk:null,
+            accNominal:0, accEarned:0, reason:reason};
+  };
+  if(lat===null||lat===undefined||lon===null||lon===undefined||isNaN(lat)||isNaN(lon))
+    return none('no click coordinates');
+  var site=getAcousticSite(lat,lon);
+  if(!site) return none('no hydrophone site within range - the acoustic layer covers 2 points on Earth and contributes nothing anywhere else');
+  // GUARD 1 - variable kind.
+  if(site.varKind!=='diel_ratio')
+    return none('site matched ('+site.label+') but its variable is a '+site.varKind+
+                ' ('+site.varLabel+'), not a biophony index. It is REFUSED from the score by '+
+                'construction: an ambient sound level at a non-reef site cannot inform a reef '+
+                'stress score, however significant its trend is.', site);
+  var mk=seasonalMannKendall(site.series);
+  if(mk.error) return none('acoustic series present but the seasonal test could not run: '+mk.error, site);
+  // GUARD 3 - design floor.
+  if(mk.seasonsUsed<ACOUSTIC_MIN_SEASONS||mk.nPairs<ACOUSTIC_MIN_PAIRS)
+    return none('acoustic series too thin to move a score: '+mk.seasonsUsed+' seasons / '+
+                mk.nPairs+' pairs, against floors of '+ACOUSTIC_MIN_SEASONS+' and '+
+                ACOUSTIC_MIN_PAIRS+'. The test is still reported in S21/S21b; it just does not '+
+                'vote here, because its false-positive rate has only been measured at or above '+
+                'that much structure.', site);
+  // GUARD 2 - significance.
+  if(mk.p>=0.05){
+    var r={A1:0, matched:true, eligible:true, applied:false, site:site, mk:mk, accNominal:ACOUSTIC_ACC_GAIN,
+      accEarned:0,
+      reason:'REAL MEASUREMENT, NULL RESULT. Seasonal Mann-Kendall on '+site.series.length+
+             ' months gives tau='+(mk.tau>=0?'+':'')+mk.tau.toFixed(3)+', p='+mk.p.toFixed(4)+
+             ' - not significant, so the acoustic term contributes EXACTLY 0 points and earns '+
+             'NO accuracy credit of its nominal +'+ACOUSTIC_ACC_GAIN+'%. A null is not a small '+
+             'trend. It also is not evidence of health: this index has no calibrated sensitivity '+
+             'to reef degradation, so it cannot yet rule one out.'};
+    return r;
+  }
+  // GUARD 4 - magnitude cap. Scaled by |tau|, which is bounded by 1 by construction.
+  var mag=Math.min(1,Math.abs(mk.tau))*ACOUSTIC_MAX_POINTS;
+  var A1=(mk.S<0? mag : -mag);   // falling ratio -> positive (more stress)
+  A1=Math.round(A1*10)/10;
+  return {A1:A1, matched:true, eligible:true, applied:true, site:site, mk:mk,
+    accNominal:ACOUSTIC_ACC_GAIN, accEarned:ACOUSTIC_ACC_GAIN,
+    reason:'ACOUSTIC TREND APPLIED: seasonal Mann-Kendall tau='+(mk.tau>=0?'+':'')+
+           mk.tau.toFixed(3)+', p='+mk.p.toFixed(4)+' over '+mk.seasonsUsed+' seasons / '+
+           mk.nPairs+' pairs. The biophony diel ratio is '+(mk.S<0?'FALLING':'RISING')+
+           ', which '+(mk.S<0?'raises':'lowers')+' stress by '+Math.abs(A1)+' point(s) (cap '+
+           ACOUSTIC_MAX_POINTS+'). DISCLOSED: this index has no calibrated sensitivity to reef '+
+           'degradation, so the SIGN is better supported than the MAGNITUDE.'};
+}
+
 function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var isReefZone=(lat!==undefined&&lon!==undefined)?((lat>-30&&lat<30)&&!isEBUS(lat,lon)):true;
   // ============================================================
@@ -4195,6 +4295,14 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
       _gainNominal+'%. The correction is still applied in full - it is the ACCURACY claim that is scaled.';
     if(_wMeas>_wEst) _fieldAttribNote='MIXED'+_fieldAttribNote.substring('MOSTLY PLACEHOLDER'.length);
   }
+  // v10.174: the acoustic term. Computed from lat/lon rather than passed in, so
+  // no call site changes and there is exactly one place that can decide whether
+  // acoustics touch the score. It is 0 at every point on Earth except within
+  // 20 km of FK01, and 0 there too unless the seasonal test clears every guard
+  // in computeAcousticCorrection() - which today it does not (p=0.4330).
+  var _ac=computeAcousticCorrection(lat,lon);
+  var A1=_ac.A1, accAcoustic=_ac.accEarned;
+
   // v10.156 BUG-05: no satellite input at all -> no score. Field corrections
   // (F1..F5, fcTotal) are still real and are returned unchanged; everything
   // downstream of the satellite composite is null, and the accuracy figures
@@ -4210,6 +4318,12 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
       acc_sat:0,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,
       fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
       fieldAttribNote:_fieldAttribNote,acc_total:0,
+      // v10.174: carried on the insufficient path too, so the return has ONE
+      // shape. acc_acoustic is 0 here for the same reason acc_sat is: with no
+      // satellite score there is nothing for an acoustic term to correct.
+      acousticA1:0, acousticApplied:false, acousticEligible:_ac.eligible,
+      acousticMatched:_ac.matched, acousticSite:(_ac.site?_ac.site.label:null),
+      acousticNote:_ac.reason, acc_acoustic:0, acc_acoustic_nominal:_ac.accNominal,
       insufficientData:true, lowConfidence:true, nInputs:nInputs, dataCompleteness:0,
       dataNote:noteTxt};
   };
@@ -4230,11 +4344,12 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   // off it. With the _has() guards above, csat can no longer go NaN from a
   // satellite input; this is now the genuine last resort, and it routes to the
   // SAME insufficient-data path as nInputs===0 instead of inventing a value.
-  var ccs=Math.max(0,Math.min(100,csat+fcT));
+  var ccs=Math.max(0,Math.min(100,csat+fcT+A1));
   if(!isFinite(ccs)||isNaN(ccs)){
     return _insufficient('INSUFFICIENT DATA - the Coastal Cancer Score was not computable. '+
       nInputs+' of 6 satellite inputs were present, but the composite still did not resolve to a '+
-      'number (satellite composite='+csat+', field correction='+fcT+'). No score, no bowl depth and '+
+      'number (satellite composite='+csat+', field correction='+fcT+', acoustic correction='+A1+
+      '). No score, no bowl depth and '+
       'no regime-shift probability are reported: a non-computable score is NOT a mid-range one. '+
       'Earlier versions substituted a hardcoded 30 here, which was indistinguishable on screen '+
       'from a genuinely measured low-stress reef.');
@@ -4269,7 +4384,14 @@ function computeScore(sv, cv, tv, nv, turv, dhwv, fp, lat, lon) {
   var tau=(B>0&&!isNaN(B))?Math.round(10/B)/10:99;
   return {s1:s1,s2:s2,s3:s3,s4:s4,s5:s5,s6:s6,sat_ccs:csat,ccs:ccs,B:B,mu:mu,deltaU:dU,
     meff:me,omega0:w0,k:k,p5yr:p5,ac1:ac1,tau:tau,fcTotal:fcT,F1:F1,F2:F2,F3:F3,F4:F4,F5:F5,
-    acc_sat:77,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,acc_total:77+accFieldEarned,
+    acc_sat:77,acc_field:accFieldEarned,acc_field_nominal:_gainNominal,
+    acc_total:77+accFieldEarned+accAcoustic,
+    // v10.174 acoustic term. acc_acoustic is earned ONLY when A1 is non-zero,
+    // which is the same magnitude-apportioning rule v10.161 FIX 19 imposed on
+    // the field gain: a measurement that moves nothing claims no credit.
+    acousticA1:A1, acousticApplied:_ac.applied, acousticEligible:_ac.eligible,
+    acousticMatched:_ac.matched, acousticSite:(_ac.site?_ac.site.label:null),
+    acousticNote:_ac.reason, acc_acoustic:accAcoustic, acc_acoustic_nominal:_ac.accNominal,
     fc_measured:fcMeasured,fc_estimated:fcEstimated,fieldEstimatedNames:_estNames,
     fieldAttribNote:_fieldAttribNote,
     // v10.156 BUG-05: reported on EVERY return so a partial-data score is
@@ -10762,7 +10884,16 @@ panel.add(fieldSourcesV); panel.add(fieldNotesV);
 panel.add(sHead('FIELD CORRECTIONS (valid data only)','#334422'));
 var fc1V=dynLbl('n/a','#888888'), fc3V=dynLbl('n/a','#888888'), fc4V=dynLbl('n/a','#888888'), fc5V=dynLbl('n/a','#888888'), fcTV=dynLbl('0 total','#222222');
 panel.add(row('F1 Urchin grazer',fc1V)); panel.add(row('F3 Anem density',fc3V));
-panel.add(row('F4 Metals',fc4V)); panel.add(row('F5 Recruitment',fc5V)); panel.add(row('Total correction',fcTV));
+panel.add(row('F4 Metals',fc4V)); panel.add(row('F5 Recruitment',fc5V));
+// v10.174: A1 sits with F1..F5 because it obeys the same contract - a real
+// measurement, an explicit magnitude, and no accuracy credit unless it moved
+// the score. It is listed separately from the field total because it is not
+// field data: it is a hydrophone, and it is null at all but one site on Earth.
+var acA1V=dynLbl('n/a','#888888');
+var acNoteV=ui.Label('',{fontSize:'7px',color:'#225566',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+panel.add(row('A1 Acoustic biophony',acA1V));
+panel.add(row('Total correction',fcTV));
+panel.add(acNoteV);
 
 // v10.144 NEW: S20e - Real Bleaching Probability (fitted model)
 panel.add(sHead('S20e - REAL BLEACHING PROBABILITY (fitted model)','#3a1a1a'));
@@ -12297,6 +12428,24 @@ function analyzeLocation(lat, lon) {
         ('  [measured '+(sc.fc_measured>0?'+':'')+sc.fc_measured+
          ' | ESTIMATED/placeholder '+(sc.fc_estimated>0?'+':'')+sc.fc_estimated+']'):''));
     fcTV.style().set('color',(sc.fieldEstimatedNames&&sc.fieldEstimatedNames.length>0&&sc.fc_estimated!==0)?'#aa6600':'#111111');
+    // v10.174 A1. Three visibly different states, because they mean different
+    // things: no coverage at all, a real measurement that found nothing, and a
+    // real measurement that moved the score. The middle one is the one a reader
+    // is most likely to misread as "healthy", so it is labelled explicitly.
+    if(!sc.acousticMatched){
+      acA1V.setValue('n/a - no acoustic coverage'); acA1V.style().set('color','#888888');
+    } else if(!sc.acousticEligible){
+      acA1V.setValue('n/a - hydrophone here, but REFUSED (not a biophony index)');
+      acA1V.style().set('color','#885500');
+    } else if(!sc.acousticApplied){
+      acA1V.setValue('0 (measured, no significant trend - NOT evidence of health)');
+      acA1V.style().set('color','#885500');
+    } else {
+      acA1V.setValue((sc.acousticA1>0?'+':'')+sc.acousticA1+
+        ' (acoustic trend applied, +'+sc.acc_acoustic+'% accuracy earned)');
+      acA1V.style().set('color','#115544');
+    }
+    acNoteV.setValue(sc.acousticNote?('A1: '+sc.acousticNote):'');
     fc1V.style().set('color',fp.urchin_N!==null?'#115511':'#888888');
     fc3V.style().set('color',fp.anem_N_estimated?'#aa6600':fp.anem_N!==null?'#115511':'#888888');
     fc4V.style().set('color',fp.Cd!==null?'#553300':'#888888');
@@ -13043,6 +13192,10 @@ function analyzeLocation(lat, lon) {
     // measurement and which part is an ESTIMATED PLACEHOLDER, and how much of
     // the nominal field accuracy gain that forfeits.
     print('FIELD ATTRIBUTION (v10.161): '+sc.fieldAttribNote);
+    print('ACOUSTIC A1 (v10.174): '+(sc.acousticA1>0?'+':'')+sc.acousticA1+' points'+
+      (sc.acousticApplied?(' APPLIED, +'+sc.acc_acoustic+'% of a nominal +'+sc.acc_acoustic_nominal+'% earned'):
+       (sc.acousticEligible?' (eligible, not applied - no accuracy credit)':' (no coverage)')));
+    print('  '+sc.acousticNote);
     if(sc.acc_field_nominal!==undefined&&sc.acc_field_nominal>sc.acc_field){
       print('  Field accuracy gain: +'+sc.acc_field+'% earned of a nominal +'+sc.acc_field_nominal+
         '% ('+(sc.acc_field_nominal-sc.acc_field)+'% forfeited). A correction derived from a placeholder does not make the answer more accurate.');
@@ -13081,6 +13234,7 @@ function analyzeLocation(lat, lon) {
       dhw_c_weeks:dhwv,dhw_raw_unfiltered:dhwv_raw,dhw_artifact_flagged:dhwFlaggedArtifact,
       mmm_local_c:mmmv,chl_a_mg_m3:cv,turbidity_ndti:turv,no2_mol_m2:nv,depth_m:bv,
       cancer_score_satellite:sc.sat_ccs,cancer_score_fused:sc.ccs,field_correction:sc.fcTotal,
+      acoustic_correction:sc.acousticA1,acoustic_applied:sc.acousticApplied,
       bowl_depth_B:sc.B,accuracy_pct:sc.acc_total,status_label:cols.lbl,
       ccs_insufficient_data:scInsuf, ccs_n_satellite_inputs:sc.nInputs, ccs_data_completeness_pct:sc.dataCompleteness,
       field_data_available:fp.hasField,field_species:fp.hasField?fp.species:'none',
@@ -13116,6 +13270,54 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.174 A1 NEW: the acoustic term is wired into the FUSED Coastal Cancer');
+print('  Score - and it changes no score anywhere on Earth today, which is the');
+print('  correct outcome and is asserted by test, not hoped for.');
+print('');
+print('  A1 joins F1..F5 on the contract v10.161 FIX 19 set for them: a term that');
+print('    moves the headline must be a real measurement, must state how much of the');
+print('    move it caused, and must not buy accuracy it has not earned.');
+print('    ccs = clamp(satellite composite + field correction + A1).');
+print('  FOUR GUARDS, and the first two are the ones that matter:');
+print('    (1) VARIABLE KIND. Only a biophony index may touch a reef stress score.');
+print('        SB02 Stellwagen is REFUSED BY CONSTRUCTION: its series is a wind- and');
+print('        sea-state-driven ambient band level at a temperate 42 N site that is not');
+print('        a coral reef, and its own label says NOT biophony. This guard matters');
+print('        precisely because SB02 is the ONE acoustic site in this tool with a');
+print('        significant trend (p=0.0219). The only site that would move the number');
+print('        is the only site that must not. Without the guard it would have moved');
+print('        a coral score by up to the full cap on the strength of wind noise.');
+print('    (2) SIGNIFICANCE. A non-significant seasonal Mann-Kendall contributes');
+print('        EXACTLY 0. A p=0.4330 null is not a small trend and may not nudge a');
+print('        score in the direction its tau happens to point.');
+print('    (3) DESIGN FLOOR: >=5 seasons and >=15 within-season pairs, the structure');
+print('        at or above which this test\'s 4.05% false-positive rate was measured.');
+print('        A thinner series is still reported in S21/S21b - it just does not vote.');
+print('    (4) CAP: +-'+ACOUSTIC_MAX_POINTS+' points, deliberately below F3 (+-10) and F5 (+-8), because');
+print('        the index has NO calibrated sensitivity to reef degradation. An');
+print('        uncalibrated instrument gets a small vote, not a veto.');
+print('  DIRECTION: a FALLING crepuscular-minus-night ratio means the dawn/dusk chorus');
+print('    is flattening toward the night floor, so it RAISES stress (positive A1).');
+print('  ACCURACY IS EARNED, NOT GRANTED. acc_acoustic is the nominal +'+ACOUSTIC_ACC_GAIN+'% ONLY when');
+print('    A1 is non-zero - the same magnitude-apportioning rule v10.161 applied to the');
+print('    field gain. At FK01 today the measurement is real, the result is null, and');
+print('    the accuracy credit is therefore ZERO. A measurement that moves nothing');
+print('    claims nothing.');
+print('  STATE TODAY, asserted by test at every site: A1=0 everywhere. FK01 is');
+print('    eligible but null (p=0.4330); SB02 is matched and refused; everywhere else');
+print('    has no coverage. Verified in a Node harness that scores Bocas, Hawaii, SB02');
+print('    and FK01 and finds ccs and acc_total unchanged from the pre-A1 formula.');
+print('    The APPLIED path is exercised against synthetic falling/rising series:');
+print('    falling gives A1=+5 (72 -> 77, accuracy 77 -> 80), rising A1=-5 (72 -> 67),');
+print('    a thin series is refused by the design floor, and a tau=-1.000 series is');
+print('    held at the cap.');
+print('  UI HAS FOUR STATES, not three, and the distinction is the point: no coverage /');
+print('    hydrophone present but REFUSED / measured with no significant trend /');
+print('    applied. The middle two are the ones a reader would otherwise misread -');
+print('    "no coverage" over a site with 31,329 hours of it, or a null read as health.');
+print('    The null state says "NOT evidence of health" on screen, because this index');
+print('    cannot yet rule out a degradation it has never been calibrated against.');
 print('');
 print('v10.173 S21b NEW: the deseasonalization benchmark - plus a CORRECTION to');
 print('  v10.172, which asserted a gate refusal that never happened.');
