@@ -42,21 +42,27 @@
  * If you edit this file, keep it that way.
  *
  * -----------------------------------------------------------------------------
- * DETECTION PARAMETERS ARE PLACEHOLDERS
+ * DETECTION PARAMETERS - SUPERSEDED NOTICE (v2)
  * -----------------------------------------------------------------------------
- * detectVessels() below implements a REASONABLE DEFAULT (CFAR-style adaptive
- * threshold + connected-component size filtering). Its internals and every
- * number in PARAMS are PLACEHOLDERS pending the parameter specification being
- * written in a parallel workstream. The function signature and its return
- * contract are FIXED and must not change; the body is meant to be swapped out.
- * See the banner marked "PLUGGABLE DETECTION FUNCTION" below.
+ * This section originally said every value in PARAMS was a placeholder pending
+ * a parameter specification. THAT IS NO LONGER TRUE and the sentence is
+ * corrected rather than deleted, because a file carrying two opposite claims
+ * about its own parameters is worse than either claim alone.
+ * The specification landed (sar_params.md) and its values were applied in v2:
+ * VH-only, no speckle pre-filter, annulus-median background de-biased by m(L),
+ * ENL-derived threshold at k=8 (+6.82 dB), 150/400 m CFAR geometry, 3 px
+ * minimum target, 10 m analysis scale, WorldCover land mask at 1000 m buffer.
+ * The function SIGNATURE and RETURN CONTRACT remain fixed; the body is still
+ * swappable. See the RECONCILED v2 annotations inline for each prior value.
  *
  * -----------------------------------------------------------------------------
  * COMPUTE COST - READ BEFORE PRESSING RUN
  * -----------------------------------------------------------------------------
- * The 40 km disc is ~5.03e9 m2. At the default 20 m analysis scale that is
- * ~12.6 million pixels PER SCENE PER POLARISATION, times 278 scenes. This is a
- * genuinely large job. Interactive prints are therefore deliberately cheap:
+ * The 40 km disc is ~5.03e9 m2. At the v2 analysis scale of 10 m that is
+ * ~50.3 million pixels PER SCENE, times 278 scenes - 4x the original 20 m
+ * draft. (The v1 text here said 20 m and ~12.6 M px; that was superseded when
+ * the spec moved the scale to native 10 m so the 3 px / 300 m2 minimum target
+ * means what it says.) This is a genuinely large job. Interactive prints are therefore deliberately cheap:
  * the previewed feature is built over CONFIG.PREVIEW_RADII_M only (2 km by
  * default). The Export task is NOT subject to the interactive timeout, but it
  * may still take hours. If the export fails with "computation timed out",
@@ -215,7 +221,8 @@ var CONFIG = {
 
 
 /* -----------------------------------------------------------------------------
- * PARAMS - detection tunables. EVERY number here is a PLACEHOLDER.
+ * PARAMS - detection tunables. v2: these are the SPECIFICATION values, not
+ * placeholders (see the superseded notice in the header).
  * Sweep by editing this object and bumping CONFIG.PARAM_SET_ID; the values are
  * echoed into the CSV so a row always knows how it was made.
  * -------------------------------------------------------------------------- */
@@ -440,7 +447,7 @@ if (CONFIG.INCLUDE_WATER_AREA) {
  * =============================================================================
  *
  *  +-----------------------------------------------------------------------+
- *  |  *** PLACEHOLDER IMPLEMENTATION - REPLACE WHOLESALE ***               |
+ *  |  *** v2: SPECIFICATION VALUES APPLIED - CONTRACT STILL FIXED ***      |
  *  |                                                                       |
  *  |  Everything between this banner and the "END PLUGGABLE BLOCK" banner  |
  *  |  is a reasonable default standing in for the detection specification  |
@@ -1176,8 +1183,15 @@ print('CHECK 2 - by orbit pass (EXPECT ASCENDING 93, DESCENDING 185):',
       s1.aggregate_histogram('orbitProperties_pass'));
 print('CHECK 3 - by relative orbit (EXPECT keys 142, 40, 62):',
       s1.aggregate_histogram('relativeOrbitNumber_start'));
-print('CHECK 4 - by platform number (S1A / S1B split):',
-      s1.aggregate_histogram('platform_number'));
+// v3 FIX: was aggregate_histogram('platform_number'), which prints an empty
+// dictionary if that property is absent or named differently - a silent blank
+// rather than a caught error. Derived from the scene id prefix instead, which
+// is the same source both output tables use.
+print('CHECK 4 - by platform, from the scene id prefix (S1A / S1B split):',
+      s1.map(function (im) {
+        return im.set('platform_id',
+                      ee.String(im.get('system:index')).slice(0, 3));
+      }).aggregate_histogram('platform_id'));
 // Dual-pol is CHECKED, not assumed: if these two numbers differ, some scene in
 // the window is single-pol and the verified 278 no longer describes this set.
 print('CHECK 5a - scenes before the dual-pol filter (EXPECT 278):', s1Base.size());
@@ -1195,7 +1209,25 @@ if (CONFIG.INCLUDE_WATER_AREA) {
 // inside the interactive compute budget; the exported rows use all five radii.
 // If this still times out, set CONFIG.PRINT_FIRST_FEATURE = false - the Export
 // task does not share the interactive timeout.
-if (CONFIG.PRINT_FIRST_FEATURE) {
+/* v3 FIX - CHECK 8 IS NOT CHEAP ANY MORE IN 'compute' MODE, AND THAT WAS A
+ * REGRESSION I INTRODUCED. The preview was designed to stay inside the
+ * interactive budget by using PREVIEW_RADII_M (2 km) only. Persistence broke
+ * that: makeSceneFeature -> detectVessels -> persistenceFor, and in 'compute'
+ * mode that evaluates the DETECTOR OVER ALL ~93 SCENES of the orbit before it
+ * can print one row. The radius no longer bounds the cost.
+ * Worse, it would have failed FIRST, before CHECK 10 - the histogram that
+ * decides whether the persistence threshold is defensible at all - ever
+ * printed. So the preview is skipped in 'compute' mode and says why.
+ * CHECK 1-7 and 9 do not touch persistence and still print normally. */
+if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE === 'compute') {
+  print('CHECK 8 - SKIPPED. PERSISTENCE_MODE is "compute", so building one ' +
+        'preview row would first evaluate the detector over every scene in ' +
+        'the orbit and would very likely time out before CHECK 10 printed. ' +
+        'Run STAGE A, switch PERSISTENCE_MODE to "asset", and CHECK 8 becomes ' +
+        'cheap again. To see it now without persistence, set ' +
+        'PERSISTENCE_MODE to "off".');
+}
+if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
   var previewTags = [];
   var previewAois = [];
   var previewDiscs = [];
@@ -1251,8 +1283,10 @@ print('CHECK 9 - exported column order (' + SELECTORS.length + ' columns):',
 
 print('REMINDER: this script produces a TABLE ONLY. It computes no statistics ' +
       'and makes no claim about proxy skill. All inference happens offline.');
-print('REMINDER: every value in PARAMS is a PLACEHOLDER pending the detection ' +
-      'parameter specification.');
+print('NOTE: PARAMS carries the v2 specification values (VH-only, annulus-median ' +
+      'background, k=8 on ENL-derived sigma = +6.82 dB, 3 px at 10 m). They are ' +
+      'no longer placeholders. PARAMS.enl = 4.4 is the ESA nominal and is the ' +
+      'one value that still wants measuring on calm scenes.');
 
 
 /* =============================================================================
@@ -1343,7 +1377,11 @@ if (CONFIG.EXPORT_DETECTIONS) {
     var tms = ee.Number(img.get('system:time_start'));
     var ro  = img.get('relativeOrbitNumber_start');
     var pas = img.get('orbitProperties_pass');
-    var plat = img.get('platform_number');
+    // v3 FIX: was img.get('platform_number'). The per-scene table derives
+    // platform from the scene id prefix precisely because that property's
+    // presence is an assumption, and the two tables disagreeing on the same
+    // field is worse than either choice. Both now use the id.
+    var plat = ee.String(img.get('system:index')).slice(0, 3);
     return detectionVectors(img, AOIS[AOIS.length - 1], PARAMS)
       .map(function (f) {
         f = ee.Feature(f);
