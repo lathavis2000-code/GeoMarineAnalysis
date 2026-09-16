@@ -242,7 +242,67 @@ ok('no satellite input yields a null score, not a number', noScore.ccs === null 
     ok('both returns carry ' + k, (k in okScore) && (k in noScore));
   });
 
-section('11. Click path is wired (not just the functions)');
+section('11. S20 replay window (v10.176) and its baseline-overlap disclosure');
+ok('replay floor reaches the acoustic record', S20_REPLAY_MIN_YEAR <= 2018,
+  'floor=' + S20_REPLAY_MIN_YEAR + ', earliest acoustic month is 2018-11');
+ok('MMM baseline constants drive the collection, not a literal',
+  typeof MMM_BASELINE_START_YEAR === 'number' && typeof MMM_BASELINE_END_YEAR === 'number' &&
+  MMM_BASELINE_END_YEAR > MMM_BASELINE_START_YEAR,
+  MMM_BASELINE_START_YEAR + '-' + MMM_BASELINE_END_YEAR);
+// The disclosure exists because the widened window now overlaps the baseline.
+// If a future change moves the baseline entirely before the replay floor, the
+// overlap is gone and the note is dead code - this asserts the relationship
+// rather than the sentence, so it fails loudly either way.
+var overlaps = S20_REPLAY_MIN_YEAR <= MMM_BASELINE_END_YEAR;
+ok('replay window overlapping the MMM baseline is disclosed in the panel text', !overlaps ||
+  SRC.indexOf('BASELINE OVERLAP') !== -1,
+  'window ' + S20_REPLAY_MIN_YEAR + '-' + S20_REPLAY_MAX_YEAR + ' vs baseline ' +
+  MMM_BASELINE_START_YEAR + '-' + MMM_BASELINE_END_YEAR);
+// Drive the real handler across the boundaries. ee is re-pointed so evaluate()
+// yields a DHW and the SUCCESS branch - the only one carrying the note - runs.
+(function () {
+  var savedEe = global.ee;
+  function ch() {
+    var f = function () { return ch(); };
+    return new Proxy(f, {
+      get: function (t, k) {
+        if (k === 'evaluate') return function (cb) { cb({ dhw: 9.5, latestDate: null }, null); };
+        if (k === 'then' || k === 'toJSON' || k === Symbol.toPrimitive || k === Symbol.iterator) return undefined;
+        return ch();
+      },
+      apply: function () { return ch(); }
+    });
+  }
+  global.ee = ch();
+  global.lastClickLat = 24.43313; global.lastClickLon = -81.93068;
+  function run(m) {
+    speciesDateInput.setValue(m); speciesRiskStatusV.setValue('');
+    try { speciesRiskBtn._cb(); } catch (e) { return 'THREW:' + e.message; }
+    return String(speciesRiskStatusV.getValue());
+  }
+  var below = run((S20_REPLAY_MIN_YEAR - 1) + '-12');
+  var floor = run(S20_REPLAY_MIN_YEAR + '-01');
+  var above = run((S20_REPLAY_MAX_YEAR + 1) + '-01');
+  var ceil = run(S20_REPLAY_MAX_YEAR + '-12');
+  var inBase = run(MMM_BASELINE_END_YEAR + '-08');
+  var outBase = run((MMM_BASELINE_END_YEAR + 1) + '-08');
+  ok('a month below the floor is refused', below.indexOf('must be') !== -1, below.slice(0, 70));
+  ok('the floor month itself is accepted', floor.indexOf('must be') === -1, floor.slice(0, 70));
+  ok('a month above the ceiling is refused', above.indexOf('must be') !== -1, above.slice(0, 70));
+  ok('the ceiling month itself is accepted', ceil.indexOf('must be') === -1, ceil.slice(0, 70));
+  ok('a replay inside the baseline carries the overlap disclosure',
+    inBase.indexOf('BASELINE OVERLAP') !== -1, inBase.slice(0, 90));
+  ok('a replay after the baseline carries no disclosure',
+    outBase.indexOf('BASELINE OVERLAP') === -1, outBase.slice(0, 90));
+  ok('the disclosure names the self-suppressing direction',
+    inBase.indexOf('SELF-SUPPRESSING') !== -1 && inBase.indexOf('UNDERSTATED') !== -1);
+  ok('no disclosure line is long enough to clip in the 256px panel',
+    inBase.split('\n').every(function (l) { return l.length <= 56; }),
+    'longest=' + Math.max.apply(null, inBase.split('\n').map(function (l) { return l.length; })));
+  global.ee = savedEe;
+})();
+
+section('12. Click path is wired (not just the functions)');
 ['s21VerdictV', 's21bVerdictV'].forEach(function (name) {
   global[name].setValue('__SENTINEL__');
 });
