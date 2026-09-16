@@ -14,6 +14,92 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.175 FK02 NEW: a third acoustic site, a second BIOPHONY site - and the honest
+  finding that NO site in this archive can activate A1.
+
+  THE ASK WAS "add a third biophony site so A1 is not dead code". The site is
+  added and A1 is still dead, because SanctSound cannot supply what would wake
+  it. Nothing was loosened to change that: ACOUSTIC_MIN_PAIRS,
+  ACOUSTIC_MIN_SEASONS, ACOUSTIC_MAX_POINTS and every climatology gate are
+  untouched. Lowering a guard until a term fires is how a score starts asserting
+  things its data does not support, which is the failure this whole series has
+  been correcting.
+
+  THE SELECTION RULE WAS FIXED BEFORE ANY TREND WAS COMPUTED. Choosing a site by
+  whether it yields p<0.05 is the garden of forking paths, and the seasonal test
+  exists to stop exactly that, so the rule was written first: (1) inside the
+  tool's own reef zone, (2) clears the A1 design floor, (3) best coverage among
+  those that qualify.
+
+  GR01 GRAY'S REEF IS EXCLUDED DESPITE THE BEST COVERAGE of any warm-water site
+  in the archive - 33 months, 12 seasons, 33 pairs, more than FK01 has. At
+  31.4 N it fails computeScore()'s own isReefZone test (lat>-30 && lat<30).
+  Dropping the best-covered candidate is what applying the rule consistently
+  costs, and it is recorded here rather than quietly skipped.
+
+  HAWAII IS EXCLUDED ON A MEASUREMENT, NOT ON COVERAGE. Shrimp-band level
+  relative to the night trough (01-04 local), over each whole record:
+      FK01  dawn +2.21 dB   dusk +2.19 dB   <- both peaks, index valid
+      FK02  dawn +1.54 dB   dusk +1.45 dB   <- both peaks, index valid
+      HI01  dawn -0.59 dB   dusk +0.70 dB   <- NO dawn peak
+      HI03  dawn -0.09 dB   dusk +0.40 dB   <- NO dawn peak
+      HI04  dawn -0.02 dB   dusk +1.01 dB   <- NO dawn peak
+  All three Hawaii sites peak ONCE, at local 19, and sit at or below the night
+  floor at dawn. The index is (dawn+dusk) MINUS night; where dawn contributes
+  nothing or contributes negatively, it is not the same quantity, whatever that
+  site's p-value would have been. HI03 and HI04 both CLEAR the A1 design floor on
+  coverage (24 and 22 pairs) and were rejected on this check alone. It is the
+  SB02 lesson a second time: the index transfers on measured diel structure,
+  never on "it is a coral reef".
+
+  FK02, 24.4888 N -81.66632. 5 deployments, 12,654 hourly TOL rows, 2018-12-18 ..
+  2021-05-15, reduced to 20 monthly values (2019-10 and 2020-05 dropped for fewer
+  than 20 hours on one side of the ratio). Crepuscular signature verified as
+  above. Per-deployment mean ratio +1.35 / +1.50 / +1.60 / +1.54 / +1.63 dB - no
+  calibration step, unlike FK01's deployment 11. 27.5 km from FK01, so their
+  20 km radii overlap and getAcousticSite() resolves a click in the overlap to
+  the NEARER site, which is deterministic rather than arbitrary.
+
+  FK02 DOES NOT ACTIVATE A1 EITHER, and is not presented as if it might. It has
+  5 seasons but only 13 comparable pairs against ACOUSTIC_MIN_PAIRS=15, so it is
+  refused from the score before significance is consulted - and its seasonal test
+  reads tau=+0.231, p=0.6134 regardless. Its climatology is refused as well (20
+  valid months against CLIM_MIN_TOTAL_SAMPLES=26), which makes it the first REAL
+  series to exercise S21b's seasonal-path-only branch, previously reachable only
+  in synthetic tests. It earns its place as an independent SECOND Florida Keys
+  reef reading that also finds no trend - two sites, 27.5 km apart, both null.
+
+  THE COMPLETE ACTIVATION AUDIT, every site in the archive:
+      FK01                 reef, crepuscular, passes floor  -> p=0.4330, A1=0
+      FK02                 reef, crepuscular, 13 pairs      -> floor fail, A1=0
+      FK03, FK04           reef, 2 and 1 pairs              -> floor fail
+      HI01, HI03, HI04     reef, no dawn peak               -> index invalid
+      HI05, HI06           reef, 2 and 15 months            -> floor fail
+      PM01/02/05/08        reef, <=8 pairs                  -> floor fail
+      GR01/02/03           31.4 N, outside reef zone        -> excluded
+      SB02                 42.5 N, 60 pairs, p=0.0219 SIG   -> REFUSED on varKind
+      MB, OC, CI           temperate, no shrimp             -> excluded
+  The ONLY site in the archive with both a significant trend AND enough structure
+  to vote is SB02, and it is refused because wind noise at a 42 N non-reef site
+  must not move a coral stress score. That refusal is the feature working
+  correctly, not a gap to be closed.
+
+  CONCLUSION, stated rather than buried in a panel: A1 is a tested, DORMANT
+  capability. Its guards and its applied path are exercised (synthetically, since
+  no real datum reaches them), and it contributes exactly 0 at every real site.
+  Waking it needs a longer tropical-reef acoustic record than SanctSound holds -
+  not another site from this archive, and not a lower threshold.
+
+  ALSO FIXED, and CI caught it: tests/ci.js asserted that computeUsableClimatology
+  ACCEPTS every registered site. That was true of FK01 and SB02 and became false
+  the moment a legitimately-thin site was added, so the assertion was wrong in
+  kind, not just in value - it would have re-hidden the v10.172 confusion it was
+  written to guard. It now asserts the gate's own invariant: ok === (nTotal >=
+  CLIM_MIN_TOTAL_SAMPLES && calendar months with >=1 sample >=
+  CLIM_MIN_DISTINCT_MONTHS), so FK02 is expected to be REFUSED and FK01/SB02
+  accepted. The suite also caught the v10.175 bump landing without a matching
+  startup entry - the stale-version-marker class the file header calls out.
+
 v10.174 A1 NEW: the acoustic result is wired into the FUSED Coastal Cancer Score
   as a sixth correction term - and it moves no score anywhere on Earth today,
   which is the correct outcome and is asserted by test rather than hoped for.
