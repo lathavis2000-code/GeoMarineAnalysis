@@ -566,6 +566,61 @@ section('15. Study scripts LOAD, not just parse');
   });
 })();
 
+section('16. The ES5 gate itself works');
+// The gate is the only thing standing between an ES2015 library method and a
+// Code Editor runtime failure, and it had three defects at once: no Math.* rule
+// (which is how Math.log10 reached a study script), line numbers that drifted
+// after the first block comment (236 lines off in the SAR file), and no CLI at
+// all - `node tests/es5.js <file>` printed nothing and exited 0 for any input.
+// A gate nobody tests is a gate nobody can trust, so test it.
+(function () {
+  // Each sample is one line so the expected line number is unambiguous.
+  var SAMPLES = [
+    ['const declaration', 'const a = 1;'],
+    ['let declaration', 'let b = 2;'],
+    ['arrow function', 'var f = function () { return 0; }; var g = x => x;'],
+    ['Object.assign', 'var o = Object.assign({}, {});'],
+    ['Array.prototype.includes', 'var c = [1].includes(1);'],
+    ['Array.prototype.find/findIndex', 'var d = [1].find(function (x) { return x; });'],
+    ['String.prototype.repeat', 'var e = "x".repeat(3);'],
+    ['Math.* ES2015', 'var h = Math.log10(10);'],
+    ['Math.* ES2015', 'var i2 = Math.trunc(1.5);'],
+    ['Map/Set constructor', 'var j = new Map();'],
+    ['template literal', 'var k = `x`;']
+  ];
+  SAMPLES.forEach(function (sample) {
+    var rule = sample[0], src = sample[1];
+    var hits = es5.scan(src);
+    ok('gate flags: ' + rule,
+      hits.some(function (h) { return h.rule === rule; }),
+      'scan returned ' + JSON.stringify(hits));
+  });
+
+  // Math.* specifically, because its absence is what let Math.log10 ship.
+  ok('gate has a Math.* rule at all',
+    es5.scan('Math.log10(1);').length > 0);
+  // ES5 Math must NOT trip it.
+  ok('gate does not flag ES5 Math',
+    es5.scan('Math.log(1); Math.sqrt(4); Math.max(1,2); Math.LN10;').length === 0,
+    JSON.stringify(es5.scan('Math.log(1); Math.sqrt(4); Math.max(1,2); Math.LN10;')));
+
+  // Line numbers must survive a block comment and a multi-line string - the
+  // stripper used to blank those newlines, so every later finding was reported
+  // at the wrong line.
+  var padded = '/*\n' + new Array(40).join('filler\n') + '*/\n' +
+               'var s = "a\\\nb";\n' +
+               'const late = 1;\n';
+  var lateLine = padded.split('\n').indexOf('const late = 1;') + 1;
+  var found = es5.scan(padded).filter(function (h) { return h.rule === 'const declaration'; });
+  ok('line numbers survive a block comment and a multi-line string',
+    found.length === 1 && found[0].line === lateLine,
+    'reported ' + (found.length ? found[0].line : 'nothing') + ', expected ' + lateLine);
+
+  // Clean ES5 must stay clean - a gate that cries wolf gets ignored.
+  ok('gate passes plain ES5',
+    es5.scan('var x = 1;\nfunction f(a) { return a * 2; }\n').length === 0);
+})();
+
 function report() {
   console.log('\n' + '-'.repeat(60));
   if (failures.length === 0) {

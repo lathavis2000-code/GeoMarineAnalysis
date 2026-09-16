@@ -70,20 +70,14 @@ jobs:
           for f in "${files[@]}"; do
             echo "checking $f"
             node --check "$f"
-            node -e "
-              var es5 = require('./tests/es5.js');
-              var src = require('fs').readFileSync(process.argv[1], 'utf8');
-              var hits = es5.scan(src);
-              if (hits.length) {
-                console.error('ES6 constructs found in ' + process.argv[1] + ':');
-                hits.slice(0, 20).forEach(function (h) {
-                  console.error('  line ' + h.line + ': ' + h.rule);
-                });
-                process.exit(1);
-              }
-              console.log('  ES5 clean');
-            " "$f"
           done
+          # Call the gate's CLI rather than re-implementing it inline. The CLI
+          # did not exist until now: tests/es5.js only exported scan(), so
+          # `node tests/es5.js <file>` printed nothing and exited 0 for ANY
+          # input. This job was unaffected because it inlined a scan() call, but
+          # the command a human types was a silent no-op, and a passing CI log
+          # is exactly where that gets believed. One code path now, exercised here.
+          node tests/es5.js "${files[@]}"
 
       # The offline analysis scripts carry their own self-tests. They have no
       # third-party dependencies, so this stays a zero-install job.

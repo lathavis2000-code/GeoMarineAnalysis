@@ -55,6 +55,43 @@ own computation. On 278 scenes at 10 m it is very unlikely to finish.
 
 ## Known-bad versions
 
+Four defects have made this script fail or mislead. All four passed `node --check`.
+
+**Died before CHECK 1 could print:**
+
+1. `buildPersistence()` read a collection named `SCENES`, which exists nowhere.
+2. The block calling it ran at module level ~115 lines *above* the `s1Joined`
+   assignment. Fixing (1) alone would have swapped the `ReferenceError` for
+   `Cannot read properties of undefined (reading 'filter')`.
+3. `Math.log10` — an ES2015 *library* addition the Code Editor sandbox does not
+   implement, the same class as `String.repeat` and `Object.assign`, both of
+   which broke the main tool historically. On the default path, reached
+   synchronously by `map()` at graph-build time.
+
+**Failed hours later, after the tasks were queued:**
+
+4. `ee.Image('ESA/WorldCover/v200')` — the STAC record says
+   `gee:type: image_collection`. A lazy node, so it fails only on *evaluation*.
+   Since the water mask feeds CHECK 7, CHECK 10/10b, the detector and all three
+   exports, the symptom was CHECK 1–6 printing normally, CHECK 7 throwing, and
+   every export task failing with an opaque asset-load error.
+
+**And one that produced a confident wrong answer rather than an error:**
+`flag_ambiguities.py` computed the azimuth axis from `asin()`, which returns only
+the ascending branch — 168.88° at SB02, where the descending branch is 11.12°,
+**22.24° away against a 20° tolerance**. 185 of the 278 scenes are descending, so
+ghosts on two thirds of the data could never be flagged. The damage is not the
+missing flags: `separation_histogram()` is the mandatory empirical check, and an
+absent 4.5–6.5 km spike is documented as meaning ambiguities are not a material
+contaminant. The old self-test could not catch it — it sited its synthetic ghosts
+with the same function it then tested, so a wrong axis moved the ghost too.
+
+Run `node tests/ci.js` (114 checks) and `python3 flag_ambiguities.py` before
+pasting anything into the Code Editor. Section 15 *executes* every script under
+`studies/` against the Earth Engine stub; section 16 tests the ES5 gate itself.
+Neither can catch a type error like (4) — the stub cannot tell `ee.Image` from
+`ee.ImageCollection`.
+
 The copy before commit `HEAD` died in the Code Editor on line 778 with
 `SCENES is not defined`, before CHECK 1 could print. Two separate defects:
 

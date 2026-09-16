@@ -412,7 +412,19 @@ for (i = 0; i < CONFIG.RADII_M.length; i++) {
  *   ee.Image('NOAA/NGDC/ETOPO1').select('bedrock').lt(0) - bathymetric, crude
  */
 
-var landRaw = ee.Image(CONFIG.LAND_SOURCE).select(CONFIG.LAND_BAND);
+// ESA/WorldCover/v200 is an IMAGE COLLECTION, not an Image - the STAC record
+// says gee:type: image_collection. ee.Image(<collection id>) builds a valid
+// lazy node, so nothing failed at parse or graph build; it failed on
+// EVALUATION with "Image.load: ... is not an image". Because WATER_MASK feeds
+// CHECK 7, CHECK 10/10b, the detector and all three exports, the symptom was
+// CHECK 1-6 printing fine, CHECK 7 throwing, and every export task failing
+// later with an opaque asset-load error.
+//   .mosaic() rather than .first(): mosaic is correct whether the collection
+//   holds one global image or many tiles, while .first() is only correct in
+//   the first case and would silently cover part of the AOI in the second.
+//   The STAC record does not state the tiling, so take the option that does
+//   not depend on knowing it.
+var landRaw = ee.ImageCollection(CONFIG.LAND_SOURCE).select(CONFIG.LAND_BAND).mosaic();
 // hasData=1 where WorldCover mapped the pixel at all; 0 where it did not.
 var landHasData = landRaw.mask().gt(0);
 // land = mapped AND not the permanent-water class. Unmapped -> 0 -> water.
@@ -1066,7 +1078,14 @@ function makeSceneFeature(img, radiiM, tags, aois, discs) {
     props.p_use_median_bg = PARAMS.useMedianBackground ? 1 : 0;
     props.p_speckle_applied = PARAMS.speckleApply ? 1 : 0;
     props.p_detection_pols = PARAMS.detectionPols.join('+');
-    props.p_threshold_db = 10 * Math.log10(1 + PARAMS.thresholdK / Math.sqrt(PARAMS.enl));
+    // Math.log10 is an ES2015 LIBRARY addition and the Code Editor sandbox does
+    // not implement it - the same class as String.repeat (v10.149) and
+    // Object.assign (v10.158), both of which broke this codebase in the browser
+    // while passing node --check. This line is on the default path
+    // (INCLUDE_PARAM_COLUMNS is true) and map() invokes the callback once at
+    // graph-build time, so it threw at MODULE LEVEL before CHECK 1 printed.
+    props.p_threshold_db =
+      10 * Math.log(1 + PARAMS.thresholdK / Math.sqrt(PARAMS.enl)) / Math.LN10;
     props.p_land_source = CONFIG.LAND_SOURCE;
   }
 
