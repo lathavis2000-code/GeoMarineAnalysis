@@ -42,8 +42,11 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
 3. **CHECK 10 is a decision point.** The persistence histogram must be
    *bimodal* for the 0.20 threshold to be defensible. See the warning below.
 4. Run STAGE A (persistence assets) with `PERSISTENCE_MODE: 'compute'`.
-5. Set `PERSISTENCE_ASSET_PREFIX` to the written assets, switch to
-   `PERSISTENCE_MODE: 'asset'`, then run the per-scene and detection exports.
+5. Switch to `PERSISTENCE_MODE: 'asset'`, then run the per-scene and
+   detection exports. `PERSISTENCE_ASSET_PREFIX` already points at
+   `projects/ee-lathavis/assets/`; change it if you export elsewhere. Both
+   the write and the read path append `_<PARAM_SET_ID>`, so bumping
+   `PARAM_SET_ID` for a sweep requires re-running STAGE A for that set.
 6. Offline: join detections to acoustic labels, sweep radius, flag ambiguities.
 
 Running step 5 in `'compute'` mode is legal and gives identical numbers, but it
