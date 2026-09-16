@@ -1295,24 +1295,51 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
  * arbitrary - raise it, or set PERSISTENCE_MODE to 'off' and mask known fixed
  * objects by hand. SB02 sits IN a shipping lane, so the failure mode that
  * matters is masking a tightly-channelled traffic pixel as if it were a buoy. */
+/* SCALE. Both reductions below run at PARAMS.analysisScaleM, NOT at
+ * CONFIG.MASK_SCALE_M. They used to use MASK_SCALE_M (30 m) while the mask is
+ * applied at analysisScaleM (10 m), which made this diagnostic measure a
+ * different computation from the one it gates. Two separate corruptions:
+ *
+ *   'compute' mode - annulusKernel() is a FIXED kernel, sized in PIXELS, with
+ *     no .reproject(). Its cells are compute-grid pixels, so at a 30 m request
+ *     the 400/150 m annulus becomes ~1200/450 m and minTargetPixels = 3 becomes
+ *     2,700 m2 instead of 300 m2. That detector finds far fewer small fixed
+ *     objects, which suppresses the near-1.0 mode - exactly the mode the
+ *     bimodality test looks for. A unimodal-looking histogram would then argue
+ *     for raising the threshold or disabling persistence, on evidence produced
+ *     by a detector that is not the one running.
+ *   'asset' mode - the asset is written at 10 m, so a 30 m read serves a
+ *     pyramid level. frac is block-averaged (an isolated persistent pixel
+ *     reports 0.11, not 1.0) and PERSIST, being boolean, is worse still.
+ *     Block-averaging is precisely what destroys bimodality.
+ *
+ * COST, stated plainly: 10 m is 9x the pixels of 30 m, and in 'compute' mode
+ * this evaluates the detector over every scene of the orbit. If it times out,
+ * SHRINK THE REGION - drop to a smaller AOI and say which one you used. Do NOT
+ * coarsen the scale back: a histogram over half the disc at the right scale
+ * answers the question; a histogram over the whole disc at the wrong scale does
+ * not. The scale is printed in each label so the reader can tell which they got.
+ */
 if (CONFIG.PERSISTENCE_MODE !== 'off') {
   for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
     var roD = CONFIG.RELATIVE_ORBITS[i];
     print('CHECK 10 - persistence fraction histogram, orbit ' + roD +
-          ' (want BIMODAL; a spike near 1.0 is fixed objects)',
+          ' at ' + PARAMS.analysisScaleM + ' m (want BIMODAL; a spike near 1.0 ' +
+          'is fixed objects)',
       PERSIST_FRAC[roD].updateMask(WATER_MASK).reduceRegion({
         reducer: ee.Reducer.histogram(20, 0.05),
         geometry: AOIS[AOIS.length - 1],
-        scale: CONFIG.MASK_SCALE_M,
+        scale: PARAMS.analysisScaleM,
         maxPixels: PARAMS.maxPixels,
         tileScale: PARAMS.tileScale
       }));
-    print('CHECK 10b - water area masked as persistent, orbit ' + roD + ' (m2)',
+    print('CHECK 10b - water area masked as persistent, orbit ' + roD +
+          ' at ' + PARAMS.analysisScaleM + ' m (m2)',
       ee.Image.pixelArea().updateMask(PERSIST[roD]).updateMask(WATER_MASK)
         .reduceRegion({
           reducer: ee.Reducer.sum(),
           geometry: AOIS[AOIS.length - 1],
-          scale: CONFIG.MASK_SCALE_M,
+          scale: PARAMS.analysisScaleM,
           maxPixels: PARAMS.maxPixels,
           tileScale: PARAMS.tileScale
         }));
@@ -1402,6 +1429,15 @@ if (CONFIG.PERSISTENCE_MODE === 'compute' && CONFIG.EXPORT_PERSISTENCE_ASSETS) {
       assetId: CONFIG.PERSISTENCE_ASSET_PREFIX + roE + '_' + CONFIG.PARAM_SET_ID,
       region: AOIS[AOIS.length - 1],
       scale: PARAMS.analysisScaleM,
+      // persist is BOOLEAN and frac is a fraction. Earth Engine's default
+      // pyramiding policy is MEAN, which averages a 0/1 mask into a fraction at
+      // every coarser overview: a 30 m cell holding one persistent 10 m pixel
+      // reads 0.11, and any read above native scale silently returns something
+      // that is neither the mask nor an honest summary of it. mode preserves a
+      // boolean; frac is a mean by construction so mean is right for it.
+      // Set BEFORE the assets are written - changing it afterwards means
+      // re-running STAGE A.
+      pyramidingPolicy: { persist: 'mode', frac: 'mean' },
       maxPixels: PARAMS.maxPixels
     });
   }

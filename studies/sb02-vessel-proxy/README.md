@@ -41,6 +41,15 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
    CHECK 1 must print **278**; CHECK 2 **93 ASC / 185 DESC**.
 3. **CHECK 10 is a decision point.** The persistence histogram must be
    *bimodal* for the 0.20 threshold to be defensible. See the warning below.
+   It reduces at `analysisScaleM` (10 m), the scale the mask is actually
+   applied at. It used to reduce at `MASK_SCALE_M` (30 m), which measured a
+   different detector — `annulusKernel` is a fixed PIXEL kernel with no
+   `.reproject()`, so a 30 m request inflated the 400/150 m annulus to
+   ~1200/450 m and the 300 m² minimum target to ~2,700 m². That detector
+   finds fewer small fixed objects, suppressing the near-1.0 mode the test
+   looks for. **If CHECK 10 times out at 10 m, shrink the AOI and say which
+   one you used — do not coarsen the scale back.** The scale is printed in
+   each CHECK 10 label.
 4. Run STAGE A (persistence assets) with `PERSISTENCE_MODE: 'compute'`.
 5. Switch to `PERSISTENCE_MODE: 'asset'`, then run the per-scene and
    detection exports. `PERSISTENCE_ASSET_PREFIX` already points at
@@ -105,6 +114,21 @@ Both passed `node --check` and the ES5 gate. `tests/ci.js` section 15 now
 *executes* every script under `studies/` against the Earth Engine stub, which
 catches an undefined identifier and a use-before-assignment alike. Run
 `node tests/ci.js` before pasting this file into the Code Editor.
+
+## Still open, deliberately
+
+**Persistence is built at production `k = 8`, not the spec's `k = 5`.**
+`sar_params.md` §4.4 step 1 calls for a deliberately loose pre-pass; `buildPersistence()`
+passes the same `PARAMS` as the detector, so `thresholdK` is 8.0. The consequence is
+one-directional: at `k = 8` a marginal fixed object (a buoy, a small wreck, the
+SanctSound mooring itself) is detected in fewer scenes, its `persistence_frac` falls
+below 0.20, and it survives the mask — contributing a detection to every scene of its
+orbit. That is a per-scene constant a count-vs-acoustic regression absorbs into the
+intercept and never surfaces.
+
+This is left as-is on purpose. It changes what the mask *is*, which is a decision about
+the study rather than a defect, and it should be made after reading a CHECK 10 histogram
+that can be trusted — which is what the scale fix above provides.
 
 ## Things that will bite you
 
