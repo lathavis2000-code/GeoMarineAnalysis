@@ -14,6 +14,67 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.178 S21-HEADER: two more static paragraphs in the same panel, both written
+  from FK01's record, both rendered unchanged at every site. Third and fourth
+  instances of the defect fixed in v10.173 and v10.177. Found the same way -
+  by reading a live GEE run at SB02, not by any gate.
+
+  THE FIRST WAS A FALSE SAFETY CLAIM, which makes it worse than a wrong number.
+  The STATE VARIABLE paragraph asserted:
+    "A RATIO, so it is unit-free and cancels any constant per-deployment
+     calibration offset."
+  That is true of the diel ratio at FK01 and FK02, and it is the entire reason
+  a ratio was chosen: it immunises the index against per-deployment gain drift.
+  SB02's variable is an ABSOLUTE TOL_2000 band level. It cancels nothing. And
+  S21b, further down the SAME panel, already discloses that SB02's 21
+  deployments have zero simultaneous overlap, so "a cumulative,
+  frequency-dependent instrument drift is NOT separable from a real
+  environmental change with this record alone."
+  The panel therefore told the reader, on one screen, both that the series is
+  protected from calibration drift and that drift cannot be ruled out in it.
+
+  THE SECOND WAS ALREADY FALSE AT FK01 - the site it was written for. The TEST
+  paragraph read:
+    "Plain Mann-Kendall on the pooled monthly levels returns tau=+0.227
+     p=0.0878 ... April 2019-2022 reads 109.32/110.29/109.21/109.33 dB"
+  Those numbers are real, but they were measured on the UNDERLYING ABSOLUTE
+  LEVELS - the comment above seasonalMannKendall() says so in as many words -
+  while the panel prints them beneath the DIEL RATIO, a different variable with
+  a different scale. (SB02's entire range is 80.95..94.23 dB; 109 dB is not a
+  number that can appear there at all.) Run on the 28 diel-ratio values the
+  table actually ships, pooled Mann-Kendall gives tau=+0.143 p=0.2951. The same
+  paragraph named Jul/Aug/Sep/Oct/Nov as the single-year calendar months; on the
+  shipped table it is Jul/Aug/Sep/Nov, four rather than five.
+
+  FIXED. Both paragraphs are now split: the site-independent part stays static,
+  and the site-specific part is a label set per click.
+    - STATE VARIABLE branches on varKind. The band-level branch states the
+      negation explicitly - "NOT a ratio ... cancels NO per-deployment
+      calibration offset, which is exactly why S21b reports instrument drift
+      here as unresolved rather than ruled out" - instead of inheriting a
+      protection the site does not have.
+    - WHY SEASONAL is COMPUTED from the matched record: pooled Mann-Kendall,
+      seasonal Mann-Kendall, and the number of calendar months present in only
+      one year. It can no longer describe a series it was not run on.
+
+  MEASURED after the fix (pooled p vs seasonal p, single-year months):
+    FK01  0.2951 vs 0.4330,  4 months - verdicts agree
+    FK02  0.0297 vs 0.6134,  6 months - POOLED SAYS TREND, seasonal does not
+    SB02  0.3366 vs 0.0219,  0 months - POOLED MISSES a real trend
+  Worth noting what this exposed: the aliasing false-positive the old text
+  claimed for FK01 is a real phenomenon in this archive, but it is FK02 that
+  demonstrates it. FK01 shows no such disagreement. SB02 shows the opposite
+  failure - a pooled test dividing through an inflated seasonal variance and
+  missing a genuine trend. One recited example could not have covered both.
+  SB02's computed figures reproduce the live GEE run exactly (S21b control C
+  p=0.3366, S21 seasonal p=0.0219).
+
+  ALSO CORRECTED, both stale rather than newly wrong:
+    - the comment above seasonalMannKendall() still read "because FK01 CANNOT
+      build one", the v10.172 claim withdrawn on screen in v10.173. The
+      correction reached the panel and never reached the comment.
+    - the same paragraph said 29 pooled monthly means; the table holds 28.
+
 v10.177 S21-CAVEAT: the caveat line was hardcoded to FK01's numbers and rendered
   unchanged at every site. FOUND BY RUNNING THE TOOL, not by any static check -
   node --check, the ES5 gate and 62 CI assertions all pass on the broken version,

@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.177';
+var TOOL_VERSION = 'v10.178';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -406,10 +406,14 @@ function getAcousticSite(lat, lon){
 // SEASONAL (HIRSCH-SLACK) MANN-KENDALL.
 // S and var(S) are computed WITHIN each calendar month across years, then
 // summed. Nothing is deseasonalized, nothing is imputed, and no climatology is
-// built - which is the point, because FK01 CANNOT build one (see S21 panel text).
+// built - which is the point: the test is valid at a site whose climatology is
+// too thin to trust, and it does not depend on one where the climatology is
+// fine. (v10.178: this line used to read "because FK01 CANNOT build one". That
+// was the v10.172 claim v10.173 withdrew on screen - FK01 clears both gates and
+// S21b builds its climatology. The correction never reached this comment.)
 //
 // WHY THIS AND NOT THE PLAIN mannKendallTest() ABOVE. MEASURED on this exact
-// table's underlying absolute levels: plain Mann-Kendall over the 29 pooled
+// table's underlying absolute levels: plain Mann-Kendall over the 28 pooled
 // monthly snapping-shrimp means returns tau=+0.227, p=0.0878 - close enough to
 // look like an emerging trend. It is sampling aliasing. FK01's deployments are
 // seasonally unbalanced (July, August, September, October and November each
@@ -420,6 +424,19 @@ function getAcousticSite(lat, lon){
 // deployment would have pushed that pooled p under 0.05 and meant nothing.
 // The seasonal test cannot make that mistake: a value is only ever ranked
 // against the SAME calendar month in another year.
+//
+// v10.178 - READ THE FIRST LINE OF THIS PARAGRAPH CAREFULLY. tau=+0.227,
+// p=0.0878 was measured on the UNDERLYING ABSOLUTE LEVELS, not on the diel
+// ratio this table actually ships and the S21 panel actually tests. The panel
+// text used to quote that pair as "plain Mann-Kendall on the pooled monthly
+// levels", directly under a chart of the diel ratio, which reads as the pooled
+// result for the series on screen. It is not. Run on the 28 shipped diel-ratio
+// values, pooled Mann-Kendall gives tau=+0.143 p=0.2951, and only 4 calendar
+// months (Jul, Aug, Sep, Nov - not Oct) occur in a single year. The argument
+// above still holds for the absolute levels it was measured on; the number was
+// simply carried onto a different variable. The panel now COMPUTES the pooled
+// and seasonal pair from whatever series the matched site ships, so the two can
+// no longer drift apart.
 //
 // DISCLOSED LIMIT: with 3-4 years per season the per-season S values are tiny
 // and the normal approximation to their SUM is the standard (Hirsch & Slack
@@ -11520,14 +11537,29 @@ panel.add(row('Turbidity FTU (in-situ)',s19TurbV));
 panel.add(s19NoteV);
 panel.add(lbl('CAVEAT: point-source only. Compare vs S2/S18 (satellite/model) above.',7,'#aa6600'));
 
-// S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172 NEW)
+// S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (introduced v10.172; header text
+// rewritten per-site in v10.178)
 // Deliberately placed next to S19: both are sparse real-sensor panels that are
 // blank at nearly every click, and both say so rather than interpolating.
-panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)','#0a3a3a'));
+panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.178)','#0a3a3a'));
 panel.add(lbl('Real hydrophone data (NOT a model/satellite) - NOAA/NPS SanctSound',7,'#227777'));
 panel.add(lbl('Only populated within radius of an actual hydrophone site (3 sites: FK01 and FK02 Florida Keys - biophony diel ratio; SB02 Stellwagen Bank - ambient band level, NOT biophony, see S21b)',7,'#227777'));
-panel.add(lbl('STATE VARIABLE: diel ratio of the 2-20 kHz snapping-shrimp band - crepuscular (local dawn 05-07 + dusk 17-18) MINUS night trough (local 01-04), in dB. A RATIO, so it is unit-free and cancels any constant per-deployment calibration offset. It is NOT an absolute sound level: FK01 deployment 11 carries a measured low-frequency artifact (+16.95 dB at 25 Hz, +8.89 at 63 Hz, +2.90 at 125 Hz, ~0 above 500 Hz, 2022-05 vs 2021-05) that is flow noise or mooring strum, not vessel traffic. No anthropophony variable is shipped for exactly that reason.',7,'#0a5555'));
-panel.add(lbl('TEST: Seasonal (Hirsch-Slack) Mann-Kendall - each month is ranked ONLY against the same calendar month in other years. Plain Mann-Kendall on the pooled monthly levels returns tau=+0.227 p=0.0878, which is SAMPLING ALIASING: Jul/Aug/Sep/Oct/Nov each occur in exactly one year of this record and summer runs ~4 dB hotter, so the pooled series tilts upward on its own. April 2019-2022 reads 109.32/110.29/109.21/109.33 dB - tau exactly 0.000.',7,'#663388'));
+// v10.178: these two paragraphs were static and written from FK01's record.
+// Rendered at SB02 they asserted a diel ratio where the variable is an absolute
+// band level, and recited FK01's aliasing numbers - 109 dB values, at a site
+// whose entire range is 80.95..94.23 dB - as if they described the series on
+// screen. The STATE VARIABLE one was the worse of the two: "A RATIO, so it is
+// unit-free and cancels any constant per-deployment calibration offset" is a
+// SAFETY claim, and it is false at SB02, whose own S21b text says instrument
+// drift is not separable there. Both are now per-site, and the why-seasonal
+// case is COMPUTED from the matched record rather than recited. Third instance
+// of this defect in this panel (see v10.173 BIOPHONY TREND, v10.177 caveat).
+panel.add(lbl('STATE VARIABLE: site-dependent - two kinds are wired in, and the matched variable is named below and in the status line. No anthropophony (vessel-noise) variable is shipped at ANY site: FK01 deployment 11 carries a measured low-frequency artifact (+16.95 dB at 25 Hz, +8.89 at 63 Hz, +2.90 at 125 Hz, ~0 above 500 Hz, 2022-05 vs 2021-05) that is flow noise or mooring strum, not vessel traffic, and nothing in the record separates the two.',7,'#0a5555'));
+var s21VarV=ui.Label('Click a location - the variable depends on the site.',{fontSize:'7px',color:'#0a5555',backgroundColor:'rgba(0,0,0,0)',padding:'2px 4px',margin:'1px 0'});
+panel.add(s21VarV);
+panel.add(lbl('TEST: Seasonal (Hirsch-Slack) Mann-Kendall - each month is ranked ONLY against the same calendar month in other years, so the test needs neither a climatology nor imputation. WHY that matters differs by site, so it is computed from the matched record below rather than recited from one site.',7,'#663388'));
+var s21WhyV=ui.Label('',{fontSize:'7px',color:'#663388',backgroundColor:'rgba(0,0,0,0)',padding:'2px 4px',margin:'1px 0'});
+panel.add(s21WhyV);
 panel.add(lbl('v10.173 CORRECTION - v10.172 SAID THE OPPOSITE OF THE TRUTH HERE AND IT SHOWED ON SCREEN. It claimed computeUsableClimatology() "refuses" FK01 and printed DISTINCT 7/9 FAIL. It does not refuse it. The real gate counts calendar months holding AT LEAST ONE valid sample (11 at FK01) against CLIM_MIN_DISTINCT_MONTHS=9; the 7 was months with 3+ years, which is CLIM_MIN_SAMPLES_PER_MONTH, an internal QUALITY counter that gates nothing. FK01 clears both floors and the climatology IS built - see S21b below, which now runs it. What remains true: CSD_AC1_MIN_POOLED_MONTHS=48 is unreachable for EVERY SanctSound site, because the archive spans 2018-11 to 2022-06, 44 months end to end, and the best-covered site in it (SB02 Stellwagen, 44 continuous months) is still 4 short. AC1/CSD stays out. No gate constant was changed.',7,'#aa5533'));
 var s21StatusV=dynLbl('checking...','#227777');
 var s21VerdictV=ui.Label('Click a location to check for hydrophone coverage.',
@@ -11712,6 +11744,8 @@ function updateS21Acoustic(lat, lon){
     s21NV.setValue('n/a'); s21RangeV.setValue('n/a'); s21TauV.setValue('n/a');
     s21SlopeV.setValue('n/a'); s21SeasonV.setValue('n/a'); s21GateV.setValue('n/a');
     s21CaveatV.setValue('');
+    s21VarV.setValue('Click a location - the variable depends on the site.');
+    s21WhyV.setValue('');
     s21NoteV.setValue('SanctSound covers US National Marine Sanctuaries only.\n'+
       'Three sites are wired in: FK01 (24.43313,-81.93068) and FK02 (24.4888,-81.66632),\n'+
       'Florida Keys, radius 20 km each, biophony diel ratio; and SB02 Stellwagen Bank\n'+
@@ -11813,6 +11847,44 @@ function updateS21Acoustic(lat, lon){
     '   [quality, not a gate: '+wellSampled+'/12 calendar months have '+
     CLIM_MIN_SAMPLES_PER_MONTH+'+ years]');
   s21GateV.style().set('color',(passTotal&&passDistinct)?'#115511':'#aa5533');
+
+  // v10.178: the variable description, per site. The diel-ratio branch keeps the
+  // unit-free argument because it is true there. The band-level branch states the
+  // OPPOSITE explicitly, because an absolute level cancels no calibration offset
+  // and S21b already reports drift at SB02 as unresolved. Carrying the ratio
+  // sentence to a band-level site told the reader it was protected when it is not.
+  if(site.varKind==='diel_ratio'){
+    s21VarV.setValue('THIS SITE: diel ratio of the 2-20 kHz snapping-shrimp band - crepuscular (local dawn 05-07 + dusk 17-18) MINUS night trough (local 01-04), in dB. A RATIO, so it is unit-free and cancels any constant per-deployment calibration offset.');
+  } else {
+    s21VarV.setValue('THIS SITE: an ABSOLUTE '+site.band+' level in '+site.varUnit+' - NOT a ratio. It cancels NO per-deployment calibration offset, which is exactly why S21b reports instrument drift here as unresolved rather than ruled out. The unit-free argument that protects the diel-ratio sites does not apply to this one.');
+  }
+
+  // v10.178: why the seasonal test, MEASURED on this record instead of quoting
+  // FK01's numbers at every site. The two failure modes are opposite - a pooled
+  // test can invent a trend from unbalanced sampling (FK01) or miss a real one
+  // by dividing through an inflated seasonal variance (SB02) - so which one
+  // applies has to be read off the record, not asserted.
+  var pooledMK=mannKendallTest(vals);
+  var nSingleYear=0;
+  for(cm=1;cm<=12;cm++){ if((calCount[cm]||0)===1) nSingleYear++; }
+  var why='WHY SEASONAL, measured on THIS record: plain Mann-Kendall on the '+
+    rows.length+' pooled monthly values gives '+
+    (pooledMK.error?('no result ('+pooledMK.error+')')
+      :('tau='+(pooledMK.tau>=0?'+':'')+pooledMK.tau.toFixed(3)+' p='+pooledMK.p.toFixed(4)))+
+    '; the seasonal test gives '+
+    (mk.error?('no result ('+mk.error+')')
+      :('tau='+(mk.tau>=0?'+':'')+mk.tau.toFixed(3)+' p='+mk.p.toFixed(4)))+'. '+
+    nSingleYear+' of 12 calendar months occur in only ONE year here'+
+    (nSingleYear>0
+      ? ', so the pooled series can tilt on sampling balance alone - that is the aliasing the seasonal test removes.'
+      : ', so aliasing of that kind is NOT what separates the two here; a large seasonal cycle inflating the pooled variance is.');
+  if(!pooledMK.error&&!mk.error){
+    why+=((pooledMK.p<0.05)!==(mk.p<0.05))
+      ? ('  THE TWO DISAGREE at p=0.05 - pooled says '+((pooledMK.p<0.05)?'TREND':'no trend')+
+         ', seasonal says '+((mk.p<0.05)?'TREND':'no trend')+'. The seasonal result is the one reported above.')
+      : '  Both reach the same verdict at p=0.05 here; the seasonal result is still the one reported above.';
+  }
+  s21WhyV.setValue(why);
 
   // v10.177 per-site caveat, built from THIS site's numbers and variable kind.
   // Span in MONTHS, not calendar years. Differencing the year fields calls
@@ -13449,6 +13521,49 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.178 S21-HEADER: two more static paragraphs were written from FK01');
+print('  and rendered unchanged at every site. Same panel, same defect class as');
+print('  v10.173 and v10.177 - the third and fourth instances of it.');
+print('');
+print('  WORST OF THE TWO was not a wrong number, it was a FALSE SAFETY CLAIM.');
+print('    The STATE VARIABLE paragraph said the series is "A RATIO, so it is');
+print('    unit-free and cancels any constant per-deployment calibration offset".');
+print('    True at FK01/FK02. At SB02 the variable is an ABSOLUTE band level and');
+print('    cancels NO offset - and S21b, four inches further down the SAME panel,');
+print('    says instrument drift there is NOT separable from real change. The');
+print('    header told the reader SB02 was protected; S21b told them it was not.');
+print('');
+print('  THE SECOND ONE WAS ALREADY FALSE AT FK01, which is why it is worth');
+print('    spelling out. The TEST paragraph quoted "plain Mann-Kendall on the');
+print('    pooled monthly levels returns tau=+0.227 p=0.0878". That pair was');
+print('    measured on the UNDERLYING ABSOLUTE LEVELS - the code comment above');
+print('    seasonalMannKendall() says so - but the panel prints it directly under');
+print('    the DIEL RATIO, a different variable. Measured on the 28 shipped');
+print('    diel-ratio values, pooled MK gives tau=+0.143 p=0.2951. The paragraph');
+print('    also listed Jul/Aug/Sep/Oct/Nov as single-year months; on the shipped');
+print('    table it is Jul/Aug/Sep/Nov - four, not five. A number copied from one');
+print('    variable onto another does not become wrong only when a site changes.');
+print('');
+print('  FIXED: the variable description branches on varKind, and the band-level');
+print('    branch states the OPPOSITE of the ratio claim explicitly. The');
+print('    why-seasonal text is now COMPUTED from the matched record - pooled MK,');
+print('    seasonal MK, and the count of calendar months present in only one');
+print('    year - so it can never again describe a series it is not run on.');
+print('');
+print('  MEASURED after the fix, per site (pooled vs seasonal p):');
+print('    FK01  0.2951 vs 0.4330  - 4 single-year months, verdicts AGREE');
+print('    FK02  0.0297 vs 0.6134  - 6 single-year months, POOLED SAYS TREND');
+print('            and seasonal does not: the aliasing false positive the old');
+print('            text claimed for FK01 is real, but it is FK02 that shows it');
+print('    SB02  0.3366 vs 0.0219  - 0 single-year months, POOLED MISSES a real');
+print('            trend; the opposite failure, from seasonal variance inflation');
+print('  SB02 reproduces the live GEE run exactly (S21b control C p=0.3366).');
+print('');
+print('  ALSO: a comment above seasonalMannKendall() still read "FK01 CANNOT');
+print('    build one" - the v10.172 claim withdrawn on screen in v10.173. The');
+print('    correction never reached the comment. Fixed, and the 29-row count in');
+print('    the same paragraph corrected to 28.');
 print('');
 print('v10.177 S21-CAVEAT: the caveat line was hardcoded to FK01 and rendered');
 print('  unchanged at every site. FOUND BY RUNNING IT, not by any static check.');

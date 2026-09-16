@@ -310,6 +310,74 @@ try { analyzeLocation(24.43313, -81.93068); } catch (e) { /* stubs die later in 
 ok('a map click reaches S21', s21VerdictV.getValue() !== '__SENTINEL__');
 ok('a map click reaches S21b', s21bVerdictV.getValue() !== '__SENTINEL__');
 
+section('13. S21 panel text belongs to the site on screen');
+// The defect this section exists for has now shipped FOUR times (v10.173
+// BIOPHONY TREND, v10.177 caveat, v10.178 STATE VARIABLE and TEST). Every
+// instance passed node --check, the ES5 gate and every assertion above,
+// because none of them is a syntax or type error: they are true sentences
+// bound to a shared widget and rendered at a site they do not describe.
+// The invariant that catches the whole class: after clicking site X, no S21
+// label may contain a number or a phrase that belongs only to site Y.
+(function () {
+  var S21_LABELS = ['s21VerdictV', 's21VarV', 's21WhyV', 's21CaveatV',
+                    's21RangeV', 's21SeasonV', 's21NV'];
+  // Values that appear in exactly one site's record, and nowhere else.
+  var FINGERPRINTS = [
+    {site: 'FK01', at: [24.43313, -81.93068], marks: ['0.2951', '1.40 dB', '28 pooled']},
+    {site: 'FK02', at: [24.4888, -81.66632],  marks: ['0.0297', '0.93 dB', '20 pooled']},
+    {site: 'SB02', at: [42.470793, -70.24294], marks: ['0.3366', '13.27 dB', '44 pooled']}
+  ];
+
+  function textAt(lat, lon) {
+    try { updateS21Acoustic(lat, lon); } catch (e) { return '__THREW__ ' + e.message; }
+    return S21_LABELS.map(function (n) {
+      return global[n] ? String(global[n].getValue()) : '';
+    }).join('\n');
+  }
+
+  FINGERPRINTS.forEach(function (mine) {
+    var txt = textAt(mine.at[0], mine.at[1]);
+    ok(mine.site + ': its own figures are on screen',
+      mine.marks.some(function (m) { return txt.indexOf(m) !== -1; }),
+      'none of ' + mine.marks.join('/') + ' found');
+    FINGERPRINTS.forEach(function (other) {
+      if (other.site === mine.site) return;
+      var leaked = other.marks.filter(function (m) { return txt.indexOf(m) !== -1; });
+      ok(mine.site + ': no ' + other.site + ' figure leaks into its panel',
+        leaked.length === 0, 'leaked: ' + leaked.join(', '));
+    });
+  });
+
+  // The ratio claim is a SAFETY claim - it says the series is immune to
+  // per-deployment gain drift. It is only true of a ratio. Asserting it at a
+  // band-level site tells the reader SB02 is protected while S21b, in the same
+  // panel, reports its drift as unresolved.
+  var sbTxt = textAt(42.470793, -70.24294);
+  ok('SB02 is never told it cancels a calibration offset',
+    sbTxt.indexOf('cancels any constant per-deployment') === -1);
+  ok('SB02 is told the opposite, explicitly',
+    sbTxt.indexOf('NOT a ratio') !== -1 && sbTxt.indexOf('cancels NO') !== -1);
+  var fkTxt = textAt(24.43313, -81.93068);
+  ok('FK01 keeps the ratio argument, which is true there',
+    fkTxt.indexOf('cancels any constant per-deployment') !== -1);
+
+  // Reef language at a 42 N bank was one of the four false statements in v10.177.
+  ok('no reef language reaches SB02',
+    sbTxt.toLowerCase().indexOf('reef') === -1);
+
+  // A click with no hydrophone in range must leave nothing behind from the last.
+  updateS21Acoustic(0, 0);
+  var empty = S21_LABELS.map(function (n) {
+    return global[n] ? String(global[n].getValue()) : '';
+  }).join('\n');
+  var stale = [];
+  FINGERPRINTS.forEach(function (f) {
+    f.marks.forEach(function (m) { if (empty.indexOf(m) !== -1) stale.push(f.site + ':' + m); });
+  });
+  ok('a no-coverage click clears every site-specific figure',
+    stale.length === 0, 'stale: ' + stale.join(', '));
+})();
+
 function report() {
   console.log('\n' + '-'.repeat(60));
   if (failures.length === 0) {
