@@ -14,6 +14,96 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.173 S21b NEW: the deseasonalization benchmark at SB02 Stellwagen Bank - and a
+  CORRECTION to v10.172, which asserted a gate refusal that never happened.
+
+  THE v10.172 ERROR, KEPT IN THE RECORD. S21 printed "DISTINCT 7/9 FAIL" for
+    FK01, and its panel text, its startup block, its changelog entry and its
+    commit message all claimed computeUsableClimatology() "refuses it, correctly".
+    It does not refuse it. The real gate, readable in this same file, counts
+    calendar months holding AT LEAST ONE valid sample - FK01 has 11 - against
+    CLIM_MIN_DISTINCT_MONTHS=9. The 7 was months carrying 3+ years, i.e.
+    CLIM_MIN_SAMPLES_PER_MONTH, which inside that function only decides how many
+    months are reported as nWellSampledMonths in its explanatory note. It gates
+    nothing at all. Run live against the shipped function, FK01 returns ok=true,
+    nTotalSamples=28, nDistinctMonths=11, and a complete 12/12 climatology is
+    built (7 months from 3+ own samples, 1 imputed outright, the rest blended
+    with an order-3 harmonic fit at prior weight 0.5).
+    An internal quality counter was mistaken for the admission test, and the
+    panel then advertised on screen a refusal the tool had never made.
+    FIXED: the gate row now shows the real gate as PASS/FAIL and prints the
+    quality count separately, labelled as quality and not as a gate.
+    WITHDRAWN: the v10.172 claim that S21 is "not routed to the climatology path"
+    because the gates forbid it. The gates permit it. S21b now runs it - which is
+    what v10.172 should have done instead of asserting it was impossible.
+    STILL TRUE and unaffected by this correction: CSD_AC1_MIN_POOLED_MONTHS=48 is
+    unreachable for EVERY SanctSound site (the archive spans 2018-11..2022-06, 44
+    months end to end, and the best-covered site reaches exactly 44), so AC1/CSD
+    remains out; the deployment-11 low-frequency artifact at FK01; the seasonal-
+    aliasing finding; and the 55.0 km FK01-to-Looe-Key distance. No gate constant
+    has been changed at any point in this series.
+
+  SB02 STELLWAGEN BANK NMS, 42.470793 N, -70.24294. 21 deployments, 31,329 hourly
+    TOL rows, 2018-11-12 .. 2022-06-13. The only genuinely continuous record in
+    SanctSound: deployments hand over with 2-3 hour turnarounds, the largest gap
+    across 44 months is ~37 hours (dep19 ends 2022-02-15T01, dep20 starts
+    2022-02-16T14), every month clears a 72-hour floor, and all 12 calendar
+    months carry 3+ years. The climatology is therefore built on 12/12
+    WELL-SAMPLED months with NOTHING imputed - true at no other site in the
+    archive, and the reason this is the benchmark.
+
+  THE SB02 VARIABLE IS NOT BIOPHONY, AND THE PANEL HEADLINE SAYS SO. FK01's
+    snapping-shrimp diel index does NOT transfer, measured rather than assumed:
+    Stellwagen sits at 42 N, outside snapping-shrimp range, and the high-frequency
+    diel structure confirms it - TOL_2000 varies 1.11 dB over the day there
+    against 2.22 dB at FK01, and peaks at local 04-05, a day/night shape, not the
+    dawn-and-dusk double peak a shrimp chorus makes. What SanctSound detects at
+    SB02 is baleen whales (humpback, fin, right, sei, minke, blue), Atlantic cod
+    and ships - a LOW-frequency biophony sitting in the same bands as the Boston
+    shipping lanes. Separating those is a real research problem and is NOT
+    attempted here. TOL_2000 at a temperate shelf site is dominated by wind and
+    sea state, and it is shipped as a PHYSICAL ambient series with a large clean
+    seasonal cycle (10.29 dB, February max, August min) - which is precisely what
+    a deseasonalization benchmark needs.
+
+  THE BENCHMARK RESULT at SB02, three paths over the same 44 months:
+      A  seasonal Mann-Kendall, no climatology  tau=+0.367  p=0.0219  SIGNIFICANT
+      B  computeUsableClimatology + plain MK    tau=+0.271  p=0.0099  SIGNIFICANT
+      C  raw plain MK, no seasonal handling     tau=+0.101  p=0.3366  n.s.
+    The two principled paths AGREE. The control MISSES the trend both of them
+    find, because a 10 dB seasonal cycle inflates the variance it divides by.
+    Taken together with FK01 - where the raw test INVENTED a trend out of seasonal
+    aliasing (tau=+0.227, p=0.0878 on the pooled absolute levels) - the naive path
+    now has one documented failure of each kind on real data: a false alarm at
+    FK01 and a miss at SB02. That pair is the actual argument for A and B.
+    At FK01 the two paths also agree (A p=0.4330, B p=0.2438, both n.s.), but it
+    is the weaker test of the same machinery: only 7/12 calendar months are
+    well-sampled there and 1 is imputed outright, so path B leans on the fitted
+    harmonic where the record is thin.
+
+  DISCLOSED FOR SB02, AND IT OUTWEIGHS THE p-VALUES. The rise is BAND-SELECTIVE,
+    which is the one thing that argues against a plain gain drift: the seasonal-MK
+    slope is flat at and below TOL_63 (+0.089 dB/yr, tau=+0.033, p=0.9131),
+    climbing to +0.757 dB/yr at TOL_2000 and +0.760 at TOL_20000. A broadband
+    calibration change would move every band together, and this does not.
+    BUT: that came from a 10-band scan in which only TOL_1000 (p=0.0382) and
+    TOL_2000 (p=0.0219) were nominally significant, and NEITHER survives a
+    Benjamini-Hochberg correction across those 10 tests. AND the 21 deployments
+    have ZERO simultaneous overlap - checked directly, 0 of 31,329 timestamps are
+    covered by two deployments - so a cumulative, frequency-dependent instrument
+    drift is NOT separable from a real environmental change with this record
+    alone. The deliverable of this entry is the AGREEMENT BETWEEN THE TWO PATHS,
+    not a claim that Stellwagen Bank is getting louder. It is not reported as one.
+
+  ALSO FIXED, and it was the same class of defect as the gate row: S21's verdict
+    line read "BIOPHONY TREND <dir>" unconditionally. Adding SB02 turned that into
+    a falsehood on screen - a series whose own label reads "NOT biophony" was
+    being headlined as biophony. The verdict now names the site's actual variable,
+    and each site record carries varKind / varLabel / varUnit so the two kinds
+    cannot be silently conflated again. The data field was renamed `diel` ->
+    `series` for the same reason: SB02 holds an absolute band level, and a field
+    named `diel` holding a non-diel quantity is how this starts.
+
 v10.172 S21 NEW: real passive-acoustic biophony at Florida Keys FK01, as a diel
   RATIO - plus a deliberate, documented REFUSAL to route it through the
   climatology or CSD/AC1 path, and a gate audit of the entire SanctSound archive.
