@@ -304,12 +304,24 @@ Four masks, applied in sequence. All are computed once and cached as assets.
 ### 4.1 Land mask — `ESA/WorldCover/v200`
 
 ```
-wc   = ee.Image('ESA/WorldCover/v200').select('Map')      // 10 m, verified
+// ImageCollection, NOT Image - see the correction below.
+wc   = ee.ImageCollection('ESA/WorldCover/v200').select('Map').mosaic()
 // class 80 = 'Permanent water bodies' (verified from STAC class table)
 land = wc.neq(80).unmask(0)    // unmapped open ocean -> 0 (= water)
 ```
 **Verified:** asset ID `ESA/WorldCover/v200`, band `Map`, 10 m gsd, class 80 = Permanent water
 bodies. The v200 epoch is 2021, inside the study period.
+
+**CORRECTION.** Earlier drafts of this section, and the implementation that followed
+them, wrote `ee.Image('ESA/WorldCover/v200')`. The STAC record gives
+`"gee:type": "image_collection"`, so that is a type error. It is not caught by
+`node --check`, by the ES5 gate, or by the stub harness — `ee.Image(<collection id>)`
+builds a perfectly valid lazy node and fails only on **evaluation**, with
+`Image.load: ... is not an image`. Since the water mask feeds CHECK 7, CHECK 10/10b,
+the detector and all three exports, the symptom was CHECK 1–6 printing normally,
+CHECK 7 throwing, and every export task failing later with an opaque asset error.
+Use `.mosaic()` rather than `.first()`: mosaic is right whether the collection holds
+one global image or many tiles, and the STAC record does not say which.
 
 **Caveat, flagged:** WorldCover's footprint is land-centric; open ocean beyond its coastal tiles
 is unmapped. `.unmask(0)` treats unmapped as water, which is correct for open Massachusetts Bay

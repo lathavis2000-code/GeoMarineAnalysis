@@ -497,6 +497,130 @@ section('14. Panel version stamps cannot go stale');
     SRC.indexOf("sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)'") !== -1);
 })();
 
+section('15. Study scripts LOAD, not just parse');
+// node --check proves a file is syntactically valid. It says nothing about an
+// identifier that is never defined, or one that is read before it is assigned.
+// sb02_sar_export.js shipped with both: buildPersistence() read a collection
+// named SCENES that exists nowhere in the file, and the block calling it ran at
+// module level ~115 lines before s1Joined was assigned. Both passed node --check
+// and the ES5 gate, and the script died in the Code Editor on line 778 before
+// CHECK 1 could print. Executing the file under the stub catches that class.
+//
+// Each script runs in its OWN vm context so it cannot clobber the globals the
+// sections above rely on.
+(function () {
+  var dir = path.join(ROOT, 'studies');
+  if (!fs.existsSync(dir)) { ok('no studies/ directory to load', true); return; }
+
+  var scripts = [];
+  (function walk(d) {
+    fs.readdirSync(d).forEach(function (f) {
+      var full = path.join(d, f);
+      if (fs.statSync(full).isDirectory()) return walk(full);
+      if (/\.js$/.test(f)) scripts.push(full);
+    });
+  })(dir);
+
+  ok('studies/ contains at least one script to load', scripts.length > 0);
+
+  scripts.forEach(function (file) {
+    var rel = path.relative(ROOT, file);
+    var sandbox = { console: { log: function () {}, error: function () {} } };
+    vm.createContext(sandbox);
+    stub.install(sandbox);
+    var threw = null;
+    try {
+      vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: rel });
+    } catch (e) {
+      threw = e.constructor.name + ': ' + e.message;
+    }
+    ok(rel + ' executes without throwing', threw === null, threw);
+
+    if (threw === null && /sb02_sar_export/.test(rel)) {
+      var exps = sandbox.Export.exports;
+      // STAGE A writes one persistence asset per relative orbit.
+      var assets = exps.filter(function (e) { return e.dest === 'toAsset'; });
+      ok(rel + ': STAGE A exports one asset per relative orbit',
+        assets.length === 3, 'got ' + assets.length);
+
+      // PR #19: the write path appends _<PARAM_SET_ID> and the read path did
+      // not, so asset mode asked for images STAGE A never wrote. Both build the
+      // id from one expression now - assert the written id still carries it.
+      ok(rel + ': every persistence assetId carries the parameter set id',
+        assets.every(function (e) { return /_p\d+$/.test(String(e.opts.assetId)); }),
+        assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
+
+      // And the asset id must end with the same suffix as its description, so
+      // the two cannot drift apart the way they did before.
+      ok(rel + ': assetId and description agree',
+        assets.every(function (e) {
+          return String(e.opts.assetId).indexOf(String(e.opts.description)) !== -1;
+        }),
+        assets.map(function (e) {
+          return String(e.opts.description) + ' -> ' + String(e.opts.assetId);
+        }).join(' | '));
+
+      ok(rel + ': the placeholder asset root is gone',
+        !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
+    }
+  });
+})();
+
+section('16. The ES5 gate itself works');
+// The gate is the only thing standing between an ES2015 library method and a
+// Code Editor runtime failure, and it had three defects at once: no Math.* rule
+// (which is how Math.log10 reached a study script), line numbers that drifted
+// after the first block comment (236 lines off in the SAR file), and no CLI at
+// all - `node tests/es5.js <file>` printed nothing and exited 0 for any input.
+// A gate nobody tests is a gate nobody can trust, so test it.
+(function () {
+  // Each sample is one line so the expected line number is unambiguous.
+  var SAMPLES = [
+    ['const declaration', 'const a = 1;'],
+    ['let declaration', 'let b = 2;'],
+    ['arrow function', 'var f = function () { return 0; }; var g = x => x;'],
+    ['Object.assign', 'var o = Object.assign({}, {});'],
+    ['Array.prototype.includes', 'var c = [1].includes(1);'],
+    ['Array.prototype.find/findIndex', 'var d = [1].find(function (x) { return x; });'],
+    ['String.prototype.repeat', 'var e = "x".repeat(3);'],
+    ['Math.* ES2015', 'var h = Math.log10(10);'],
+    ['Math.* ES2015', 'var i2 = Math.trunc(1.5);'],
+    ['Map/Set constructor', 'var j = new Map();'],
+    ['template literal', 'var k = `x`;']
+  ];
+  SAMPLES.forEach(function (sample) {
+    var rule = sample[0], src = sample[1];
+    var hits = es5.scan(src);
+    ok('gate flags: ' + rule,
+      hits.some(function (h) { return h.rule === rule; }),
+      'scan returned ' + JSON.stringify(hits));
+  });
+
+  // Math.* specifically, because its absence is what let Math.log10 ship.
+  ok('gate has a Math.* rule at all',
+    es5.scan('Math.log10(1);').length > 0);
+  // ES5 Math must NOT trip it.
+  ok('gate does not flag ES5 Math',
+    es5.scan('Math.log(1); Math.sqrt(4); Math.max(1,2); Math.LN10;').length === 0,
+    JSON.stringify(es5.scan('Math.log(1); Math.sqrt(4); Math.max(1,2); Math.LN10;')));
+
+  // Line numbers must survive a block comment and a multi-line string - the
+  // stripper used to blank those newlines, so every later finding was reported
+  // at the wrong line.
+  var padded = '/*\n' + new Array(40).join('filler\n') + '*/\n' +
+               'var s = "a\\\nb";\n' +
+               'const late = 1;\n';
+  var lateLine = padded.split('\n').indexOf('const late = 1;') + 1;
+  var found = es5.scan(padded).filter(function (h) { return h.rule === 'const declaration'; });
+  ok('line numbers survive a block comment and a multi-line string',
+    found.length === 1 && found[0].line === lateLine,
+    'reported ' + (found.length ? found[0].line : 'nothing') + ', expected ' + lateLine);
+
+  // Clean ES5 must stay clean - a gate that cries wolf gets ignored.
+  ok('gate passes plain ES5',
+    es5.scan('var x = 1;\nfunction f(a) { return a * 2; }\n').length === 0);
+})();
+
 function report() {
   console.log('\n' + '-'.repeat(60));
   if (failures.length === 0) {

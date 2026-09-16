@@ -2,3 +2,7 @@
 # Study data: fetched, not committed (see studies/sb02-vessel-proxy/fetch_ships.py)
 studies/**/sb02_ships.json
 studies/**/*_flagged.csv
+
+# Python bytecode from running the study scripts locally
+__pycache__/
+*.pyc

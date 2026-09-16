@@ -32,7 +32,13 @@ function stripCommentsAndStrings(src) {
     }
     if (c === '/' && d === '*') {
       out[i] = ' '; out[i + 1] = ' '; i += 2;
-      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { if (src[i] === '\n') line++; out[i] = ' '; i++; }
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) {
+        // Keep the newline. scan() derives its line numbers by counting \n in the
+        // STRIPPED source, so blanking them made every finding after the first
+        // block comment report a wrong line - 236 lines off in the SAR script.
+        if (src[i] === '\n') { line++; out[i] = '\n'; } else { out[i] = ' '; }
+        i++;
+      }
       if (i < n) { out[i] = ' '; out[i + 1] = ' '; i += 2; }
       continue;
     }
@@ -41,9 +47,18 @@ function stripCommentsAndStrings(src) {
       var q = c;
       out[i] = c; i++;
       while (i < n) {
-        if (src[i] === '\\') { out[i] = ' '; if (i + 1 < n) out[i + 1] = ' '; i += 2; continue; }
+        if (src[i] === '\\') {
+          // A backslash-newline continuation is still a newline. Blanking it was
+          // the last place the stripper lost one, and it cost a line on
+          // everything after it. Both the string and regex branches do this.
+          out[i] = ' ';
+          if (i + 1 < n) {
+            if (src[i + 1] === '\n') { line++; out[i + 1] = '\n'; } else { out[i + 1] = ' '; }
+          }
+          i += 2; continue;
+        }
         if (src[i] === q) { out[i] = q; i++; break; }
-        if (src[i] === '\n') line++;
+        if (src[i] === '\n') { line++; out[i] = '\n'; i++; continue; }
         out[i] = ' '; i++;
       }
       prevSignificant = q;
@@ -56,7 +71,16 @@ function stripCommentsAndStrings(src) {
       out[i] = ' '; i++;
       var inClass = false;
       while (i < n) {
-        if (src[i] === '\\') { out[i] = ' '; if (i + 1 < n) out[i + 1] = ' '; i += 2; continue; }
+        if (src[i] === '\\') {
+          // A backslash-newline continuation is still a newline. Blanking it was
+          // the last place the stripper lost one, and it cost a line on
+          // everything after it. Both the string and regex branches do this.
+          out[i] = ' ';
+          if (i + 1 < n) {
+            if (src[i + 1] === '\n') { line++; out[i + 1] = '\n'; } else { out[i + 1] = ' '; }
+          }
+          i += 2; continue;
+        }
         if (src[i] === '[') inClass = true;
         else if (src[i] === ']') inClass = false;
         else if (src[i] === '/' && !inClass) { out[i] = ' '; i++; break; }
@@ -89,7 +113,11 @@ var RULES = [
   ['Number.isNaN/isInteger', /\bNumber\.(?:isNaN|isInteger|parseFloat|parseInt)\s*\(/g],
   ['Promise', /\bnew\s+Promise\s*\(/g],
   ['Symbol', /\bSymbol\s*[.(]/g],
-  ['Map/Set constructor', /\bnew\s+(?:Map|Set|WeakMap|WeakSet)\s*\(/g]
+  ['Map/Set constructor', /\bnew\s+(?:Map|Set|WeakMap|WeakSet)\s*\(/g],
+  // ES2015 Math additions. Their absence is why Math.log10 shipped into a
+  // study script and would have killed it at module level in the Code Editor:
+  // this table covered Object/Array/String/Number and simply had no Math row.
+  ['Math.* ES2015', /\bMath\.(?:log10|log2|trunc|sign|cbrt|hypot|fround|clz32|expm1|log1p|imul|acosh|asinh|atanh|cosh|sinh|tanh)\s*\(/g]
 ];
 
 function scan(src) {
@@ -101,7 +129,13 @@ function scan(src) {
     var name = r[0], re = r[1], m;
     re.lastIndex = 0;
     while ((m = re.exec(code)) !== null) {
-      findings.push({ rule: name, line: code.slice(0, m.index).split('\n').length });
+      // Several rules open with (^|[^\\w.$]) so they do not match `foo.const`,
+      // which means the match STARTS one character early - and when that
+      // character is the preceding newline, the naive count is one line low.
+      // Offset past the context group. Rules without a group give m[1] ===
+      // undefined and an offset of 0.
+      var at = m.index + (m[1] ? m[1].length : 0);
+      findings.push({ rule: name, line: code.slice(0, at).split('\n').length });
       if (m.index === re.lastIndex) re.lastIndex++;
     }
   });
@@ -110,3 +144,29 @@ function scan(src) {
 }
 
 module.exports = { scan: scan, stripCommentsAndStrings: stripCommentsAndStrings };
+
+// CLI. Without this the module only EXPORTED scan(), so `node tests/es5.js
+// <file>` executed the definitions, printed nothing and exited 0 - for any
+// input, including a file of pure ES6. Anyone (including CI logs read by a
+// human) could take that silent success as a pass. The workflow calls scan()
+// directly and was never affected, but the command people actually type was.
+if (require.main === module) {
+  var argv = process.argv.slice(2);
+  if (!argv.length) {
+    console.error('usage: node tests/es5.js <file.js> [more.js ...]');
+    process.exit(2);
+  }
+  var fs = require('fs');
+  var bad = 0;
+  argv.forEach(function (f) {
+    var hits = scan(fs.readFileSync(f, 'utf8'));
+    if (!hits.length) return;
+    bad++;
+    console.error('ES6 constructs found in ' + f + ':');
+    hits.slice(0, 20).forEach(function (h) {
+      console.error('  line ' + h.line + ': ' + h.rule);
+    });
+    if (hits.length > 20) console.error('  ... and ' + (hits.length - 20) + ' more');
+  });
+  process.exit(bad ? 1 : 0);
+}
