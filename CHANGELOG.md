@@ -14,6 +14,53 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.179 S21-NOTE: a fifth instance of the same defect, and the most instructive
+  one, because the sentence was HALF computed. The climatology note read:
+
+    "Quality varies: W/12 calendar months have 3+ years, so the rest lean on
+     the fitted harmonic rather than on their own samples."
+
+  W was interpolated live. The clause that interprets W was static prose. At
+  SB02, W is 12 - so the panel printed "12/12 calendar months have 3+ years,
+  so the rest lean on the fitted harmonic" when there is no rest. Two rows
+  below, on the same screen, S21b printed "12/12 well-sampled (3+ years), 0
+  fully imputed". The note contradicted the benchmark it was introducing.
+
+  The lesson is narrower than the previous four and worth stating on its own:
+  interpolating a real number into a sentence does not make the sentence true.
+  Every earlier instance was a wholly static string, which is easy to spot once
+  you know to look. This one already had live data in it and still asserted the
+  opposite of what that data said.
+
+  FIXED. Both halves are computed:
+    - all 12 months carrying 3+ years -> "Quality is UNIFORM here: all 12
+      calendar months carry 3+ years, so no month leans on the fitted harmonic
+      and nothing is imputed."
+    - otherwise the real split, e.g. FK01: 7/12 carry 3+ years, 4 lean on the
+      harmonic, 1 has no samples at all and is imputed outright.
+  FK02 never reaches this sentence: 20 valid months against
+  CLIM_MIN_TOTAL_SAMPLES=26, so its note says the gates are not cleared. That
+  is the gate working, and the test now encodes it rather than assuming every
+  site gets a quality line.
+
+  AN ERROR IN MY OWN FIX, caught before shipping: the first draft printed "and
+  1 have no samples at all and are imputed outright" at BOTH diel sites, which
+  is a template disagreeing with its own count - the same defect in miniature.
+  Verb agreement is computed now.
+
+  AN ERROR IN MY OWN TEST, also worth recording. The first version of the new
+  check grepped for the phrase 'leans on the fitted harmonic' and FAILED ON
+  CORRECT CODE, because that string also occurs inside the negation "so no
+  month leans on the fitted harmonic". A substring cannot distinguish a claim
+  from its denial - the same mistake, in a test, as the defect it guards
+  against. The checks now assert the branch marker ("Quality VARIES" /
+  "Quality is UNIFORM" / "does NOT clear the climatology gates") against the
+  site's own gate arithmetic.
+
+  CI 76 -> 87. VERIFIED by restoring the sentence exactly as v10.178 shipped
+  it: node --check and the ES5 gate both still pass on it, and 5 of the new
+  assertions fail.
+
 v10.178 S21-HEADER: two more static paragraphs in the same panel, both written
   from FK01's record, both rendered unchanged at every site. Third and fourth
   instances of the defect fixed in v10.173 and v10.177. Found the same way -

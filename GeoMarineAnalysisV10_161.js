@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.178';
+var TOOL_VERSION = 'v10.179';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -11923,8 +11923,27 @@ function updateS21Acoustic(lat, lon){
     (passTotal&&passDistinct
       ? 'This site CLEARS the climatology gates ('+rows.length+' valid months, '+distinctAny+
         '/12 calendar months\n  with at least one year). S21b below runs the deseasonalized path on it\n'+
-        '  and compares the two answers. Quality varies: '+wellSampled+'/12 calendar months have '+
-        CLIM_MIN_SAMPLES_PER_MONTH+'+ years,\n  so the rest lean on the fitted harmonic rather than on their own samples.\n'
+        '  and compares the two answers.\n'+
+        // v10.178b: this sentence used to end "Quality varies: W/12 calendar
+        // months have 3+ years, so the rest lean on the fitted harmonic". The
+        // COUNT was live and the clause reading it was not. At SB02, W is 12 -
+        // the panel printed "12/12 ... so the rest lean on the harmonic" when
+        // there is no rest, directly contradicting S21b two rows below ("0
+        // fully imputed"). Both halves are computed now.
+        ((distinctAny-wellSampled)===0&&(12-distinctAny)===0
+          ? '  Quality is UNIFORM here: all 12 calendar months carry '+
+            CLIM_MIN_SAMPLES_PER_MONTH+'+ years, so no month\n  leans on the fitted harmonic and nothing is imputed.\n'
+          // Agreement with the count, for the same reason as everything else in
+          // this panel: "and 1 have no samples" is the same defect in miniature.
+          : '  Quality VARIES: '+wellSampled+'/12 calendar months carry '+
+            CLIM_MIN_SAMPLES_PER_MONTH+'+ years; '+(distinctAny-wellSampled)+
+            ((distinctAny-wellSampled)===1?'\n  leans':'\n  lean')+
+            ' on the fitted harmonic rather than on their own samples'+
+            ((12-distinctAny)>0
+              ? ', and '+(12-distinctAny)+
+                ((12-distinctAny)===1?'\n  has no samples at all and is':'\n  have no samples at all and are')+
+                ' imputed outright.\n'
+              : '.\n'))
       : 'This site does NOT clear the climatology gates, so no deseasonalized\n'+
         '  comparison is available for it.\n')+
     (passAC1 ? ''
@@ -13521,6 +13540,33 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.179 S21-NOTE: a FIFTH instance, and the most instructive one -');
+print('  the sentence was HALF computed. The climatology note read:');
+print('    "Quality varies: W/12 calendar months have 3+ years, so the rest');
+print('     lean on the fitted harmonic rather than on their own samples."');
+print('  W was live. The clause interpreting W was not. At SB02 W is 12, so');
+print('  the panel printed "12/12 ... so the rest lean on the harmonic" when');
+print('  there is no rest - contradicting S21b two rows below, which says');
+print('  "12/12 well-sampled, 0 fully imputed", on the same screen.');
+print('  A live number does not make the sentence around it true.');
+print('  FIXED: both halves computed. 12/12 -> "Quality is UNIFORM ... no');
+print('    month leans on the fitted harmonic and nothing is imputed";');
+print('    otherwise the real split - FK01 7/12 carry 3+ years, 4 lean on');
+print('    the harmonic, 1 has no samples and is imputed outright.');
+print('    (FK02 never reaches this sentence: 20 valid months against');
+print('    CLIM_MIN_TOTAL_SAMPLES=26, so its note says the gates are not');
+print('    cleared. That is the gate working, not a gap.)');
+print('  MY OWN FIRST DRAFT of the fix printed "and 1 have no samples" at');
+print('    both diel sites - a template disagreeing with its own count, the');
+print('    same defect in miniature. Verb agreement is now computed too.');
+print('  CI 76 -> 87. The new checks assert the BRANCH MARKER, not a phrase:');
+print('    my first version grepped for "leans on the fitted harmonic" and');
+print('    failed on CORRECT code, because that string also occurs inside');
+print('    the negation "so no month leans on the fitted harmonic". A');
+print('    substring cannot tell a claim from its denial.');
+print('  VERIFIED by restoring the shipped sentence: node --check and the');
+print('    ES5 gate both still pass on it; 5 of the new checks fail.');
 print('');
 print('v10.178 S21-HEADER: two more static paragraphs were written from FK01');
 print('  and rendered unchanged at every site. Same panel, same defect class as');
