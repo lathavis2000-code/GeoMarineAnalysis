@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.179';
+var TOOL_VERSION = 'v10.180';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -11537,11 +11537,21 @@ panel.add(row('Turbidity FTU (in-situ)',s19TurbV));
 panel.add(s19NoteV);
 panel.add(lbl('CAVEAT: point-source only. Compare vs S2/S18 (satellite/model) above.',7,'#aa6600'));
 
-// S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (introduced v10.172; header text
-// rewritten per-site in v10.178)
+// S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (introduced v10.172)
 // Deliberately placed next to S19: both are sparse real-sensor panels that are
 // blank at nearly every click, and both say so rather than interpolating.
-panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.178)','#0a3a3a'));
+// v10.180: this stamp read (v10.178) while the tool ran v10.179. Every other
+// stamped header in this file carries the version a panel was INTRODUCED in -
+// S21b (v10.173), MAP LEGEND (v10.67) - and most panels carry none at all.
+// v10.178 changed this one to mean "last revised", which made it both false
+// under the existing convention (S21 was introduced in v10.172) and a marker
+// that must be hand-edited on every future change to this panel. It drifted
+// one release later. CHANGELOG.md states the rule this broke: the running
+// version is declared ONCE, as TOOL_VERSION, because "three consecutive
+// rounds of this file shipped with a stale marker because the number was
+// typed in more than one place". Back to the introduction version, which is
+// true and cannot go stale.
+panel.add(sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)','#0a3a3a'));
 panel.add(lbl('Real hydrophone data (NOT a model/satellite) - NOAA/NPS SanctSound',7,'#227777'));
 panel.add(lbl('Only populated within radius of an actual hydrophone site (3 sites: FK01 and FK02 Florida Keys - biophony diel ratio; SB02 Stellwagen Bank - ambient band level, NOT biophony, see S21b)',7,'#227777'));
 // v10.178: these two paragraphs were static and written from FK01's record.
@@ -13540,6 +13550,27 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.180 VERSION-STAMP: the S21 header read "(v10.178)" while the tool');
+print('  ran v10.179. That stamp was MY regression, introduced in v10.178.');
+print('  Every other stamped header in this file names the release a panel');
+print('  was INTRODUCED in - S21b (v10.173), S8 and S19 (v10.67) - and most');
+print('  panels carry no stamp at all. v10.178 changed S21 to mean "last');
+print('  revised", which made it false under that convention (S21 shipped in');
+print('  v10.172) AND made it a marker needing a hand edit every release.');
+print('  It went stale one release later.');
+print('  CHANGELOG.md already stated the rule this broke: the running');
+print('  version is declared ONCE, as TOOL_VERSION, because "three');
+print('  consecutive rounds of this file shipped with a stale marker');
+print('  because the number was typed in more than one place". I typed it');
+print('  in a second place and it went stale on schedule.');
+print('  FIXED: back to (v10.172), which is true and cannot drift.');
+print('  CI 87 -> 91. Section 14 asserts no panel header carries the');
+print('    RUNNING version and every stamp predates it.');
+print('  AN ERROR IN MY OWN TEST, again: the first version compared');
+print('    versions with parseFloat, so v10.67 read as NEWER than v10.180');
+print('    (10.67 > 10.18 as a decimal). A dotted version is not a number.');
+print('    It now compares componentwise, and a check pins that.');
 print('');
 print('v10.179 S21-NOTE: a FIFTH instance, and the most instructive one -');
 print('  the sentence was HALF computed. The climatology note read:');
