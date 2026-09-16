@@ -14,6 +14,70 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.177 S21-CAVEAT: the caveat line was hardcoded to FK01's numbers and rendered
+  unchanged at every site. FOUND BY RUNNING THE TOOL, not by any static check -
+  node --check, the ES5 gate and 62 CI assertions all pass on the broken version,
+  because nothing about it is a syntax or type error. It is a semantic error:
+  true sentences attached to the wrong data.
+
+  OBSERVED, in a live run at SB02 Stellwagen Bank. Underneath a SIGNIFICANT
+  result (seasonal Mann-Kendall p=0.0219) the panel printed, verbatim:
+    "CAVEAT: one site, 3.5 years, 30 comparable within-season pairs ... The index
+     is also STABLE (total range 1.40 dB, between-deployment scatter ~0.3 dB) and
+     this record contains no reef-degradation event ... A null result here is not
+     evidence the reef is healthy."
+  Four statements, every one of them false at that site:
+    pairs   - asserted 30; SB02 has 60
+    range   - asserted 1.40 dB; SB02 spans 13.27 dB
+    "reef"  - SB02 is a bank at 42 N, outside any reef zone, and its own label
+              three rows above reads "NOT biophony"
+    "null"  - the result was significant, not null
+  Those are FK01's numbers, printed on a widget every site shares, inside the one
+  panel whose entire purpose is to stop a reader over-claiming. A caveat that is
+  itself wrong is worse than no caveat: it spends the reader's trust to deliver
+  misinformation.
+
+  SAME DEFECT CLASS AS v10.173's "BIOPHONY TREND" FIX, and that is the point
+  worth recording. That one was a hardcoded noun in a shared verdict line; this
+  is hardcoded numbers in a shared caveat. Both shipped because a static string
+  cannot be wrong until a second site exists to make it wrong. Adding FK02 and
+  SB02 is what turned a correct sentence into a false one, and only running it
+  surfaced that.
+
+  FIXED: the caveat is now COMPUTED PER SITE from that site's own rows - its real
+  comparable-pair count, its real span in dB, and its real record length - with a
+  branch on varKind so a band-level series is never described in reef language.
+  The "a null is not evidence of health" sentence now appears ONLY when the
+  result actually is a null; a significant one gets "a trend here is a signal to
+  investigate, not a diagnosis" instead. The no-coverage branch clears it.
+
+  ALSO FIXED: the row label read "Diel ratio (mean, range)" at every site, which
+  is wrong at SB02, whose series is an absolute band level, not a ratio. It now
+  reads "Series (mean, range)" - the variable is already named exactly in the
+  status line and again in the note, so the row states the numbers only.
+
+  TWO ERRORS I MADE IN THE FIX ITSELF, both caught before shipping and both worth
+  recording because they are the failure modes of "just compute it":
+    1. Differencing the year fields called a 43-month record "5 years". It is 3.6.
+       The static text being replaced said 3.5 - so the computed version would
+       have been LESS accurate than the hardcoded one while appearing rigorous.
+       Span is now (months + 1) / 12.
+    2. One generated line ran ~95 characters. That label is whiteSpace:'pre' in a
+       256px panel, where an over-long line is CLIPPED, not wrapped - so part of
+       the caveat would have been invisible. Every line is now <=48 characters
+       against a ~56-character budget. This is the second time this exact trap
+       has been hit (see v10.176's disclosure text), which is why the budget is
+       now stated in a comment beside the string.
+
+  MEASURED AFTER THE FIX, each site stating its own numbers:
+    SB02  3.7 years, 60 pairs, spans 13.27 dB, band_level caveat
+    FK01  3.6 years, 30 pairs, spans  1.40 dB, diel_ratio caveat, null branch
+    FK02  2.5 years, 13 pairs, spans  0.93 dB, diel_ratio caveat, null branch
+    no coverage -> caveat cleared
+
+  NOT CHANGED: every statistic, gate, threshold and the A1 term. This release
+  changes what the panel SAYS about its numbers, never the numbers.
+
 v10.176 S20 REPLAY WINDOW extended from 2023-01 to 2018-01, so it finally
   OVERLAPS the acoustic record instead of being disjoint from it.
 

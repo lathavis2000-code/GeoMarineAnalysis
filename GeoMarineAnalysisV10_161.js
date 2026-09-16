@@ -15,7 +15,7 @@
 // it explains, and the startup console block still prints the current
 // version's entry at runtime - those are unchanged.
 //
-var TOOL_VERSION = 'v10.176';
+var TOOL_VERSION = 'v10.177';
 var bathy = ee.Image('NOAA/NGDC/ETOPO1').select('bedrock');
 var bathyU = bathy.unmask(0);
 var oceanMask      = bathyU.lt(0);
@@ -11539,13 +11539,26 @@ var s21NoteV=ui.Label('',{fontSize:'7px',color:'#225566',backgroundColor:'rgba(0
 panel.add(row('Matched hydrophone',s21StatusV));
 panel.add(s21VerdictV);
 panel.add(row('Months / deployments',s21NV));
-panel.add(row('Diel ratio (mean, range)',s21RangeV));
+// v10.177: was 'Diel ratio (mean, range)'. SB02's series is an absolute band
+// level, so that label was simply wrong there. The variable is already named
+// exactly in the status line and the note; this row states the numbers only.
+panel.add(row('Series (mean, range)',s21RangeV));
 panel.add(row('Seasonal Kendall tau',s21TauV));
 panel.add(row('Seasonal Sen slope',s21SlopeV));
 panel.add(row('Seasons used',s21SeasonV));
 panel.add(row('CSD / climatology gates',s21GateV));
 panel.add(s21NoteV);
-panel.add(lbl('CAVEAT: one site, 3.5 years, 30 comparable within-season pairs. This is a case study, not a population inference. The index is also STABLE (total range 1.40 dB, between-deployment scatter ~0.3 dB) and this record contains no reef-degradation event, so its sensitivity to the thing it is meant to detect is UNMEASURED. A null result here is not evidence the reef is healthy.',7,'#aa6600'));
+// v10.177: this WAS a static label hardcoding FK01's numbers, and it rendered
+// unchanged at every site. Observed in a live run at SB02: it asserted "30
+// comparable within-season pairs" (SB02 has 60), "total range 1.40 dB" (SB02
+// spans 13.27 dB), called a 42 N bank a "reef", and warned that "a null result
+// here is not evidence the reef is healthy" underneath a SIGNIFICANT p=0.0219.
+// Four wrong statements in one caveat, in the panel whose entire job is to keep
+// the reader honest. Same defect class as the v10.173 'BIOPHONY TREND' verdict
+// fix: a hardcoded string asserting site-specific facts on a shared widget.
+// It is now computed per site from that site's own data.
+var s21CaveatV=ui.Label('',{fontSize:'7px',color:'#aa6600',backgroundColor:'rgba(0,0,0,0)',padding:'1px 4px',margin:'0',whiteSpace:'pre'});
+panel.add(s21CaveatV);
 
 // S21b - DESEASONALIZATION BENCHMARK (v10.173 NEW)
 // Runs the SAME acoustic series down BOTH principled paths and reports whether
@@ -11698,6 +11711,7 @@ function updateS21Acoustic(lat, lon){
     s21VerdictV.style().set('border','2px solid #aaaaaa');
     s21NV.setValue('n/a'); s21RangeV.setValue('n/a'); s21TauV.setValue('n/a');
     s21SlopeV.setValue('n/a'); s21SeasonV.setValue('n/a'); s21GateV.setValue('n/a');
+    s21CaveatV.setValue('');
     s21NoteV.setValue('SanctSound covers US National Marine Sanctuaries only.\n'+
       'Three sites are wired in: FK01 (24.43313,-81.93068) and FK02 (24.4888,-81.66632),\n'+
       'Florida Keys, radius 20 km each, biophony diel ratio; and SB02 Stellwagen Bank\n'+
@@ -11799,6 +11813,37 @@ function updateS21Acoustic(lat, lon){
     '   [quality, not a gate: '+wellSampled+'/12 calendar months have '+
     CLIM_MIN_SAMPLES_PER_MONTH+'+ years]');
   s21GateV.style().set('color',(passTotal&&passDistinct)?'#115511':'#aa5533');
+
+  // v10.177 per-site caveat, built from THIS site's numbers and variable kind.
+  // Span in MONTHS, not calendar years. Differencing the year fields calls
+  // 2018-12..2022-06 "5 years"; it is 43 months, i.e. 3.6. The original static
+  // text said 3.5, so year-differencing would have made this LESS accurate
+  // while appearing to compute it.
+  var _m0=parseInt(rows[0].m.substring(0,4),10)*12+parseInt(rows[0].m.substring(5,7),10);
+  var _m1=parseInt(rows[rows.length-1].m.substring(0,4),10)*12+
+          parseInt(rows[rows.length-1].m.substring(5,7),10);
+  var yrsSpan=((_m1-_m0+1)/12).toFixed(1);
+  // Lines are kept under ~56 chars: this label is whiteSpace:'pre' in a 256px
+  // panel, where an over-long line is CLIPPED, not wrapped.
+  var cav='CAVEAT: one site, '+yrsSpan+' years, '+(mk.error?'0':mk.nPairs)+' comparable\n'+
+          'within-season pairs. A case study, not a\n'+
+          'population inference.\n';
+  if(site.varKind==='diel_ratio'){
+    cav+='This index spans '+(mx-mn).toFixed(2)+' dB here, and the record\n'+
+         'contains no reef-degradation event, so its\n'+
+         'sensitivity to what it is meant to detect is\n'+
+         'UNMEASURED.';
+    // Only warn about reading a null as health when the result IS a null.
+    cav+=(!mk.error&&mk.p>=0.05)
+      ? '\nA null here is NOT evidence the reef is healthy.'
+      : '\nA trend here is a signal to investigate, not a\ndiagnosis.';
+  } else {
+    cav+='NOT a biological measurement - it says nothing\n'+
+         'about ecosystem state. It spans '+(mx-mn).toFixed(2)+' dB here.\n'+
+         'Carried as a METHODS benchmark (see S21b); do\n'+
+         'not read its trend as an ecological finding.';
+  }
+  s21CaveatV.setValue(cav);
 
   s21NoteV.setValue(
     'Band: '+site.band+'  |  '+site.record+'\n'+
@@ -13404,6 +13449,44 @@ Map.onClick(function(coords){ analyzeLocation(coords.lat, coords.lon); });
 
 // STARTUP
 print('STEMGeoHS Marine '+TOOL_VERSION+' -- READY');
+print('');
+print('v10.177 S21-CAVEAT: the caveat line was hardcoded to FK01 and rendered');
+print('  unchanged at every site. FOUND BY RUNNING IT, not by any static check.');
+print('');
+print('  OBSERVED, in a live run at SB02 Stellwagen. Underneath a SIGNIFICANT');
+print('    result (p=0.0219) the panel printed, verbatim: "one site, 3.5 years, 30');
+print('    comparable within-season pairs ... total range 1.40 dB ... this record');
+print('    contains no reef-degradation event ... A null result here is not');
+print('    evidence the reef is healthy."');
+print('    FOUR statements, all false at that site:');
+print('      pairs   - said 30, SB02 has 60');
+print('      range   - said 1.40 dB, SB02 spans 13.27 dB');
+print('      "reef"  - SB02 is a bank at 42 N and is not a reef');
+print('      "null"  - the result was SIGNIFICANT, not null');
+print('    Those are FK01\'s numbers, on a shared widget, in the panel whose entire');
+print('    job is to keep a reader honest. It is the same defect class as the');
+print('    v10.173 "BIOPHONY TREND" verdict fix: a hardcoded string asserting');
+print('    site-specific facts on a control every site shares.');
+print('  FIXED: the caveat is now COMPUTED PER SITE from that site\'s own rows -');
+print('    real pair count, real span in dB, and a branch on varKind so a');
+print('    band-level series is never described in reef language. The');
+print('    "a null is not evidence of health" sentence now appears ONLY when the');
+print('    result actually is a null; a significant one gets "a signal to');
+print('    investigate, not a diagnosis" instead.');
+print('  ALSO FIXED: the row label read "Diel ratio (mean, range)" at every site,');
+print('    which is simply wrong at SB02, whose series is an absolute band level.');
+print('    It now reads "Series (mean, range)"; the variable is already named');
+print('    exactly in the status line and the note.');
+print('  TWO ERRORS I MADE IN THE FIX ITSELF, both caught before shipping:');
+print('    year-differencing called a 43-month record "5 years" (it is 3.6 - the');
+print('    static text it replaced said 3.5, so the computed version would have');
+print('    been LESS accurate while looking rigorous); and one generated line ran');
+print('    ~95 chars in a whiteSpace:pre 256px panel, where over-long lines are');
+print('    CLIPPED rather than wrapped. Span is now months/12, and every caveat');
+print('    line is <=48 chars against a ~56-char budget.');
+print('  MEASURED after the fix: SB02 3.7 yr / 60 pairs / 13.27 dB, FK01 3.6 yr /');
+print('    30 pairs / 1.40 dB, FK02 2.5 yr / 13 pairs / 0.93 dB. Each site now');
+print('    states its own numbers.');
 print('');
 print('v10.176 S20 REPLAY WINDOW extended 2023-01 -> 2018-01, so it finally');
 print('  OVERLAPS the acoustic record instead of being disjoint from it.');
