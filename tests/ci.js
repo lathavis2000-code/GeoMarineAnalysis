@@ -422,6 +422,56 @@ section('13. S21 panel text belongs to the site on screen');
     stale.length === 0, 'stale: ' + stale.join(', '));
 })();
 
+section('14. Panel version stamps cannot go stale');
+// CHANGELOG.md states the rule and why it exists: "The running version is
+// declared once, in code, as TOOL_VERSION ... three consecutive rounds of this
+// file shipped with a stale marker because the number was typed in more than
+// one place." Section 4 already checks the declaration. This checks the other
+// half: a version typed into a PANEL HEADER.
+//
+// v10.178 stamped the S21 header with the then-current version. One release
+// later the header said v10.178 on screen while the tool ran v10.179. A marker
+// that must be hand-edited on every release will go stale, so the convention is
+// that a stamp names the version a panel was INTRODUCED in - a fact about the
+// past, which cannot drift.
+(function () {
+  var heads = SRC.match(/sHead\('[^']*'/g) || [];
+
+  var running = heads.filter(function (h) { return h.indexOf(TOOL_VERSION) !== -1; });
+  ok('no panel header carries the RUNNING version',
+    running.length === 0, running.join(' | '));
+
+  // Compare componentwise, NOT as floats. The first version of this check used
+  // parseFloat and reported v10.67 as NEWER than v10.180, because 10.67 > 10.18
+  // as a decimal. A dotted version is not a number - which is the same species
+  // of error as everything else this file guards: a representation quietly
+  // standing in for the thing it represents.
+  function vparts(v) {
+    return v.replace(/^v/, '').split('.').map(function (n) { return parseInt(n, 10); });
+  }
+  function older(a, b) {
+    var x = vparts(a), y = vparts(b);
+    for (var i = 0; i < Math.max(x.length, y.length); i++) {
+      if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0);
+    }
+    return false;
+  }
+  ok('componentwise version compare beats parseFloat',
+    older('v10.67', 'v10.180') && older('v10.172', 'v10.180') &&
+    !older('v10.180', 'v10.67') && !older('v10.180', 'v10.180'));
+
+  var stamped = heads.filter(function (h) { return /\(v10\.\d+\)/.test(h); });
+  var newer = stamped.filter(function (h) {
+    var m = h.match(/\(v(10\.\d+)\)/);
+    return !(m && older('v' + m[1], TOOL_VERSION));
+  });
+  ok('every panel version stamp predates the running version',
+    newer.length === 0, newer.join(' | '));
+
+  ok('the S21 stamp names the release that introduced it',
+    SRC.indexOf("sHead('S21 - REAL PASSIVE-ACOUSTIC BIOPHONY (v10.172)'") !== -1);
+})();
+
 function report() {
   console.log('\n' + '-'.repeat(60));
   if (failures.length === 0) {

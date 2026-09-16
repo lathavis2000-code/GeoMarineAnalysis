@@ -14,6 +14,38 @@ move — including the corrections and withdrawn claims, which are part of the
 record.
 
 ```text
+v10.180 VERSION-STAMP: the S21 panel header read "(v10.178)" while the tool ran
+  v10.179. That stamp was my own regression, introduced in v10.178.
+
+  Every other stamped header in this file names the release a panel was
+  INTRODUCED in - S21b (v10.173), S8 and S19 (v10.67), S7B (v10.102) - and most
+  panels carry no stamp at all. v10.178 changed S21's to mean "last revised",
+  which made it false under that convention (S21 shipped in v10.172) and, worse,
+  turned it into a marker requiring a hand edit on every future change to the
+  panel. It went stale one release later, at the first opportunity.
+
+  The rule this broke was already written down, at the top of this file: "The
+  running version is declared once, in code, as TOOL_VERSION ... three
+  consecutive rounds of this file shipped with a stale marker because the number
+  was typed in more than one place." I typed it in a second place and it went
+  stale on schedule. Reading the warning is not the same as heeding it.
+
+  FIXED: back to (v10.172) - the introduction version, which is a fact about the
+  past and cannot drift.
+
+  CI 87 -> 91. Section 14 asserts that no panel header carries the RUNNING
+  version and that every stamp predates it. Verified both ways: stamping the
+  header with the running version fails 3 checks, and leaving it one release
+  behind fails 2, while node --check and the ES5 gate pass on both.
+
+  AN ERROR IN MY OWN TEST, the second in as many releases. The first version of
+  the check compared versions with parseFloat, so v10.67 read as NEWER than
+  v10.180 - because 10.67 > 10.18 as a decimal. A dotted version is not a
+  number, and treating the representation as the thing it represents is the
+  same species of error this whole run of releases has been about. It compares
+  componentwise now, and a check pins that behaviour with v10.67 vs v10.180 as
+  its case.
+
 v10.179 S21-NOTE: a fifth instance of the same defect, and the most instructive
   one, because the sentence was HALF computed. The climatology note read:
 
