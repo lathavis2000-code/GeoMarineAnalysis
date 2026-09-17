@@ -796,6 +796,18 @@ section('15. Study scripts LOAD, not just parse');
         'the recorded count sits between the point and 40 km, so the sweep ' +
         'must span that range: ' + sweepRadii.join(','));
 
+      // THE AREA ACCUMULATORS MUST BE float32. ee.Image.pixelArea() is a
+      // double, and these two bands carry connectedPixelCount's 32 px halo
+      // (maxComponentSizePx 1024 = 32^2) - exactly the shape of the 132 MiB
+      // per-tile failure. They are OUTPUTS, never compared against a
+      // threshold, so the cast cannot change a detection; that is what makes
+      // this enforceable where casting the detector's `work` image would not
+      // be.
+      ok(rel + ': the area accumulator bands are float32, not double',
+        /pixelArea\(\)\.toFloat\(\)\.updateMask\(target\)/.test(code10) &&
+        /npix\.toFloat\(\)\.multiply\(ee\.Image\.pixelArea\(\)\.toFloat\(\)\)/.test(code10),
+        'ee.Image.pixelArea() is a double; an uncast area band is 8 bytes/px');
+
       // The scene validity mask is a FLOAT image straight from .mask(), and
       // every float band is a candidate for the 80 MiB per-tile limit that has
       // failed three exports. gt(0) before focal_min is exactly equivalent and

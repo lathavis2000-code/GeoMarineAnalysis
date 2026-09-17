@@ -941,8 +941,27 @@ function detectVessels(img, aoi, params) {
     maxSize: params.maxComponentSizePx
   }).select('labels');
 
-  var areaImg = ee.Image.pixelArea().updateMask(target).rename('area');
-  var tAreaImg = npix.multiply(ee.Image.pixelArea()).updateMask(target).rename('tarea');
+  // float32, AND THIS ONE IS FREE IN A WAY THE EARLIER TYPE FIXES WERE NOT.
+  //
+  // CHECK 8 failed with "1 bands for 17305600 pixels = 132.0 MiB > 80.0 MiB".
+  // 132 MiB / 17,305,600 px is 8.0 bytes/px - float64 - over 4160^2, which is a
+  // 4096 tile plus a 32 px halo. The halo identifies the node:
+  //   maxComponentSizePx 1024 IS 32 x 32, exactly.
+  // (An earlier commit guessed edgeErodeM, 250 m = 25 px rounding UP to 32.
+  // 1024 = 32^2 is the better fit, and it is these two bands that carry the
+  // connectedPixelCount halo while being one band of float64 each.)
+  // ee.Image.pixelArea() is a double, so both of these are doubles.
+  //
+  // WHY THIS COSTS NOTHING, unlike casting the detector's `work` image. These
+  // are output ACCUMULATORS, not decision inputs: nothing downstream compares
+  // them against a threshold, so no detection can change. And there is no
+  // precision to lose - pixelArea at 10 m is ~100 m2 and npix is capped at
+  // maxComponentSizePx, so the product tops out near 1.0e5, while float32
+  // represents every integer exactly to 2^24 = 1.7e7.
+  // 4160^2 x 4 bytes = 66.0 MiB, inside the limit.
+  var areaImg = ee.Image.pixelArea().toFloat().updateMask(target).rename('area');
+  var tAreaImg = npix.toFloat().multiply(ee.Image.pixelArea().toFloat())
+                     .updateMask(target).rename('tarea');
 
   var common = {
     geometry: aoi,
