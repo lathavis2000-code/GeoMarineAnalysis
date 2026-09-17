@@ -156,6 +156,47 @@ catches an undefined identifier and a use-before-assignment alike. Run
 | CHECK 10, **sampled**, all three orbits | `User memory limit exceeded` again at 10 km, **including the empty orbit 142** |
 | CHECK 10b | `Earth Engine memory capacity exceeded` |
 
+## What the next live run found (after the memory fixes)
+
+Every memory error is gone. CHECK 6 returns **184**, equal to CHECK 1, so every
+scene found an ERA5 hour and no row will carry `era5_matched = 0`. CHECK 7
+returns, and reads healthy — see below. One failure remains, and it is a
+different one.
+
+| | |
+|---|---|
+| CHECK 2 | **92 ASCENDING, 92 DESCENDING** — not the recorded 93 / 185 |
+| CHECK 3 | orbit 40 → **92**, orbit 62 → **92**; orbit 142 absent |
+| CHECK 7 | 1.244e7, 7.773e7, 3.109e8, 1.244e9, 4.882e9 m² |
+| CHECK 10, orbits 40 / 62 | **`Computation timed out`** — no longer a memory error |
+
+**CHECK 7 is healthy, and the way to see that is the ratios.** Against the true
+circle areas the inner four radii come in at 0.98964, 0.98966, 0.98966, 0.98967
+— a *constant* fractional deficit. Land cannot do that: the nearest coast is
+~25 km away, so a land deficit would be zero at 2 km and grow with radius. A
+constant ratio is a shape property, and 0.9896 is the area of a ~25-gon
+inscribed in a circle — the polygon `Geometry.buffer()` approximates the
+geodesic disc with. At 40 km a further 1.85% of the polygon is gone, ≈ 92 km²,
+which is the Cape Ann sliver plus the harbour boxes. So the mask is **not**
+eating ocean, which is exactly what CHECK 7 exists to rule out.
+
+**The 278 figure now has a candidate explanation, not yet a confirmed one.**
+92 ASC + 92 DESC = 184 here. If a third, *descending* orbit of ~93 scenes were
+included, DESC would be 92 + 93 = **185** and the total 278 — the recorded
+numbers exactly, with ASC 92 → 93 from one extra scene. That is consistent with
+a query whose bounds took in orbit 142, which covers part of the 40 km disc
+without covering the hydrophone. `FILTER_BOUNDS: 'maxdisc'` is the one-line
+test; until someone runs it this stays a hypothesis and `EXPECTED_*` stays as
+recorded, with CHECK 1b reporting MISMATCH.
+
+**The CHECK 10 timeout is the interactive wall clock, not a memory ceiling, and
+it does not block STAGE A** — batch exports do not share the ~5 minute limit.
+The 2 km × 20 scene spot check was an arithmetic estimate and it was wrong; an
+annulus median over 4,316 weights is a per-pixel *selection*, slower per
+operation than the kernel count implies. The defaults are now 1 km × 12 scenes.
+If that times out too, do not tune a fourth time — go to STAGE A, and read the
+histogram in `'asset'` mode where it is a raster read.
+
 The empty-orbit crash was real: `ee.ImageCollection([]).sum()` has zero bands, so
 dividing it by the scene count threw, and the first empty orbit killed the whole
 diagnostic. An empty orbit now produces an all-zero mask — the correct reading of

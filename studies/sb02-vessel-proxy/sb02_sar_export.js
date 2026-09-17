@@ -189,16 +189,35 @@ var CONFIG = {
   //   region  - a small disc, independent of CHECK10_RADIUS_M (which is the
   //             asset-mode region, where the detector is not re-evaluated);
   //   scenes  - the first N acquisitions of the orbit, not all ~92.
-  // 2 km x 20 scenes is ~1.1e10 kernel operations against the ~1.2e12 of the
-  // exhaustive 10 km version. Neither lever touches analysisScaleM: coarsening
-  // the scale would measure a different detector (see the CHECK 10 block).
-  CHECK10_SPOT_RADIUS_M: 2000,
+  // THIRD SETTING, AND THE LAST ONE TO GUESS AT. 2 km x 20 scenes was an
+  // arithmetic estimate (~1.1e10 kernel operations against the ~1.2e12 of the
+  // exhaustive 10 km version) and a live run rejected it - not for memory this
+  // time, but "Computation timed out", on both non-empty orbits. The memory
+  // fixes held; what is left is the ~5 minute INTERACTIVE wall clock, and an
+  // annulus MEDIAN over 4,316 weights is a selection per pixel per scene, which
+  // is slower per operation than the kernel count suggests.
+  // 1 km x 12 scenes is ~6.6x cheaper again. 1 km is chosen over a wider disc
+  // on purpose: the SanctSound mooring sits AT the site, so the pixels most
+  // likely to carry a genuine near-1.0 fixed-object mode are the ones closest
+  // to it. 12 scenes is chosen over 8 because persistence is a question about
+  // repetition in TIME, and 8 repeats quantise frac to steps of 0.125, which is
+  // too coarse to see a shape in.
+  // IF IT TIMES OUT AGAIN, DO NOT TUNE A FOURTH TIME. A spot check that will
+  // not run is a missing gate, not a blocker: go to STAGE A. Section 13 sets
+  // out why exporting before the threshold is settled is recoverable - frac is
+  // exported raw, so a different threshold is a re-read, not a re-export.
+  // Neither lever touches analysisScaleM: coarsening the scale would measure a
+  // different detector (see the CHECK 10 block).
+  CHECK10_SPOT_RADIUS_M: 1000,
   // The first N scenes by acquisition time, NOT a random draw - EE has no
   // cheap deterministic subsample of an ImageCollection. For one relative
-  // orbit that is N consecutive 12-day repeats (20 -> ~8 months), which is
-  // ample to show whether a near-1.0 mode exists at all. It is not the
-  // orbit's persistence and the label says so.
-  CHECK10_MAX_SCENES: 20,
+  // orbit that is N consecutive 12-day repeats (12 -> ~5 months), enough to
+  // show whether a near-1.0 mode exists at all. It is not the orbit's
+  // persistence and the label says so. Note that it also quantises frac to
+  // steps of 1/N, so the 0.20 threshold cannot be READ off this check - 12
+  // scenes put it between 2/12 and 3/12. Bimodality is the question here;
+  // the threshold is settled in 'asset' mode.
+  CHECK10_MAX_SCENES: 12,
   // ---- v3: per-detection long table ---------------------------------------
   // The spec's primary output. One row per DETECTION, not per scene, carrying
   // its own range from the hydrophone - so all five radii are derived offline
