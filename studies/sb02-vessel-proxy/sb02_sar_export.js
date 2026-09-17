@@ -110,7 +110,26 @@ var CONFIG = {
   DATE_END_INCLUSIVE: false,
 
   // ---- search radii, METRES ----------------------------------------------
-  RADII_M: [2000, 5000, 10000, 20000, 40000],
+  // PROTOTYPE PROFILE (p002), and what to restore for the full run.
+  // STAGE A did not deliver: two 8-10 hour orbit tasks left the assets empty,
+  // so persistence masking is unavailable and the study was blocked on it.
+  // It should not have been. A persistent fixed object - a buoy, a wreck, the
+  // SanctSound mooring - contributes a roughly CONSTANT count to every scene of
+  // an orbit. Constant offsets do not change a rank correlation or an AUC at
+  // all, and move a logistic fit's intercept rather than its discrimination.
+  // For the question this study asks - does SAR vessel presence predict
+  // ACOUSTIC ship presence - persistence masking is close to irrelevant. It
+  // matters for absolute counts and per-km2 densities, which the prototype does
+  // not claim.
+  // NOT irrelevant, and stated rather than buried: a fixed object's
+  // DETECTABILITY varies with sea state, and wind drives acoustic noise too, so
+  // there is a confound path from wind to both sides. That is what the ERA5
+  // columns are for, and proxy_skill.py conditions on them rather than trusting
+  // a raw correlation.
+  // Restore for the full run: RADII_M to the five radii, PERSISTENCE_MODE to
+  // 'asset' once STAGE A completes, and bump PARAM_SET_ID.
+  //   full:  RADII_M: [2000, 5000, 10000, 20000, 40000]
+  RADII_M: [2000, 5000, 10000],
 
   // ---- collection ---------------------------------------------------------
   S1_COLLECTION: 'COPERNICUS/S1_GRD',   // NOTE: this collection is in dB (log
@@ -143,8 +162,11 @@ var CONFIG = {
   //               per-scene work. Expect this to be too slow for one export.
   //   'asset'   - load masks previously written by the STAGE A block below.
   //               This is the intended production path.
-  PERSISTENCE_MODE: 'compute',
-  EXPORT_PERSISTENCE_ASSETS: true,   // STAGE A; see section 13
+  //   full:  PERSISTENCE_MODE: 'asset'  (after STAGE A)
+  PERSISTENCE_MODE: 'off',
+  EXPORT_PERSISTENCE_ASSETS: true,   // STAGE A; see section 13. Only has an
+                                     // effect in 'compute' mode, so the
+                                     // prototype queues no asset tasks.
   // VERIFY THIS ROOT BEFORE RUNNING STAGE A - it is the one pre-flight check
   // no CHECK in this file can make. The export dialog validates the asset root
   // only when you press RUN on the task, so a root that does not exist fails
@@ -300,7 +322,13 @@ var CONFIG = {
   // around it.
 
   // ---- output -------------------------------------------------------------
-  PARAM_SET_ID: 'p001',                 // bump this for every parameter sweep
+  // p002 = the prototype profile above. The DETECTION parameters are identical
+  // to p001; what differs is PERSISTENCE_MODE and the radius list, and both
+  // change the numbers in the table, so they get their own id. The mode is also
+  // echoed into every row now - see p_persistence_mode - because a table built
+  // with persistence off and one built with it on are not comparable and the
+  // CSV could not previously tell you which it was.
+  PARAM_SET_ID: 'p002',                 // bump this for every parameter sweep
   DRIVE_FOLDER: 'GEE_SB02_SAR',
   EXPORT_DESCRIPTION: 'SB02_S1_vessel_detections',
   FILE_PREFIX: 'sb02_s1_vessel_detections',
@@ -1274,6 +1302,13 @@ function makeSceneFeature(img, radiiM, tags, aois, discs) {
     props.p_threshold_db =
       10 * Math.log(1 + PARAMS.thresholdK / Math.sqrt(PARAMS.enl)) / Math.LN10;
     props.p_land_source = CONFIG.LAND_SOURCE;
+    // PERSISTENCE PROVENANCE. Without these two a persistence-off table and a
+    // persistence-on one are byte-indistinguishable apart from their numbers,
+    // which is exactly the kind of unfalsifiable provenance the rest of this
+    // file exists to avoid. The threshold is echoed even when the mode is
+    // 'off', where it is inert, so the column is never missing.
+    props.p_persistence_mode = CONFIG.PERSISTENCE_MODE;
+    props.p_persistence_threshold = PARAMS.persistenceThreshold;
   }
 
   // Null geometry: the rows are joined offline by time, not by location, and a
@@ -1390,6 +1425,7 @@ if (CONFIG.INCLUDE_PARAM_COLUMNS) {
   SELECTORS.push('p_edge_erode_m');
   SELECTORS.push('p_pol_combine');
   SELECTORS.push('p_land_buffer_m', 'p_enl', 'p_median_to_mean', 'p_use_median_bg', 'p_speckle_applied', 'p_detection_pols', 'p_threshold_db', 'p_land_source');
+  SELECTORS.push('p_persistence_mode', 'p_persistence_threshold');
 }
 
 

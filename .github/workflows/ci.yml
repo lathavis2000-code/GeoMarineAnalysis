@@ -85,7 +85,10 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for f in studies/sb02-vessel-proxy/acoustic_label.py studies/sb02-vessel-proxy/flag_ambiguities.py; do
+          # Explicit list, not a glob: fetch_ships.py reaches the network and
+          # must never run here. proxy_skill.py runs its self-tests when given
+          # no CSV, which is the only mode CI can exercise.
+          for f in studies/sb02-vessel-proxy/acoustic_label.py studies/sb02-vessel-proxy/flag_ambiguities.py studies/sb02-vessel-proxy/proxy_skill.py; do
             [ -f "$f" ] || continue
             echo "running $f"
             out="$(python3 "$f")"

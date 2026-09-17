@@ -5,8 +5,66 @@ detected ship presence at a hydrophone? If it does, a satellite proxy can carry
 some of the load a hydrophone carries. If it does not, that is worth knowing
 before anyone builds a layer on the assumption.
 
-**Status: scoped and prepared. Not run.** Nothing here has touched Earth Engine.
-No result is claimed, and none should be quoted from this directory.
+**Status: prototype profile (p002). No result is claimed**, and none should be
+quoted from this directory. The pre-flight CHECKs have been run live; no export
+has produced a table yet.
+
+## The p002 prototype profile, and why persistence was dropped
+
+STAGE A did not deliver. Two orbit tasks ran 8 and 10 hours and left the assets
+empty, so persistence masking is unavailable — and the study had been blocked on
+it for a full cycle.
+
+**It should not have been.** A persistent fixed object — a navigation buoy, a
+wreck, the SanctSound mooring itself — contributes a roughly *constant* count to
+every scene of a relative orbit. A constant offset does not change a rank
+correlation or an AUC at all; it moves a logistic fit's intercept, not its
+discrimination. For the question this study actually asks — *does SAR vessel
+presence predict acoustic ship presence?* — persistence masking is close to
+irrelevant. It matters for absolute counts and per-km² densities, which the
+prototype does not claim.
+
+So `p002` is: `PERSISTENCE_MODE: 'off'`, `RADII_M` to 10 km, everything else
+identical to `p001`. That makes the table exports affordable — roughly 1.3 h
+rather than the ~20 h the 40 km version needs — and unblocks the whole question
+today. The 10 km disc also covers the plausible acoustic detection range for
+shipping-lane traffic, and `range_m` in the detection table gives 2 and 5 km
+offline for free.
+
+**What this profile does NOT let you off.** A fixed object's *detectability*
+varies with sea state, and wind drives acoustic noise too, so there is a
+confound path from wind to both sides of the comparison. That is what the ERA5
+columns are for, and `proxy_skill.py` conditions on them rather than trusting a
+raw correlation — see below.
+
+Every row now carries `p_persistence_mode` and `p_persistence_threshold`, so a
+persistence-off table can never be mistaken for a persistence-on one. Before
+that, the two were distinguishable only by their numbers.
+
+## The two ways this prototype could produce a confident wrong answer
+
+**Wind confounds both sides.** Higher wind means more sea clutter (fewer or
+noisier SAR detections at a fixed threshold) *and* more ambient noise (ship
+detection harder acoustically). A healthy-looking raw correlation can be wind
+moving both, with no causal path between them. `proxy_skill.py` therefore always
+prints the pooled AUC *and* the AUC within wind terciles, together. A pooled
+figure well above the three stratified ones is the signature of the confound,
+not of a working proxy. A self-test constructs exactly that case — pooled 0.767,
+all three strata 0.500 — so the control is one that has been seen to fire, and a
+mirror test confirms it does not flatten a real effect.
+
+**A recording gap is not a silent ocean.** `acoustic_label.ship_present()`
+answers True/False, which is the right contract for it and the wrong one for
+scoring: between SanctSound deployments nobody is listening, and a SAR scene in
+such a gap would be scored as "no ship". Those scenes keep their SAR counts, so
+they land in the negative class carrying whatever the satellite saw, dragging
+the AUC toward 0.5. `proxy_skill.py` adds an explicit **unknown** and drops
+those rows, using a gap-threshold heuristic that it sweeps (6 h and 24 h) rather
+than fixes, because recorder-on periods cannot be recovered exactly from
+detection intervals alone.
+
+It also excludes partial-coverage scenes (`full_cov_*`), which undercount by
+construction, and reports every exclusion count next to every statistic.
 
 ## Why SB02
 
@@ -33,6 +91,7 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
 | `fetch_ships.py` | Pulls the SanctSound ground truth; data is **not** committed |
 | `acoustic_label.py` | Was a ship audible at time *t* ± tolerance |
 | `flag_ambiguities.py` | Offline azimuth-ambiguity flagging on the detection table |
+| `proxy_skill.py` | **Prototype** skill evaluation: joins the per-scene table to the acoustic record |
 
 ## Run order — not optional
 
