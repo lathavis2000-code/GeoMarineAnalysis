@@ -1728,11 +1728,25 @@ Export.table.toDrive({
  *
  *   1. Set PERSISTENCE_MODE = 'compute'. Read CHECK 10's SAMPLED spot check. If
  *      it already looks clearly unimodal, stop and reconsider before spending a
- *      STAGE A run. Run ONLY the STAGE A exports.
+ *      STAGE A run. Run ONLY the STAGE A exports - and run the task for EVERY
+ *      orbit in RELATIVE_ORBITS, including one CHECK 3b reports as empty. See
+ *      the note below; this is not the optional step it looks like.
  *   2. Point PERSISTENCE_ASSET_PREFIX at the written assets and set
  *      PERSISTENCE_MODE = 'asset'. Read CHECK 10 again - now EXHAUSTIVE over
  *      the full disc, and this is the histogram to base the threshold on.
  *   3. Run the per-scene and detection exports.
+ *
+ * WHY AN EMPTY ORBIT STILL NEEDS ITS STAGE A TASK. The loader above walks
+ * CONFIG.RELATIVE_ORBITS, not the orbits that have scenes, and builds
+ * ee.Image(PERSISTENCE_ASSET_PREFIX + orbit + '_' + PARAM_SET_ID) for each.
+ * CHECK 10 then reduces every one. ee.Image() on an asset that was never
+ * written is a LAZY node: it builds fine and throws "Image.load: asset not
+ * found" on EVALUATION - the same failure class as the ee.Image-on-an-
+ * ImageCollection bug in the LAND MASKING section, and it surfaces the same
+ * way, with the early CHECKs printing clean first.
+ * An empty orbit's task is cheap: no scenes means no detector runs, so it is
+ * a 50 M-pixel write of zeros and nothing else. There is nothing to save by
+ * skipping it, and a run of step 2 to lose by doing so.
  *
  * STEP 1 USED TO SAY "read CHECK 10 first" AS THOUGH THE FULL HISTOGRAM WERE
  * AVAILABLE THERE. It is not, and that instruction was circular. Live runs

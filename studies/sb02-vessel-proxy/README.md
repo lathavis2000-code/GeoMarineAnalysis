@@ -70,11 +70,22 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
    ~50 M pixels × ~92 scenes × a 4,316-weight annulus median; batch tasks do
    not share the interactive timeout but can still time out after hours, and
    one orbit tells you whether the budget holds for half the cost of finding
-   out the hard way. Orbit 142 is empty, so its task writes an all-zero image —
-   cheap and harmless, since no scene carries that orbit.
+   out the hard way.
+   **Run the task for every orbit in `RELATIVE_ORBITS`, including an empty
+   one.** Step 5 loads an asset per *configured* orbit, not per orbit that has
+   scenes — `ee.Image(prefix + orbit + '_' + PARAM_SET_ID)` for each — and
+   CHECK 10 then reduces every one of them. A missing asset is a lazy node: it
+   builds fine and throws `Image.load: asset not found` on evaluation, the same
+   failure class as the WorldCover `ee.Image`-vs-`ImageCollection` bug below.
+   So skipping the empty orbit does not yield an all-zero histogram, it yields
+   an error. Its task is cheap — no scenes means no detector runs, just a
+   50 M-pixel write of zeros — so there is nothing to save by skipping it.
    Do **not** run the two table exports yet: in `'compute'` mode they
    re-evaluate the detector over every scene of the orbit inside every scene's
-   own computation. They are step 5.
+   own computation. They are step 5. Running one costs a task: a live run of
+   `SB02_S1_vessel_detections_p001` in `'compute'` mode failed after 12 minutes
+   and 147 EECU-seconds with `User memory limit exceeded`, which is the
+   documented behaviour and not a defect.
 5. Switch to `PERSISTENCE_MODE: 'asset'` and **read CHECK 10 again** — now
    exhaustive over the full 40 km disc, cheap because the detector is no longer
    being re-evaluated. **This is the histogram to base the threshold on.** Then

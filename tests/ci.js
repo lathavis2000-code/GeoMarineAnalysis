@@ -537,11 +537,37 @@ section('15. Study scripts LOAD, not just parse');
     ok(rel + ' executes without throwing', threw === null, threw);
 
     if (threw === null && /sb02_sar_export/.test(rel)) {
+      var src10 = fs.readFileSync(file, 'utf8');
       var exps = sandbox.Export.exports;
-      // STAGE A writes one persistence asset per relative orbit.
       var assets = exps.filter(function (e) { return e.dest === 'toAsset'; });
-      ok(rel + ': STAGE A exports one asset per relative orbit',
-        assets.length === 3, 'got ' + assets.length);
+
+      // STAGE A must write one asset per CONFIGURED orbit, not per orbit that
+      // has scenes. The 'asset' loader walks CONFIG.RELATIVE_ORBITS and builds
+      // ee.Image(prefix + orbit + '_' + id) for every entry, and CHECK 10
+      // reduces each one - so an orbit whose task was never run throws
+      // "Image.load: asset not found" on evaluation, after the early CHECKs
+      // have printed clean. The empty orbit 142 is exactly the one a reader is
+      // tempted to skip, and skipping it costs a whole step-2 run.
+      //
+      // Asserted against the configured list rather than the literal 3 the
+      // earlier rule used: the invariant is "written set == read set", and a
+      // hardcoded count stops testing it the moment RELATIVE_ORBITS changes.
+      var roMatch = src10.match(/RELATIVE_ORBITS:\s*\[([^\]]*)\]/);
+      var orbits = roMatch ? roMatch[1].split(',').map(function (t) {
+        return t.trim();
+      }).filter(function (t) { return t.length > 0; }) : [];
+      ok(rel + ': RELATIVE_ORBITS is readable from source', orbits.length > 0);
+      ok(rel + ': STAGE A exports one asset per CONFIGURED orbit',
+        assets.length === orbits.length,
+        'configured ' + orbits.length + ' (' + orbits.join(',') + '), exported ' +
+        assets.length);
+      ok(rel + ': every configured orbit has its own STAGE A asset',
+        orbits.every(function (o) {
+          return assets.some(function (e) {
+            return String(e.opts.assetId).indexOf('_' + o + '_') !== -1;
+          });
+        }),
+        assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
 
       // PR #19: the write path appends _<PARAM_SET_ID> and the read path did
       // not, so asset mode asked for images STAGE A never wrote. Both build the
@@ -567,7 +593,6 @@ section('15. Study scripts LOAD, not just parse');
       // a 9x coarser grid (annulusKernel is a fixed PIXEL kernel with no
       // reproject) or, in asset mode, from a block-averaged pyramid. Neither
       // can show the bimodality the check exists to look for.
-      var src10 = fs.readFileSync(file, 'utf8');
       var check10 = src10.slice(src10.indexOf('CHECK 10 - v3 PERSISTENCE DIAGNOSTIC'),
                                 src10.indexOf("CHECK 9 - exported column order"));
       ok(rel + ': CHECK 10/10b reduce at the scale the mask is applied at',
