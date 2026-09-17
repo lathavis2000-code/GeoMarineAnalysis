@@ -82,6 +82,40 @@ config comment has always described 142/40/62 as *the* orbits, and at 40 km that
 is incomplete. Anyone widening `FILTER_BOUNDS` without adding 135 would get a
 persistence mask that silently ignores a quarter of the scenes.
 
+## The 80 MiB tile limit: a ladder, and how to read the error
+
+Three exports and a CHECK have now died on it. The error is more informative
+than any estimate, and it reads the same way every time:
+
+```
+Output of image computation is too large (1 bands for N pixels = M MiB > 80.0 MiB)
+```
+
+Two numbers name the node:
+
+- **M / N gives bytes per pixel.** 8.0 means a float64 (or int64) band.
+- **√N − 4096, halved, gives the halo.** EE's tile is 4096 px; the halo is
+  whatever neighbourhood the node needs.
+
+Worked, for the CHECK 8 failure: 132 MiB / 17,305,600 px = **8.0 bytes/px**, and
+√17,305,600 = 4160 = 4096 + 2×**32**. A 32 px halo at the 10 m analysis scale is
+`maxComponentSizePx` **1024 = 32²**, exactly — so the node is one of the bands
+carrying `connectedPixelCount`'s halo, and the two that are a single float64
+band are the area accumulators, both built on `ee.Image.pixelArea()` (a double).
+
+**Casting is not one decision, it is two, and they are not equally free:**
+
+| band | cast is | why |
+|---|---|---|
+| `areaImg`, `tAreaImg` | **free** | outputs; nothing compares them to a threshold, so no detection can change. And exact — the product tops out near 1.0e5, float32 is exact to 2^24 |
+| land distance | **free** | compared in squared units; equivalent by construction |
+| scene valid mask | **free** | `gt(0)` before `focal_min` says the same thing in a byte |
+| detector `work`, `mu`, `thr` | **not free** | these *are* the threshold comparison; casting changes decisions in their last bits, so it must be reported alongside any result |
+
+`tileScale` does **not** help here. It partitions the reducer's aggregation, and
+these failures are in the image graph, whose neighbourhood ops tile themselves —
+which is why the tile stayed 4096-based at `tileScale: 16`.
+
 ## Read the BUILD line first, every time
 
 The Code Editor holds a **copy** of `sb02_sar_export.js`. Every fix merged here
