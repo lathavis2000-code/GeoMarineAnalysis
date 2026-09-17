@@ -146,7 +146,21 @@ var CONFIG = {
   PERSISTENCE_MODE: 'compute',
   EXPORT_PERSISTENCE_ASSETS: true,   // STAGE A; see section 13
   PERSISTENCE_ASSET_PREFIX: 'projects/ee-lathavis/assets/sb02_persist_orbit_',
-  RELATIVE_ORBITS: [142, 40, 62],       // verified: 93 / 92 / 93 scenes
+  RELATIVE_ORBITS: [142, 40, 62],
+  // PROVISIONAL, from an exploratory query whose window and filters were not
+  // recorded alongside it. A live run of the configuration in this file gave
+  // 184 scenes over 2 relative orbits. Treat these as the number to re-measure,
+  // not the number to trust; CHECK 1b reports the comparison either way.
+  EXPECTED_SCENES: 278,
+  EXPECTED_ASC: 93,
+  EXPECTED_DESC: 185,
+  // CHECK 10 reduces at analysisScaleM (10 m). Over the full 40 km disc in
+  // 'compute' mode that exceeded the Code Editor's memory limit on a live run.
+  // The documented remedy is to shrink the REGION, never to coarsen the scale -
+  // so here is the lever, defaulted to a radius that fits. Raise it once
+  // PERSISTENCE_MODE is 'asset' and the detector is no longer being re-evaluated
+  // per scene. The radius used is printed in the CHECK 10 label.
+  CHECK10_RADIUS_M: 10000,
   // ---- v3: per-detection long table ---------------------------------------
   // The spec's primary output. One row per DETECTION, not per scene, carrying
   // its own range from the hydrophone - so all five radii are derived offline
@@ -795,10 +809,28 @@ function buildPersistence(relOrbit, params) {
   // covering a scene set the detections never saw.
   var col = s1Joined.filter(ee.Filter.eq('relativeOrbitNumber_start', relOrbit));
   var n = ee.Number(col.size()).max(1);
+
+  // An orbit with NO scenes in the configured window used to crash here:
+  // ee.ImageCollection([]).sum() is an image with ZERO bands, and dividing it
+  // by a number raised
+  //   "Image.divide: If one image has no bands, the other must also have no
+  //    bands. Got 0 and 1."
+  // which is exactly what a live run produced for orbit 142 while the other two
+  // orbits ran. RELATIVE_ORBITS is a fixed client list, so it can name an orbit
+  // the date window does not contain, and the whole diagnostic then died on the
+  // first such orbit rather than reporting it.
+  //
+  // Merging one all-zero image guarantees .sum() yields a banded image. It adds
+  // nothing to the hit count, and n is the TRUE scene count, so a non-empty
+  // orbit is arithmetically unchanged. An empty orbit now yields frac = 0
+  // everywhere, i.e. "nothing is persistent here", which is the correct reading
+  // of no evidence - and CHECK 3b below says plainly that the orbit was empty,
+  // so a zero mask is never mistaken for a measured one.
+  var zeroHit = ee.Image.constant(0).rename('h').toFloat();
   var hits = ee.ImageCollection(col.map(function (img) {
     return buildDetectionImage(ee.Image(img), params)
-             .select('target').unmask(0).rename('h');
-  })).sum().rename('h');
+             .select('target').unmask(0).rename('h').toFloat();
+  })).merge(ee.ImageCollection([zeroHit])).sum().rename('h');
   var frac = hits.divide(n).rename('frac');
   var persist = frac.gte(params.persistenceThreshold).rename('persist');
   if (params.persistenceDilateM > 0) {
@@ -1219,11 +1251,43 @@ print('Radii (m): ' + CONFIG.RADII_M.join(', ') +
       '   (largest = ' + MAX_RADIUS_M + ' m)');
 print('Parameter set: ' + CONFIG.PARAM_SET_ID);
 
-print('CHECK 1 - scene count (EXPECT 278):', s1.size());
-print('CHECK 2 - by orbit pass (EXPECT ASCENDING 93, DESCENDING 185):',
+/* THE EXPECTED COUNTS ARE PROVISIONAL. They came from an exploratory query
+ * whose date window, bounds filter and polarisation filter were never written
+ * down beside them, and a live run of THIS configuration returned 184 scenes
+ * across 2 relative orbits, not 278 across 3. One of the two is wrong and the
+ * file cannot tell you which, because the conditions behind 278 were not
+ * recorded. So they are a stated expectation to be compared against, not an
+ * assertion of fact, and CHECK 1b says MATCH or MISMATCH rather than leaving a
+ * reader to notice. Confirm the window you want, re-measure, and update
+ * EXPECTED_* together with the conditions - a count without its query is the
+ * same kind of unverifiable claim this file exists to avoid. */
+print('CHECK 1 - scene count (expected ' + CONFIG.EXPECTED_SCENES +
+      ', PROVISIONAL - see note in source):', s1.size());
+print('CHECK 1b - does the scene count match the stated expectation?',
+      ee.Algorithms.If(s1.size().eq(CONFIG.EXPECTED_SCENES),
+        'MATCH',
+        ee.String('MISMATCH: this window yields ').cat(s1.size().format('%d'))
+          .cat(', the recorded expectation is ')
+          .cat(ee.Number(CONFIG.EXPECTED_SCENES).format('%d'))
+          .cat('. Neither is authoritative until the query behind the ')
+          .cat('expectation is restated.')));
+print('CHECK 2 - by orbit pass (expected ASCENDING ' + CONFIG.EXPECTED_ASC +
+      ', DESCENDING ' + CONFIG.EXPECTED_DESC + ', PROVISIONAL):',
       s1.aggregate_histogram('orbitProperties_pass'));
-print('CHECK 3 - by relative orbit (EXPECT keys 142, 40, 62):',
+print('CHECK 3 - by relative orbit (configured: ' +
+      CONFIG.RELATIVE_ORBITS.join(', ') + '):',
       s1.aggregate_histogram('relativeOrbitNumber_start'));
+/* CHECK 3b. RELATIVE_ORBITS is a fixed client-side list, so it can name an
+ * orbit the window does not contain. That used to surface as a crash inside
+ * buildPersistence (a 0-band sum divided by a number) rather than as a fact
+ * about the data. It is a fact about the data, so report it as one: an empty
+ * orbit now yields an all-zero mask, and this line is what stops that zero
+ * being read as "nothing persistent here" when it means "nothing looked at". */
+print('CHECK 3b - configured orbits with NO scenes in this window ' +
+      '(each yields an ALL-ZERO persistence mask, not a measured one):',
+      ee.List(CONFIG.RELATIVE_ORBITS).removeAll(
+        s1.aggregate_array('relativeOrbitNumber_start').distinct()
+          .map(function (o) { return ee.Number(o).toInt(); })));
 // v3 FIX: was aggregate_histogram('platform_number'), which prints an empty
 // dictionary if that property is absent or named differently - a silent blank
 // rather than a caught error. Derived from the scene id prefix instead, which
@@ -1235,9 +1299,9 @@ print('CHECK 4 - by platform, from the scene id prefix (S1A / S1B split):',
       }).aggregate_histogram('platform_id'));
 // Dual-pol is CHECKED, not assumed: if these two numbers differ, some scene in
 // the window is single-pol and the verified 278 no longer describes this set.
-print('CHECK 5a - scenes before the dual-pol filter (EXPECT 278):', s1Base.size());
-print('CHECK 5b - scenes after the dual-pol filter (EXPECT the same 278):',
-      s1.size());
+print('CHECK 5a - scenes before the dual-pol filter:', s1Base.size());
+print('CHECK 5b - scenes after the dual-pol filter (5a and 5b must agree; ' +
+      'if they differ, some scene in the window is single-pol):', s1.size());
 print('CHECK 6 - scenes surviving the ERA5 join (should equal CHECK 1):',
       s1Joined.size());
 
@@ -1321,24 +1385,34 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
  * not. The scale is printed in each label so the reader can tell which they got.
  */
 if (CONFIG.PERSISTENCE_MODE !== 'off') {
+  // REGION, not scale. A live run at 10 m over the full 40 km disc in 'compute'
+  // mode returned "User memory limit exceeded" for every orbit that had scenes.
+  // The remedy is the one written above: shrink the region and SAY WHICH, never
+  // coarsen the scale. CHECK10_AOI is that smaller region and both labels print
+  // its radius, so a histogram read off a 10 km disc is never mistaken for one
+  // over the whole study area.
+  var CHECK10_AOI = SITE_POINT.buffer(CONFIG.CHECK10_RADIUS_M);
+  var c10km = (CONFIG.CHECK10_RADIUS_M / 1000).toFixed(1);
   for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
     var roD = CONFIG.RELATIVE_ORBITS[i];
     print('CHECK 10 - persistence fraction histogram, orbit ' + roD +
-          ' at ' + PARAMS.analysisScaleM + ' m (want BIMODAL; a spike near 1.0 ' +
-          'is fixed objects)',
+          ' at ' + PARAMS.analysisScaleM + ' m over a ' + c10km +
+          ' km disc (want BIMODAL; a spike near 1.0 is fixed objects). ' +
+          'An orbit listed in CHECK 3b is EMPTY - its histogram is all zeros ' +
+          'and says nothing about persistence.',
       PERSIST_FRAC[roD].updateMask(WATER_MASK).reduceRegion({
         reducer: ee.Reducer.histogram(20, 0.05),
-        geometry: AOIS[AOIS.length - 1],
+        geometry: CHECK10_AOI,
         scale: PARAMS.analysisScaleM,
         maxPixels: PARAMS.maxPixels,
         tileScale: PARAMS.tileScale
       }));
     print('CHECK 10b - water area masked as persistent, orbit ' + roD +
-          ' at ' + PARAMS.analysisScaleM + ' m (m2)',
+          ' at ' + PARAMS.analysisScaleM + ' m over a ' + c10km + ' km disc (m2)',
       ee.Image.pixelArea().updateMask(PERSIST[roD]).updateMask(WATER_MASK)
         .reduceRegion({
           reducer: ee.Reducer.sum(),
-          geometry: AOIS[AOIS.length - 1],
+          geometry: CHECK10_AOI,
           scale: PARAMS.analysisScaleM,
           maxPixels: PARAMS.maxPixels,
           tileScale: PARAMS.tileScale

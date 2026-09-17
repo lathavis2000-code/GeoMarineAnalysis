@@ -575,6 +575,36 @@ section('15. Study scripts LOAD, not just parse');
         check10.indexOf('scale: CONFIG.MASK_SCALE_M') === -1,
         'CHECK 10 block still references MASK_SCALE_M');
 
+      // An orbit named in RELATIVE_ORBITS but absent from the date window used
+      // to crash buildPersistence: ee.ImageCollection([]).sum() has ZERO bands,
+      // and dividing it by a number raised "Got 0 and 1". A live run hit this
+      // on orbit 142 while the other two orbits ran. The sum must be band-safe.
+      ok(rel + ': persistence survives an orbit with no scenes',
+        /merge\(ee\.ImageCollection\(\[zeroHit\]\)\)/.test(src10),
+        'buildPersistence does not guard the empty-collection sum');
+
+      // And an empty orbit must be REPORTED, or its all-zero mask reads as a
+      // measurement rather than an absence.
+      ok(rel + ': empty orbits are named in a CHECK',
+        src10.indexOf('CHECK 3b') !== -1 &&
+        src10.indexOf('configured orbits with NO scenes') !== -1);
+
+      // The scene counts came from a query whose conditions were never recorded,
+      // and a live run contradicted them. They must not read as assertions.
+      ok(rel + ': the scene-count expectation is marked provisional',
+        src10.indexOf('EXPECTED_SCENES') !== -1 &&
+        src10.indexOf('PROVISIONAL') !== -1 &&
+        src10.indexOf('EXPECT 278') === -1,
+        'a bare "EXPECT 278" is still asserted somewhere');
+
+      // CHECK 10 at 10 m over the full disc exceeded the memory limit. The
+      // remedy is a smaller REGION, and it has to be reachable, not just
+      // described in a comment.
+      ok(rel + ': CHECK 10 has a configurable region and prints it',
+        src10.indexOf('CHECK10_RADIUS_M') !== -1 &&
+        check10.indexOf('geometry: CHECK10_AOI') !== -1 &&
+        check10.indexOf('km disc') !== -1);
+
       // A boolean mask pyramided with the default MEAN policy stops being a
       // mask at every zoom above native scale.
       var persistExport = assets.length ? assets[0].opts : {};
