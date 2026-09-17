@@ -41,6 +41,47 @@ Every row now carries `p_persistence_mode` and `p_persistence_threshold`, so a
 persistence-off table can never be mistaken for a persistence-on one. Before
 that, the two were distinguishable only by their numbers.
 
+## The 278 is reconstructed, and the file's own orbit list is incomplete
+
+CHECK 3c–3f ran. The verdict line said **NOT CONFIRMED** — a 40 km bounds
+filter yields 523, not 278 — and that is correct as far as it goes. But the
+detail prints reconstruct the recorded figures exactly.
+
+At 40 km the window holds **four** relative orbits, not three:
+
+| orbit | scenes @ 40 km | scenes @ point | pass |
+|---|---|---|---|
+| 135 | 154 | 0 | ASCENDING |
+| 142 | 93 | 0 | DESCENDING |
+| 40 | 92 | 92 | DESCENDING |
+| 62 | 184 | 92 | ASCENDING |
+
+The pass assignment is **proven, not guessed**: `DESC = 185` has exactly one
+subset solution, `{40, 142}` = 92 + 93, leaving `ASC = {62, 135}` = 338. That
+agrees with the point query's 92 ASC / 92 DESC over orbits 62 and 40.
+
+And then the recorded figures fall out:
+
+```
+orbit 40  (DESC)   92
+orbit 142 (DESC)   93   ->  DESC = 185   exact match
+orbit 62  (ASC)    93   ->  ASC  =  93   exact match
+                  278                    exact match
+```
+
+So the orbit-142 idea was right — it *is* the missing descending orbit with 93
+scenes, and it closes DESC exactly. What was wrong was the radius. The recorded
+query used bounds **between the point and 40 km**: wide enough to take in all of
+orbit 142, narrow enough to exclude orbit 135 entirely and to catch only 93 of
+orbit 62 rather than 184. `CHECK3C_SWEEP_RADII_M` now sweeps six radii so the
+next run measures that bound instead of inferring it.
+
+**Orbit 135 is not in `RELATIVE_ORBITS` and never was.** Under the shipped
+`'point'` filter it contributes nothing, so nothing is wrong today. But the
+config comment has always described 142/40/62 as *the* orbits, and at 40 km that
+is incomplete. Anyone widening `FILTER_BOUNDS` without adding 135 would get a
+persistence mask that silently ignores a quarter of the scenes.
+
 ## Read the BUILD line first, every time
 
 The Code Editor holds a **copy** of `sb02_sar_export.js`. Every fix merged here
