@@ -46,20 +46,17 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
    prints MATCH or MISMATCH; CHECK 3b names any configured orbit the window
    does not contain. Settle the window you want, re-measure, and update
    `EXPECTED_*` together with the query that produced it.
-3. **CHECK 10 is a decision point.** The persistence histogram must be
-   *bimodal* for the 0.20 threshold to be defensible. See the warning below.
-   It reduces at `analysisScaleM` (10 m), the scale the mask is actually
-   applied at. It used to reduce at `MASK_SCALE_M` (30 m), which measured a
-   different detector — `annulusKernel` is a fixed PIXEL kernel with no
-   `.reproject()`, so a 30 m request inflated the 400/150 m annulus to
-   ~1200/450 m and the 300 m² minimum target to ~2,700 m². That detector
-   finds fewer small fixed objects, suppressing the near-1.0 mode the test
-   looks for. **If CHECK 10 times out at 10 m, shrink the AOI and say which
-   one you used — do not coarsen the scale back.** The scale is printed in
-   each CHECK 10 label.
+3. **CHECK 10 is a decision point, but not at this step.** In `'compute'` mode
+   it prints a **random-sample spot check** (10,000 px over a 10 km disc,
+   binned to 0.05). An exhaustive reduction here is ~1.2e12 kernel operations
+   and failed on two live runs — at 40 km and again at 10 km. Read the spot
+   check; if it is already clearly unimodal, stop and reconsider before
+   spending a STAGE A run.
 4. Run STAGE A (persistence assets) with `PERSISTENCE_MODE: 'compute'`.
-5. Switch to `PERSISTENCE_MODE: 'asset'`, then run the per-scene and
-   detection exports. `PERSISTENCE_ASSET_PREFIX` already points at
+5. Switch to `PERSISTENCE_MODE: 'asset'` and **read CHECK 10 again** — now
+   exhaustive over the full 40 km disc, cheap because the detector is no longer
+   being re-evaluated. **This is the histogram to base the threshold on.** Then
+   run the per-scene and detection exports. `PERSISTENCE_ASSET_PREFIX` already points at
    `projects/ee-lathavis/assets/`; change it if you export elsewhere. Both
    the write and the read path append `_<PARAM_SET_ID>`, so bumping
    `PARAM_SET_ID` for a sweep requires re-running STAGE A for that set.
@@ -141,6 +138,22 @@ The memory limit is the cost the previous change warned about. `CHECK10_RADIUS_M
 defaults to **10 km** so CHECK 10 fits; both labels print the radius used. Raise
 it once `PERSISTENCE_MODE` is `'asset'` and the detector is no longer re-evaluated
 per scene. **Shrink the region, never coarsen the scale.**
+
+## Why exporting before settling the threshold is safe
+
+The old instruction — read CHECK 10 *before* exporting — was circular: the full
+histogram is not affordable in `'compute'` mode. The circle breaks on a fact
+about the export, not the compute budget.
+
+**STAGE A writes both bands, `persist` AND `frac`.** `persistenceThreshold` is
+applied only inside `buildPersistence()`, so `frac` is the raw per-pixel
+detection frequency with the threshold nowhere in it. Choosing a different
+threshold is a **re-read of `frac`, not a re-export**. Only a change to the
+*detector* — `k`, `analysisScaleM`, `detectionPols` — invalidates the asset.
+
+So committing to STAGE A before the threshold is settled costs nothing that
+cannot be recovered, and it is the only point at which the evidence for the
+threshold becomes affordable.
 
 ## Still open, deliberately
 

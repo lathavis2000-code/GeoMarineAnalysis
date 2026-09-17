@@ -605,6 +605,28 @@ section('15. Study scripts LOAD, not just parse');
         check10.indexOf('geometry: CHECK10_AOI') !== -1 &&
         check10.indexOf('km disc') !== -1);
 
+      // An exhaustive reduction in 'compute' mode is ~1.2e12 kernel ops and
+      // failed on two live runs at 40 km and 10 km. compute samples; asset,
+      // where the detector is no longer re-evaluated, is exhaustive. Both must
+      // use the SAME 0.05 binning or the two modes are not comparable.
+      ok(rel + ': CHECK 10 samples in compute mode and is exhaustive in asset mode',
+        check10.indexOf('.sample({') !== -1 &&
+        check10.indexOf('ee.Reducer.histogram(20, 0.05)') !== -1 &&
+        check10.indexOf('CHECK10_SAMPLE_N') !== -1);
+      ok(rel + ': the sampled path bins to 0.05, matching the exhaustive reducer',
+        /multiply\(20\)\.floor\(\)\.divide\(20\)/.test(check10),
+        'aggregate_histogram over a continuous float is not a histogram');
+      ok(rel + ': each CHECK 10 label says which method produced it',
+        check10.indexOf('EXHAUSTIVE') !== -1 &&
+        check10.indexOf('RANDOM SAMPLE') !== -1 &&
+        check10.indexOf('SPOT CHECK') !== -1);
+
+      // The old run order told you to read the full histogram before exporting,
+      // which is not affordable. It is sound to export first only because frac
+      // is exported too, so the threshold is revisable without re-exporting.
+      ok(rel + ': the run order no longer promises a pre-export histogram',
+        src10.indexOf('Read CHECK 10 first - if the histogram is not bimodal') === -1);
+
       // A boolean mask pyramided with the default MEAN policy stops being a
       // mask at every zoom above native scale.
       var persistExport = assets.length ? assets[0].opts : {};
