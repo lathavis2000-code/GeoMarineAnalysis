@@ -145,7 +145,22 @@ var CONFIG = {
   //               This is the intended production path.
   PERSISTENCE_MODE: 'compute',
   EXPORT_PERSISTENCE_ASSETS: true,   // STAGE A; see section 13
-  PERSISTENCE_ASSET_PREFIX: 'projects/ee-lathavis/assets/sb02_persist_orbit_',
+  // VERIFY THIS ROOT BEFORE RUNNING STAGE A - it is the one pre-flight check
+  // no CHECK in this file can make. The export dialog validates the asset root
+  // only when you press RUN on the task, so a root that does not exist fails
+  // there and nowhere earlier: 'projects/ee-lathavis' was a guess and returned
+  // "Resource projects/ee-lathavis could not be found." Read the real one off
+  // the Code Editor's Assets tab (left panel) - it lists every root the account
+  // can write to, as CLOUD ASSETS (projects/<id>/assets/) and LEGACY ASSETS
+  // (users/<name>/). This account has stem-marine-engine and stem-earth-engine
+  // as cloud projects plus the legacy users/lathavis2000; the marine project is
+  // the one that matches this study.
+  // AND CHANGE IT HERE, NOT IN THE EXPORT DIALOG. The dialog sets where this
+  // one task writes. The READ path at PERSISTENCE_MODE 'asset' builds its id
+  // from this same string, so fixing only the dialog leaves STAGE A writing to
+  // one place and step 2 reading from another - the exact split PR #19 fixed,
+  // and it costs a whole STAGE A run to rediscover.
+  PERSISTENCE_ASSET_PREFIX: 'projects/stem-marine-engine/assets/sb02_persist_orbit_',
   RELATIVE_ORBITS: [142, 40, 62],
   // PROVISIONAL, from an exploratory query whose window and filters were not
   // recorded alongside it. A live run of the configuration in this file gave
