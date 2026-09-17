@@ -162,8 +162,28 @@ var CONFIG = {
   // per scene. The radius used is printed in the CHECK 10 label.
   CHECK10_RADIUS_M: 10000,
   // 'compute' mode samples rather than censuses - see the CHECK 10 block. 10k
-  // pixels is far more than bimodality needs and ~300x cheaper than the disc.
+  // pixels is far more than bimodality needs, and it bounds the OUTPUT.
   CHECK10_SAMPLE_N: 10000,
+  // WHAT SAMPLING DOES NOT DO, corrected. An earlier note here claimed the
+  // sampled path was "~300x cheaper than the disc". It is not: ee.Image.sample
+  // bounds how many pixels come BACK, not how many are computed - the image is
+  // still evaluated tile by tile across the whole region, so every pixel of it
+  // still pays for its 81x81 annulus on every scene of the orbit. That is why
+  // a 10 km sampled spot check still returned "User memory limit exceeded".
+  // The input has to be bounded on BOTH axes, so it is, explicitly:
+  //   region  - a small disc, independent of CHECK10_RADIUS_M (which is the
+  //             asset-mode region, where the detector is not re-evaluated);
+  //   scenes  - the first N acquisitions of the orbit, not all ~92.
+  // 2 km x 20 scenes is ~1.1e10 kernel operations against the ~1.2e12 of the
+  // exhaustive 10 km version. Neither lever touches analysisScaleM: coarsening
+  // the scale would measure a different detector (see the CHECK 10 block).
+  CHECK10_SPOT_RADIUS_M: 2000,
+  // The first N scenes by acquisition time, NOT a random draw - EE has no
+  // cheap deterministic subsample of an ImageCollection. For one relative
+  // orbit that is N consecutive 12-day repeats (20 -> ~8 months), which is
+  // ample to show whether a near-1.0 mode exists at all. It is not the
+  // orbit's persistence and the label says so.
+  CHECK10_MAX_SCENES: 20,
   // ---- v3: per-detection long table ---------------------------------------
   // The spec's primary output. One row per DETECTION, not per scene, carrying
   // its own range from the hydrophone - so all five radii are derived offline
@@ -178,6 +198,22 @@ var CONFIG = {
   LAND_WATER_CLASS: 80,
   LAND_BUFFER_M: 1000,                  // spec: 1000 m, was 300 m
   MASK_SCALE_M: 30,                     // scale at which water area is tallied
+
+  // HOW THE 1000 m LAND BUFFER IS GROWN. 'distance' (default) uses
+  // fastDistanceTransform; 'focal' uses the original focal_max. They select
+  // the SAME set of pixels - focal_max(r) is exactly "within r of land" - but
+  // focal_max sizes its kernel in PIXELS at the REQUEST scale, so at the 10 m
+  // analysis scale it is a radius-100 px disc, ~31,400 weights per output
+  // pixel, evaluated wherever WATER_MASK is read: the detector (every scene),
+  // CHECK 7, CHECK 10 and CHECK 10b. That made the land mask the single
+  // largest cost multiplier in the graph, and it is not where the science is.
+  // Keep 'focal' only to reproduce a pre-v3.1 run.
+  LAND_DILATE_METHOD: 'distance',       // 'distance' | 'focal'
+  // Search radius for the distance transform, in PIXELS of the request
+  // projection. It must exceed LAND_BUFFER_M at every scale WATER_MASK is read
+  // at, or an ocean pixel beyond the search radius reports a clamped distance:
+  // 256 px is 2560 m at 10 m and 7680 m at MASK_SCALE_M, both well past 1000 m.
+  LAND_DILATE_NEIGHBOURHOOD_PX: 256,
 
   // Extra hard-exclusion polygons for harbour structures, piers, breakwaters
   // and moored/rafted vessels, which an adaptive threshold will happily call
@@ -206,14 +242,25 @@ var CONFIG = {
   ERA5_COLLECTION: 'ECMWF/ERA5/HOURLY',
   ERA5_U_BAND: 'u_component_of_wind_10m',
   ERA5_V_BAND: 'v_component_of_wind_10m',
-  ERA5_MAX_DIFF_MILLIS: 3600000,  // +/- 1 h; saveBest keeps the NEAREST hour
+  ERA5_MAX_DIFF_MILLIS: 3600000,  // +/- 1 h; the NEAREST hour inside it wins
   ERA5_SCALE_M: 27830,            // ERA5 native ~0.25 deg
-  // Joining an hourly asset per scene is not awkward here: ee.Join.saveBest
-  // with an ee.Filter.maxDifference on system:time_start does it in one
-  // server-side pass, no getInfo, no client loop. ERA5 is hourly-instantaneous
-  // at the top of the hour while S1 acquires mid-hour, so what is emitted IS
-  // the NEAREST-HOUR value, never an interpolation. era5_dt_min records the
-  // signed-magnitude offset in minutes so you can audit that offline.
+  // WHY THIS IS NO LONGER AN ee.Join.saveBest, and it is a fix, not a taste.
+  // The join was applied to the WHOLE filtered ERA5 collection: ~37 months of
+  // hourly imagery is ~27,000 right-hand elements, matched against 184 scenes,
+  // and the result had to be materialised before anything downstream could be
+  // counted. On a live run CHECK 6 - which was only s1Joined.size() - returned
+  // "User memory limit exceeded". That collection feeds the per-scene table,
+  // the detection table AND buildPersistence, so the same cost sat under every
+  // export, not just the print that exposed it.
+  // The replacement is era5At(): per scene, filterDate a +/-1 h window (at most
+  // three hourly images), sort by |dt| and take the first. It is still one
+  // server-side pass with no getInfo and no client loop, it reads the same
+  // NEAREST value the join did, and it touches ~3 images per scene instead of
+  // 27,000 for the collection. It also honours ERA5_MAX_DIFF_MILLIS for any
+  // collection, not just an hourly one.
+  // era5_dt_min is now SIGNED (ERA5 hour minus acquisition time, minutes).
+  // saveBest's measureKey was an ABSOLUTE difference, so the old comment here
+  // promising a signed value was wrong about its own output.
   // If ECMWF/ERA5/HOURLY's ingested range ever stops short of 2021-12, rows
   // will carry era5_matched = 0; swap ERA5_COLLECTION rather than patching
   // around it.
@@ -446,11 +493,45 @@ var landRaw = ee.ImageCollection(CONFIG.LAND_SOURCE).select(CONFIG.LAND_BAND).mo
 var landHasData = landRaw.mask().gt(0);
 // land = mapped AND not the permanent-water class. Unmapped -> 0 -> water.
 var landBinary = landHasData.and(landRaw.neq(CONFIG.LAND_WATER_CLASS)).unmask(0);
-var landDilated = landBinary.focal_max({
-  radius: CONFIG.LAND_BUFFER_M,
-  kernelType: 'circle',
-  units: 'meters'
-});
+
+// GROWING THE 1000 m BUFFER - THE COST FIX, same set of pixels either way.
+// focal_max's kernel is sized in PIXELS at the REQUEST scale, so a 1000 m
+// circle at the 10 m analysis scale is radius 100 px, ~31,400 weights per
+// output pixel. WATER_MASK is read by the detector on every scene and by
+// CHECK 7, CHECK 10 and CHECK 10b, so that factor multiplied the whole graph:
+// the CHECK 10 histogram for the EMPTY orbit 142, whose frac image is a
+// constant, still had to evaluate it over 3.1e6 pixels of a 10 km disc.
+// fastDistanceTransform is a linear-time transform returning the SQUARED
+// distance in pixels to the nearest non-zero (land) pixel. "Within 1000 m of
+// land" is then one comparison, and it is EXACTLY what focal_max(1000 m)
+// selects - a dilation by a disc of radius r is the set at distance <= r.
+var landDilated;
+if (CONFIG.LAND_DILATE_METHOD === 'focal') {
+  landDilated = landBinary.focal_max({
+    radius: CONFIG.LAND_BUFFER_M,
+    kernelType: 'circle',
+    units: 'meters'
+  });
+} else {
+  // Squared distance in pixels -> distance in pixels -> metres. pixelArea() is
+  // the area of the pixel in the REQUEST projection, so its square root is the
+  // pixel side in metres at whatever scale the consumer asked for, which is
+  // the same projection the transform counted pixels in.
+  var landDistM = landBinary
+    .fastDistanceTransform({
+      neighborhood: CONFIG.LAND_DILATE_NEIGHBOURHOOD_PX,
+      units: 'pixels',
+      metric: 'squared_euclidean'
+    })
+    .sqrt()
+    .multiply(ee.Image.pixelArea().sqrt());
+  // Beyond the search radius the transform returns a CLAMPED distance. That is
+  // safe here only because the clamp (2560 m at 10 m, 7680 m at MASK_SCALE_M)
+  // is larger than LAND_BUFFER_M - see LAND_DILATE_NEIGHBOURHOOD_PX. If either
+  // the buffer grows or the neighbourhood shrinks, open ocean starts reporting
+  // a distance below the buffer and the mask eats the search area.
+  landDilated = landDistM.lte(CONFIG.LAND_BUFFER_M);
+}
 var WATER_MASK = landDilated.not().rename('water');   // 1 = searchable water
 
 // Per-radius searchable water area. Computed ONCE here, not inside the per-scene
@@ -803,14 +884,24 @@ function detectVessels(img, aoi, params) {
  * exactly this reason, and reusing a mask across parameter sets is a silent
  * error, not a caught one.
  * ------------------------------------------------------------------------- */
-function buildPersistence(relOrbit, params) {
-  // s1Joined, not s1: every consumer downstream (the per-scene table, the
-  // detection table, the CHECK 8 preview) maps over s1Joined, and CHECK 6
-  // asserts it has the same size as s1. Building the mask from the same
-  // collection the detections come from means a scene lost in the ERA5 join
-  // is lost from both, and CHECK 6 reports it, instead of the mask quietly
-  // covering a scene set the detections never saw.
-  var col = s1Joined.filter(ee.Filter.eq('relativeOrbitNumber_start', relOrbit));
+function buildPersistence(relOrbit, params, maxScenes) {
+  // s1Scenes, not s1: every consumer downstream (the per-scene table, the
+  // detection table, the CHECK 8 preview) maps over s1Scenes, so the mask is
+  // built from exactly the scene set the detections come from. Under the old
+  // ee.Join.saveBest those could differ - a scene that found no ERA5 match was
+  // dropped from the joined collection - and this line is what kept the mask
+  // and the detections in step. The join is gone (section 6), so s1Scenes IS
+  // s1 and they cannot diverge at all; the reference is kept rather than
+  // rewritten to s1 so that reinstating a filtering join cannot silently
+  // reintroduce the mismatch.
+  var col = s1Scenes.filter(ee.Filter.eq('relativeOrbitNumber_start', relOrbit));
+  // The CHECK 10 spot check bounds the scene count as well as the region -
+  // see CONFIG.CHECK10_MAX_SCENES. maxScenes is the FIRST n acquisitions, and
+  // n below is then that subset's size, so frac stays a true fraction of what
+  // was actually looked at. Omitted (STAGE A, the exports) means every scene.
+  if (maxScenes && maxScenes > 0) {
+    col = ee.ImageCollection(col.limit(maxScenes, 'system:time_start'));
+  }
   var n = ee.Number(col.size()).max(1);
 
   // An orbit with NO scenes in the configured window used to crash here:
@@ -845,7 +936,7 @@ function buildPersistence(relOrbit, params) {
 }
 
 // The PERSIST tables are built further down, immediately before section 8,
-// because buildPersistence() reads s1Joined and that collection does not
+// because buildPersistence() reads s1Scenes and that collection does not
 // exist yet at this point in the file. Do not move them back up here: this
 // block runs at module level, so it would read an undeclared variable and
 // the script would die before CHECK 1 prints.
@@ -943,26 +1034,34 @@ s1 = s1.sort('system:time_start');
 
 
 /* =============================================================================
- * 6. ERA5 WIND JOIN (nearest hour, one server-side pass)
+ * 6. ERA5 WIND LOOKUP (nearest hour, per scene, no collection-wide join)
  * ========================================================================== */
+/*
+ * WAS ee.Join.saveBest OVER THE WHOLE ERA5 COLLECTION, AND THAT IS WHAT BROKE
+ * CHECK 6. The join matched 184 scenes against ~27,000 hourly ERA5 images and
+ * had to materialise the result before the joined collection could even be
+ * counted; a live run returned "User memory limit exceeded" on
+ * `print(..., s1Joined.size())`, which is nothing but a count. The joined
+ * collection is also what the per-scene table, the detection table and
+ * buildPersistence() all map over, so the cost was under every export too.
+ *
+ * era5At() asks the same question per scene: filterDate a +/-ERA5_MAX_DIFF
+ * window, which for an hourly collection is at most three images, sort by
+ * |dt| and take the nearest. Same value as saveBest, same single server-side
+ * pass, no getInfo and no client-side loop over collection elements - just
+ * ~3 candidates per scene instead of 27,000 for the whole collection.
+ */
 
 var era5 = ee.ImageCollection(CONFIG.ERA5_COLLECTION)
   .filterDate(startDate.advance(-1, 'day'), endDate.advance(1, 'day'))
-  .filterBounds(SITE_POINT)
   .select([CONFIG.ERA5_U_BAND, CONFIG.ERA5_V_BAND], ['u10', 'v10']);
 
-var windFilter = ee.Filter.maxDifference({
-  difference: CONFIG.ERA5_MAX_DIFF_MILLIS,
-  leftField: 'system:time_start',
-  rightField: 'system:time_start'
-});
-
-var windJoin = ee.Join.saveBest({
-  matchKey: 'era5_img',
-  measureKey: 'era5_dt_millis'
-});
-
-var s1Joined = ee.ImageCollection(windJoin.apply(s1, era5, windFilter));
+// The scene collection every table and the persistence masks are built from.
+// It is now just s1: the wind is attached per scene by windDict() rather than
+// by a join, so there is no second collection that could silently hold a
+// different scene set. CHECK 6 therefore checks what actually matters - how
+// many scenes FOUND an ERA5 hour - instead of re-counting the same images.
+var s1Scenes = s1;
 
 // Fallback image used when a scene finds no ERA5 match. It is a VALID image, so
 // the arithmetic below never sees a null; the era5_matched flag (0) is what
@@ -970,22 +1069,41 @@ var s1Joined = ee.ImageCollection(windJoin.apply(s1, era5, windFilter));
 // "calm" without checking era5_matched.
 var ERA5_DUMMY = ee.Image.constant([0, 0]).rename(['u10', 'v10']).toFloat();
 
-function windDict(img) {
-  // Presence is tested on the property NAME LIST, not by leaning on
-  // ee.Algorithms.If's coercion of an object to "true". That coercion does work,
-  // but a list membership test is unambiguous and costs nothing.
-  var hasEra5 = ee.List(img.propertyNames()).contains('era5_img');
-  var m = img.get('era5_img');
+// Nearest ERA5 image to one scene, within +/-CONFIG.ERA5_MAX_DIFF_MILLIS.
+// Returns a CLIENT-side object holding server-side values, so the caller can
+// pull them out without an ee.Dictionary round trip.
+function era5At(img) {
+  var t = ee.Number(ee.Image(img).get('system:time_start'));
+  var tol = CONFIG.ERA5_MAX_DIFF_MILLIS;
+  // filterDate's end is exclusive, so +tol+1 keeps a match exactly at +tol.
+  var win = era5.filterDate(ee.Date(t.subtract(tol)), ee.Date(t.add(tol + 1)))
+    .map(function (e) {
+      e = ee.Image(e);
+      var dt = ee.Number(e.get('system:time_start')).subtract(t);
+      // dt is SIGNED (ERA5 hour minus acquisition). abs() is only the sort key
+      // - it never reaches the CSV, so the sign survives into era5_dt_min.
+      return e.set({ era5_dt_millis: dt, era5_abs_dt: dt.abs() });
+    })
+    .sort('era5_abs_dt');
+  var has = win.size().gt(0);
+  return {
+    matched: ee.Number(has),
+    // Arithmetic OUTSIDE the If, as below: pull a raw value first.
+    dtMillis: ee.Number(ee.Algorithms.If(has, win.first().get('era5_dt_millis'),
+                                         -60000)),
+    image: ee.Image(ee.Algorithms.If(has, win.first(), ERA5_DUMMY))
+  };
+}
 
-  var matched = ee.Number(ee.Algorithms.If(hasEra5, 1, 0));
+function windDict(img) {
+  var e = era5At(img);
+  var matched = e.matched;
   // Note the arithmetic is OUTSIDE the If. ee.Algorithms.If does not reliably
   // short-circuit, so a branch containing ee.Number(null).divide(...) can fail
   // the whole scene. Select a raw value first, then do the maths.
-  var dtMillis = ee.Number(
-    ee.Algorithms.If(hasEra5, img.get('era5_dt_millis'), -60000));
-  var dtMin = dtMillis.divide(60000);
+  var dtMin = e.dtMillis.divide(60000);
 
-  var w = ee.Image(ee.Algorithms.If(hasEra5, m, ERA5_DUMMY));
+  var w = e.image;
   var u = w.select('u10');
   var v = w.select('v10');
   var spd = u.hypot(v).rename('wind_speed_ms');
@@ -1147,8 +1265,8 @@ function indexOfRadius(r) {
  * ========================================================================== */
 
 // Built HERE, not beside buildPersistence(): this runs at module level and
-// buildPersistence() reads s1Joined, which is not assigned until the ERA5
-// join above. Sitting next to the function it calls, it ran ~115 lines too
+// buildPersistence() reads s1Scenes, which is not assigned until the ERA5
+// section above. Sitting next to the function it calls, it ran ~115 lines too
 // early and the script threw before any CHECK could print. Everything that
 // consumes PERSIST (CHECK 9, the preview, STAGE A) comes after this point.
 // One mask per relative orbit, built ONCE here rather than inside the per-scene
@@ -1179,9 +1297,9 @@ var PERSIST_FRAC = {};
   }
 })();
 
-var exportSource = s1Joined;
+var exportSource = s1Scenes;
 if (CONFIG.TEST_LIMIT > 0) {
-  exportSource = s1Joined.limit(CONFIG.TEST_LIMIT);
+  exportSource = s1Scenes.limit(CONFIG.TEST_LIMIT);
   print('*** TEST_LIMIT ACTIVE: exporting only the first ' + CONFIG.TEST_LIMIT +
         ' scenes. This is a smoke test, NOT the study table. ***');
 }
@@ -1305,8 +1423,18 @@ print('CHECK 4 - by platform, from the scene id prefix (S1A / S1B split):',
 print('CHECK 5a - scenes before the dual-pol filter:', s1Base.size());
 print('CHECK 5b - scenes after the dual-pol filter (5a and 5b must agree; ' +
       'if they differ, some scene in the window is single-pol):', s1.size());
-print('CHECK 6 - scenes surviving the ERA5 join (should equal CHECK 1):',
-      s1Joined.size());
+// CHECK 6 USED TO BE s1Joined.size() - the size of the saveBest join - and on
+// a live run that print itself returned "User memory limit exceeded" (see
+// section 6). There is no join now, so re-counting the collection would be a
+// tautology. The question the check was FOR still stands, so it is asked
+// directly: how many scenes found an ERA5 hour inside ERA5_MAX_DIFF_MILLIS.
+// Anything below CHECK 1 means those rows carry era5_matched = 0 and their
+// wind columns are zeros, NOT calm.
+print('CHECK 6 - scenes with an ERA5 hour within +/-' +
+      (CONFIG.ERA5_MAX_DIFF_MILLIS / 60000) + ' min (should equal CHECK 1):',
+      s1Scenes.map(function (im) {
+        return ee.Image(im).set('era5_ok', era5At(im).matched);
+      }).aggregate_sum('era5_ok'));
 
 if (CONFIG.INCLUDE_WATER_AREA) {
   print('CHECK 7 - searchable water area per radius, m2 ' +
@@ -1349,7 +1477,7 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
   print('CHECK 8 - first scene, preview row at radii ' +
         CONFIG.PREVIEW_RADII_M.join(', ') + ' m ' +
         '(the exported rows carry all ' + CONFIG.RADII_M.length + ' radii):',
-        makeSceneFeature(ee.Image(s1Joined.first()),
+        makeSceneFeature(ee.Image(s1Scenes.first()),
                          CONFIG.PREVIEW_RADII_M, previewTags,
                          previewAois, previewDiscs));
 }
@@ -1372,26 +1500,46 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
  * to find. In 'asset' mode a coarse read is worse still: it serves a pyramid
  * level, and block-averaging frac is precisely what destroys bimodality.
  *
- * COST, MEASURED ON TWO LIVE RUNS. In 'compute' mode an exhaustive reduction is
- * not affordable at any useful region size. The detector runs per scene, and
+ * COST, MEASURED ON THREE LIVE RUNS. In 'compute' mode an exhaustive reduction
+ * is not affordable at any useful region size. The detector runs per scene, and
  * every pixel needs an 81x81 annulus (4,316 weights):
  *
  *     10 km disc : 3.1e6 px x 92 scenes x 4,316 = 1.2e12 kernel ops
  *      2 km disc : 1.3e5 px x 92 scenes x 4,316 = 5.0e10
  *
- * Both runs returned "User memory limit exceeded" - the 40 km disc first, then
- * the 10 km disc. Shrinking the region further is treating a symptom.
+ * The 40 km disc failed first, then the 10 km disc, both with "User memory
+ * limit exceeded".
+ *
+ * THE THIRD RUN IS THE ONE THAT MATTERS, because it falsified the fix. Sampling
+ * 10,000 px over the 10 km disc failed the SAME way, on all three orbits -
+ * including orbit 142, which CHECK 3b reports as EMPTY and whose frac image is
+ * therefore a constant. A constant image cannot cost 1.2e12 operations, so the
+ * cost was never only the detector. Two things were wrong:
+ *
+ *   1. sample() bounds the OUTPUT, not the input. The claim that it was "~300x
+ *      cheaper" was wrong: numPixels caps how many pixels come back, while the
+ *      image is still evaluated tile by tile across the whole region. Every
+ *      pixel still paid for its annulus on every scene.
+ *   2. WATER_MASK, which both checks apply, was a focal_max with a 1000 m
+ *      circle kernel - radius 100 px at the 10 m analysis scale, ~31,400
+ *      weights per pixel - on top of everything else. That is what made the
+ *      EMPTY orbit expensive, and it is fixed in the LAND MASKING section:
+ *      fastDistanceTransform selects the identical set of pixels.
  *
  * So the two modes ask the question differently, and say which they used:
  *
- *   'compute' - a RANDOM SAMPLE of CHECK10_SAMPLE_N pixels, binned to 0.05.
- *      ~300x cheaper, and bimodality is a question about a distribution's
- *      SHAPE, which a sample answers honestly. It is a spot check before
- *      committing to STAGE A, not the study-area histogram, and the label says
- *      so. It can still fail; that is not a reason to coarsen the scale.
- *   'asset'   - exhaustive over the FULL disc. Once STAGE A has written the
- *      asset the detector is no longer being re-evaluated, so this is an
- *      ordinary raster read: cheap, exact, and the one to base a decision on.
+ *   'compute' - a RANDOM SAMPLE of CHECK10_SAMPLE_N pixels, binned to 0.05,
+ *      over CHECK10_SPOT_RADIUS_M and the FIRST CHECK10_MAX_SCENES scenes of
+ *      the orbit. Bimodality is a question about a distribution's SHAPE, which
+ *      a sample answers honestly, but the sample only helps if the INPUT is
+ *      bounded too - hence the second cap. It is a spot check before committing
+ *      to STAGE A, not the study-area histogram, and the label says so. Neither
+ *      lever is analysisScaleM; coarsening that measures a different detector.
+ *      CHECK 10b has no honest cheap form here and is skipped - see its note.
+ *   'asset'   - exhaustive over the FULL disc, with CHECK 10b alongside it.
+ *      Once STAGE A has written the asset the detector is no longer being
+ *      re-evaluated, so this is an ordinary raster read: cheap, exact, and the
+ *      one to base a decision on.
  *
  * WHY THAT ORDERING IS SOUND, and why the old "read CHECK 10 before exporting"
  * instruction was circular: STAGE A exports BOTH bands, persist AND frac.
@@ -1404,15 +1552,17 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
  */
 if (CONFIG.PERSISTENCE_MODE !== 'off') {
   var CHECK10_AOI = SITE_POINT.buffer(CONFIG.CHECK10_RADIUS_M);
+  var CHECK10_SPOT_AOI = SITE_POINT.buffer(CONFIG.CHECK10_SPOT_RADIUS_M);
   var c10km = (CONFIG.CHECK10_RADIUS_M / 1000).toFixed(1);
+  var cSpotKm = (CONFIG.CHECK10_SPOT_RADIUS_M / 1000).toFixed(1);
   var fromAsset = (CONFIG.PERSISTENCE_MODE === 'asset');
+  var emptyNote = ' An orbit listed in CHECK 3b is EMPTY - its histogram is ' +
+                  'all zeros and says nothing about persistence.';
   for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
     var roD = CONFIG.RELATIVE_ORBITS[i];
-    var fracD = PERSIST_FRAC[roD].updateMask(WATER_MASK);
-    var emptyNote = ' An orbit listed in CHECK 3b is EMPTY - its histogram is ' +
-                    'all zeros and says nothing about persistence.';
 
     if (fromAsset) {
+      var fracD = PERSIST_FRAC[roD].updateMask(WATER_MASK);
       print('CHECK 10 - persistence fraction histogram, orbit ' + roD + ' at ' +
             PARAMS.analysisScaleM + ' m, EXHAUSTIVE over the full ' +
             (MAX_RADIUS_M / 1000).toFixed(1) + ' km disc (want BIMODAL; a spike ' +
@@ -1424,36 +1574,62 @@ if (CONFIG.PERSISTENCE_MODE !== 'off') {
           maxPixels: PARAMS.maxPixels,
           tileScale: PARAMS.tileScale
         }));
+
+      print('CHECK 10b - water area masked as persistent, orbit ' + roD + ' at ' +
+            PARAMS.analysisScaleM + ' m over a ' + c10km + ' km disc (m2)',
+        ee.Image.pixelArea().updateMask(PERSIST[roD]).updateMask(WATER_MASK)
+          .reduceRegion({
+            reducer: ee.Reducer.sum(),
+            geometry: CHECK10_AOI,
+            scale: PARAMS.analysisScaleM,
+            maxPixels: PARAMS.maxPixels,
+            tileScale: PARAMS.tileScale
+          }));
     } else {
+      // BOUNDED ON BOTH AXES - region AND scene count. The previous version
+      // sampled 10k pixels over a 10 km disc and still failed with "User
+      // memory limit exceeded", because sample() bounds the OUTPUT while the
+      // image is still evaluated tile by tile across the whole region. So the
+      // spot check gets its own small disc and its own scene cap, and a
+      // persistence image built from that capped subset. Reaching for the
+      // all-scenes frac image here would drag that whole graph back in and
+      // silently undo the cap, so this branch does not name it at all - and
+      // CI asserts the branch stays clear of it.
+      var spotFrac = buildPersistence(roD, PARAMS, CONFIG.CHECK10_MAX_SCENES)
+                       .select('frac').updateMask(WATER_MASK);
       // Bin on the IMAGE before sampling: aggregate_histogram over a continuous
       // float would return one bucket per distinct value, which is not a
       // histogram. 0.05 bins match the exhaustive reducer above, so the two
       // modes are directly comparable.
       print('CHECK 10 - persistence fraction histogram, orbit ' + roD + ' at ' +
             PARAMS.analysisScaleM + ' m, RANDOM SAMPLE of ' +
-            CONFIG.CHECK10_SAMPLE_N + ' px over a ' + c10km + ' km disc - a ' +
-            'SPOT CHECK, not the study-area histogram (want BIMODAL; a spike ' +
+            CONFIG.CHECK10_SAMPLE_N + ' px over a ' + cSpotKm + ' km disc, from ' +
+            'the FIRST ' + CONFIG.CHECK10_MAX_SCENES + ' scenes of the orbit - ' +
+            'a SPOT CHECK, not the study-area histogram (want BIMODAL; a spike ' +
             'near 1.0 is fixed objects).' + emptyNote,
-        fracD.multiply(20).floor().divide(20).rename('frac_bin').sample({
-          region: CHECK10_AOI,
+        spotFrac.multiply(20).floor().divide(20).rename('frac_bin').sample({
+          region: CHECK10_SPOT_AOI,
           scale: PARAMS.analysisScaleM,
           numPixels: CONFIG.CHECK10_SAMPLE_N,
           seed: 42,
           dropNulls: true,
           tileScale: PARAMS.tileScale
         }).aggregate_histogram('frac_bin'));
-    }
 
-    print('CHECK 10b - water area masked as persistent, orbit ' + roD + ' at ' +
-          PARAMS.analysisScaleM + ' m over a ' + c10km + ' km disc (m2)',
-      ee.Image.pixelArea().updateMask(PERSIST[roD]).updateMask(WATER_MASK)
-        .reduceRegion({
-          reducer: ee.Reducer.sum(),
-          geometry: CHECK10_AOI,
-          scale: PARAMS.analysisScaleM,
-          maxPixels: PARAMS.maxPixels,
-          tileScale: PARAMS.tileScale
-        }));
+      // CHECK 10b IS SKIPPED IN 'compute' MODE, and skipping it is the honest
+      // option rather than the cheap one. The masked AREA is a property of the
+      // mask the export will actually apply, which is built from ALL the
+      // orbit's scenes; measuring it off the capped subset would put a number
+      // on screen that no export ever uses, and measuring it off the full mask
+      // is the reduction that returned "Earth Engine memory capacity exceeded"
+      // on a live run. It costs nothing to wait: in 'asset' mode it is an
+      // ordinary raster read, and STAGE A does not depend on it.
+      print('CHECK 10b - SKIPPED for orbit ' + roD + '. PERSISTENCE_MODE is ' +
+            '"compute", so the masked-area reduction would re-evaluate the ' +
+            'detector over every scene in the orbit - that is the reduction ' +
+            'that exceeded the memory limit. Run STAGE A, switch ' +
+            'PERSISTENCE_MODE to "asset", and CHECK 10b becomes a raster read.');
+    }
   }
 }
 
@@ -1487,7 +1663,7 @@ if (CONFIG.SHOW_MAP) {
   }
   Map.addLayer(SITE_POINT, {color: 'ff00ff'}, 'SB02 hydrophone', true);
 
-  var previewImg = ee.Image(s1Joined.first());
+  var previewImg = ee.Image(s1Scenes.first());
   Map.addLayer(previewImg.select('VV'), {min: -25, max: 0}, 'first scene VV', false);
   Map.addLayer(buildDetectionImage(previewImg, PARAMS).select('target'),
     {palette: ['ff8800']}, 'first scene detections', false);
@@ -1525,9 +1701,12 @@ Export.table.toDrive({
  *   3. Run the per-scene and detection exports.
  *
  * STEP 1 USED TO SAY "read CHECK 10 first" AS THOUGH THE FULL HISTOGRAM WERE
- * AVAILABLE THERE. It is not, and that instruction was circular. Two live runs
- * returned "User memory limit exceeded" - at 40 km and then at 10 km - because
- * an exhaustive reduction in 'compute' mode is ~1.2e12 kernel operations.
+ * AVAILABLE THERE. It is not, and that instruction was circular. Live runs
+ * returned "User memory limit exceeded" at 40 km, then at 10 km, and then
+ * again at 10 km with sampling switched on - because an exhaustive reduction
+ * in 'compute' mode is ~1.2e12 kernel operations and sampling bounds the
+ * output rather than the input. The spot check in step 1 now caps the region
+ * AND the scene count; see the CHECK 10 block.
  *
  * The circle breaks on a fact about the export rather than about the compute
  * budget: STAGE A writes BOTH bands, persist AND frac. persistenceThreshold is
@@ -1577,7 +1756,7 @@ if (CONFIG.PERSISTENCE_MODE === 'compute' && CONFIG.EXPORT_PERSISTENCE_ASSETS) {
  * range_m - and azimuth-ambiguity flagging (which needs pairwise geometry
  * between detections) becomes possible at all. */
 if (CONFIG.EXPORT_DETECTIONS) {
-  var detFeatures = ee.FeatureCollection(s1Joined.map(function (img) {
+  var detFeatures = ee.FeatureCollection(s1Scenes.map(function (img) {
     img = ee.Image(img);
     var sid = ee.String(img.get('system:index'));
     var tms = ee.Number(img.get('system:time_start'));

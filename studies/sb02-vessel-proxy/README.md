@@ -47,9 +47,16 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
    does not contain. Settle the window you want, re-measure, and update
    `EXPECTED_*` together with the query that produced it.
 3. **CHECK 10 is a decision point, but not at this step.** In `'compute'` mode
-   it prints a **random-sample spot check** (10,000 px over a 10 km disc,
-   binned to 0.05). An exhaustive reduction here is ~1.2e12 kernel operations
-   and failed on two live runs — at 40 km and again at 10 km. Read the spot
+   it prints a **random-sample spot check** — 10,000 px, binned to 0.05, over
+   `CHECK10_SPOT_RADIUS_M` (2 km) and the first `CHECK10_MAX_SCENES` (20)
+   acquisitions of the orbit. An exhaustive reduction here is ~1.2e12 kernel
+   operations and failed at 40 km and again at 10 km; **sampling alone did not
+   fix it**, because `sample()` bounds how many pixels come *back*, not how
+   many are computed. The input is now bounded on both axes — region *and*
+   scene count. Neither lever is `analysisScaleM`: coarsening that measures a
+   different detector. **CHECK 10b is skipped in `'compute'` mode** — the
+   masked area is a property of the mask the export actually applies, and
+   there is no cheap honest form of it until STAGE A has run. Read the spot
    check; if it is already clearly unimodal, stop and reconsider before
    spending a STAGE A run.
 4. Run STAGE A (persistence assets) with `PERSISTENCE_MODE: 'compute'`.
@@ -99,7 +106,7 @@ absent 4.5–6.5 km spike is documented as meaning ambiguities are not a materia
 contaminant. The old self-test could not catch it — it sited its synthetic ghosts
 with the same function it then tested, so a wrong axis moved the ghost too.
 
-Run `node tests/ci.js` (114 checks) and `python3 flag_ambiguities.py` before
+Run `node tests/ci.js` (131 checks) and `python3 flag_ambiguities.py` before
 pasting anything into the Code Editor. Section 15 *executes* every script under
 `studies/` against the Earth Engine stub; section 16 tests the ES5 gate itself.
 Neither can catch a type error like (4) — the stub cannot tell `ee.Image` from
@@ -127,6 +134,9 @@ catches an undefined identifier and a use-before-assignment alike. Run
 | CHECK 3 | **2** of the 3 configured relative orbits present — one contributes zero scenes |
 | CHECK 10, orbit 142 | `Image.divide: ... Got 0 and 1` — the empty-orbit crash, now fixed |
 | CHECK 10, orbits 40 / 62 | `User memory limit exceeded` at 10 m over the 40 km disc |
+| CHECK 6 | `User memory limit exceeded` — on `s1Joined.size()`, which is only a count |
+| CHECK 10, **sampled**, all three orbits | `User memory limit exceeded` again at 10 km, **including the empty orbit 142** |
+| CHECK 10b | `Earth Engine memory capacity exceeded` |
 
 The empty-orbit crash was real: `ee.ImageCollection([]).sum()` has zero bands, so
 dividing it by the scene count threw, and the first empty orbit killed the whole
@@ -134,10 +144,45 @@ diagnostic. An empty orbit now produces an all-zero mask — the correct reading
 no evidence — and **CHECK 3b names it**, so a zero is never read as "nothing is
 persistent here" when it means "nothing was looked at".
 
-The memory limit is the cost the previous change warned about. `CHECK10_RADIUS_M`
-defaults to **10 km** so CHECK 10 fits; both labels print the radius used. Raise
-it once `PERSISTENCE_MODE` is `'asset'` and the detector is no longer re-evaluated
-per scene. **Shrink the region, never coarsen the scale.**
+The memory limit is the cost the previous change warned about. **Shrink the
+region, never coarsen the scale** still holds — but the run above shows that
+shrinking the region was not sufficient, and points at what else was wrong.
+
+**Orbit 142 is the diagnostic.** CHECK 3b reports it as empty, so its `frac`
+image is a *constant* — it cannot cost 1.2e12 kernel operations, and yet its
+sampled histogram failed identically to the other two. So the detector was
+never the only cost. Two things were:
+
+1. **`sample()` bounds the output, not the input.** `numPixels` caps how many
+   pixels come back; the image is still evaluated tile by tile across the whole
+   region, so every pixel still paid for its 81×81 annulus on every scene. The
+   claim that sampling was "~300× cheaper" was wrong. The spot check now caps
+   the **scene count** (`CHECK10_MAX_SCENES`) as well as the region
+   (`CHECK10_SPOT_RADIUS_M`), which is what actually bounds the input.
+2. **The land mask was a 1000 m `focal_max`.** That kernel is sized in *pixels
+   at the request scale*: radius 100 px, ~31,400 weights per output pixel, at
+   the 10 m analysis scale — and `WATER_MASK` is read by the detector on every
+   scene and by CHECK 7, CHECK 10 and CHECK 10b. It is what made the *empty*
+   orbit expensive. `LAND_DILATE_METHOD: 'distance'` now grows the buffer with
+   `fastDistanceTransform`, which selects **the identical set of pixels** — a
+   dilation by a disc of radius *r* is exactly the set within distance *r* —
+   in linear time. `'focal'` reproduces the old path.
+
+**CHECK 6 was not a cost to tune; it was a join to remove.** It printed
+`s1Joined.size()` over an `ee.Join.saveBest` matching 184 scenes against
+~27,000 hourly ERA5 images, and the join had to be materialised before the
+result could be counted. That collection also fed the per-scene table, the
+detection table and `buildPersistence()`, so the cost sat under every export,
+not just the print that exposed it. `era5At()` now looks the nearest hour up
+per scene — `filterDate` a ±1 h window (≈3 candidates), sort by |Δt|, take the
+first. Same value, same single server-side pass, ~3 images per scene instead of
+27,000 for the collection. `era5_dt_min` is now genuinely **signed** (ERA5 hour
+minus acquisition); `saveBest`'s `measureKey` was an absolute difference, so the
+old comment promising a signed value was wrong about its own output. CHECK 6
+now counts scenes that *found* an ERA5 hour, which is the question it was for.
+
+`CHECK10_RADIUS_M` (10 km) remains the **asset-mode** region for CHECK 10b;
+every label prints the radius it used.
 
 ## Why exporting before settling the threshold is safe
 
