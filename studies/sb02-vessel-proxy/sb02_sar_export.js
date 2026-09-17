@@ -161,6 +161,9 @@ var CONFIG = {
   // PERSISTENCE_MODE is 'asset' and the detector is no longer being re-evaluated
   // per scene. The radius used is printed in the CHECK 10 label.
   CHECK10_RADIUS_M: 10000,
+  // 'compute' mode samples rather than censuses - see the CHECK 10 block. 10k
+  // pixels is far more than bimodality needs and ~300x cheaper than the disc.
+  CHECK10_SAMPLE_N: 10000,
   // ---- v3: per-detection long table ---------------------------------------
   // The spec's primary output. One row per DETECTION, not per scene, carrying
   // its own range from the hydrophone - so all five radii are derived offline
@@ -1359,56 +1362,90 @@ if (CONFIG.PRINT_FIRST_FEATURE && CONFIG.PERSISTENCE_MODE !== 'compute') {
  * arbitrary - raise it, or set PERSISTENCE_MODE to 'off' and mask known fixed
  * objects by hand. SB02 sits IN a shipping lane, so the failure mode that
  * matters is masking a tightly-channelled traffic pixel as if it were a buoy. */
-/* SCALE. Both reductions below run at PARAMS.analysisScaleM, NOT at
- * CONFIG.MASK_SCALE_M. They used to use MASK_SCALE_M (30 m) while the mask is
- * applied at analysisScaleM (10 m), which made this diagnostic measure a
- * different computation from the one it gates. Two separate corruptions:
+/* CHECK 10 - THE PERSISTENCE DIAGNOSTIC, AND WHEN IT IS AFFORDABLE.
  *
- *   'compute' mode - annulusKernel() is a FIXED kernel, sized in PIXELS, with
- *     no .reproject(). Its cells are compute-grid pixels, so at a 30 m request
- *     the 400/150 m annulus becomes ~1200/450 m and minTargetPixels = 3 becomes
- *     2,700 m2 instead of 300 m2. That detector finds far fewer small fixed
- *     objects, which suppresses the near-1.0 mode - exactly the mode the
- *     bimodality test looks for. A unimodal-looking histogram would then argue
- *     for raising the threshold or disabling persistence, on evidence produced
- *     by a detector that is not the one running.
- *   'asset' mode - the asset is written at 10 m, so a 30 m read serves a
- *     pyramid level. frac is block-averaged (an isolated persistent pixel
- *     reports 0.11, not 1.0) and PERSIST, being boolean, is worse still.
- *     Block-averaging is precisely what destroys bimodality.
+ * Both reductions run at PARAMS.analysisScaleM, the scale the mask is applied
+ * at. Reducing at MASK_SCALE_M (30 m) measured a different detector entirely -
+ * annulusKernel() is a FIXED kernel sized in PIXELS with no .reproject(), so a
+ * 30 m request inflates the 400/150 m annulus to ~1200/450 m and the 300 m2
+ * minimum target to ~2,700 m2, suppressing the near-1.0 mode this check exists
+ * to find. In 'asset' mode a coarse read is worse still: it serves a pyramid
+ * level, and block-averaging frac is precisely what destroys bimodality.
  *
- * COST, stated plainly: 10 m is 9x the pixels of 30 m, and in 'compute' mode
- * this evaluates the detector over every scene of the orbit. If it times out,
- * SHRINK THE REGION - drop to a smaller AOI and say which one you used. Do NOT
- * coarsen the scale back: a histogram over half the disc at the right scale
- * answers the question; a histogram over the whole disc at the wrong scale does
- * not. The scale is printed in each label so the reader can tell which they got.
+ * COST, MEASURED ON TWO LIVE RUNS. In 'compute' mode an exhaustive reduction is
+ * not affordable at any useful region size. The detector runs per scene, and
+ * every pixel needs an 81x81 annulus (4,316 weights):
+ *
+ *     10 km disc : 3.1e6 px x 92 scenes x 4,316 = 1.2e12 kernel ops
+ *      2 km disc : 1.3e5 px x 92 scenes x 4,316 = 5.0e10
+ *
+ * Both runs returned "User memory limit exceeded" - the 40 km disc first, then
+ * the 10 km disc. Shrinking the region further is treating a symptom.
+ *
+ * So the two modes ask the question differently, and say which they used:
+ *
+ *   'compute' - a RANDOM SAMPLE of CHECK10_SAMPLE_N pixels, binned to 0.05.
+ *      ~300x cheaper, and bimodality is a question about a distribution's
+ *      SHAPE, which a sample answers honestly. It is a spot check before
+ *      committing to STAGE A, not the study-area histogram, and the label says
+ *      so. It can still fail; that is not a reason to coarsen the scale.
+ *   'asset'   - exhaustive over the FULL disc. Once STAGE A has written the
+ *      asset the detector is no longer being re-evaluated, so this is an
+ *      ordinary raster read: cheap, exact, and the one to base a decision on.
+ *
+ * WHY THAT ORDERING IS SOUND, and why the old "read CHECK 10 before exporting"
+ * instruction was circular: STAGE A exports BOTH bands, persist AND frac.
+ * persistenceThreshold is applied only inside buildPersistence(), so frac is
+ * the raw per-pixel detection frequency, untouched by the threshold. Choosing a
+ * different threshold is therefore a re-read of frac, NOT a re-export. Only a
+ * change to the DETECTOR - k, the scale, the polarisation - invalidates the
+ * asset. The threshold decision can safely be made after STAGE A, which is the
+ * only point at which the evidence for it is affordable.
  */
 if (CONFIG.PERSISTENCE_MODE !== 'off') {
-  // REGION, not scale. A live run at 10 m over the full 40 km disc in 'compute'
-  // mode returned "User memory limit exceeded" for every orbit that had scenes.
-  // The remedy is the one written above: shrink the region and SAY WHICH, never
-  // coarsen the scale. CHECK10_AOI is that smaller region and both labels print
-  // its radius, so a histogram read off a 10 km disc is never mistaken for one
-  // over the whole study area.
   var CHECK10_AOI = SITE_POINT.buffer(CONFIG.CHECK10_RADIUS_M);
   var c10km = (CONFIG.CHECK10_RADIUS_M / 1000).toFixed(1);
+  var fromAsset = (CONFIG.PERSISTENCE_MODE === 'asset');
   for (i = 0; i < CONFIG.RELATIVE_ORBITS.length; i++) {
     var roD = CONFIG.RELATIVE_ORBITS[i];
-    print('CHECK 10 - persistence fraction histogram, orbit ' + roD +
-          ' at ' + PARAMS.analysisScaleM + ' m over a ' + c10km +
-          ' km disc (want BIMODAL; a spike near 1.0 is fixed objects). ' +
-          'An orbit listed in CHECK 3b is EMPTY - its histogram is all zeros ' +
-          'and says nothing about persistence.',
-      PERSIST_FRAC[roD].updateMask(WATER_MASK).reduceRegion({
-        reducer: ee.Reducer.histogram(20, 0.05),
-        geometry: CHECK10_AOI,
-        scale: PARAMS.analysisScaleM,
-        maxPixels: PARAMS.maxPixels,
-        tileScale: PARAMS.tileScale
-      }));
-    print('CHECK 10b - water area masked as persistent, orbit ' + roD +
-          ' at ' + PARAMS.analysisScaleM + ' m over a ' + c10km + ' km disc (m2)',
+    var fracD = PERSIST_FRAC[roD].updateMask(WATER_MASK);
+    var emptyNote = ' An orbit listed in CHECK 3b is EMPTY - its histogram is ' +
+                    'all zeros and says nothing about persistence.';
+
+    if (fromAsset) {
+      print('CHECK 10 - persistence fraction histogram, orbit ' + roD + ' at ' +
+            PARAMS.analysisScaleM + ' m, EXHAUSTIVE over the full ' +
+            (MAX_RADIUS_M / 1000).toFixed(1) + ' km disc (want BIMODAL; a spike ' +
+            'near 1.0 is fixed objects).' + emptyNote,
+        fracD.reduceRegion({
+          reducer: ee.Reducer.histogram(20, 0.05),
+          geometry: AOIS[AOIS.length - 1],
+          scale: PARAMS.analysisScaleM,
+          maxPixels: PARAMS.maxPixels,
+          tileScale: PARAMS.tileScale
+        }));
+    } else {
+      // Bin on the IMAGE before sampling: aggregate_histogram over a continuous
+      // float would return one bucket per distinct value, which is not a
+      // histogram. 0.05 bins match the exhaustive reducer above, so the two
+      // modes are directly comparable.
+      print('CHECK 10 - persistence fraction histogram, orbit ' + roD + ' at ' +
+            PARAMS.analysisScaleM + ' m, RANDOM SAMPLE of ' +
+            CONFIG.CHECK10_SAMPLE_N + ' px over a ' + c10km + ' km disc - a ' +
+            'SPOT CHECK, not the study-area histogram (want BIMODAL; a spike ' +
+            'near 1.0 is fixed objects).' + emptyNote,
+        fracD.multiply(20).floor().divide(20).rename('frac_bin').sample({
+          region: CHECK10_AOI,
+          scale: PARAMS.analysisScaleM,
+          numPixels: CONFIG.CHECK10_SAMPLE_N,
+          seed: 42,
+          dropNulls: true,
+          tileScale: PARAMS.tileScale
+        }).aggregate_histogram('frac_bin'));
+    }
+
+    print('CHECK 10b - water area masked as persistent, orbit ' + roD + ' at ' +
+          PARAMS.analysisScaleM + ' m over a ' + c10km + ' km disc (m2)',
       ee.Image.pixelArea().updateMask(PERSIST[roD]).updateMask(WATER_MASK)
         .reduceRegion({
           reducer: ee.Reducer.sum(),
@@ -1479,12 +1516,30 @@ Export.table.toDrive({
  *
  * RUN ORDER, and it is not optional:
  *
- *   1. Set PERSISTENCE_MODE = 'compute' and run ONLY the STAGE A exports.
- *      Read CHECK 10 first - if the histogram is not bimodal, stop and
- *      reconsider the threshold rather than exporting a mask you cannot defend.
+ *   1. Set PERSISTENCE_MODE = 'compute'. Read CHECK 10's SAMPLED spot check. If
+ *      it already looks clearly unimodal, stop and reconsider before spending a
+ *      STAGE A run. Run ONLY the STAGE A exports.
  *   2. Point PERSISTENCE_ASSET_PREFIX at the written assets and set
- *      PERSISTENCE_MODE = 'asset'.
+ *      PERSISTENCE_MODE = 'asset'. Read CHECK 10 again - now EXHAUSTIVE over
+ *      the full disc, and this is the histogram to base the threshold on.
  *   3. Run the per-scene and detection exports.
+ *
+ * STEP 1 USED TO SAY "read CHECK 10 first" AS THOUGH THE FULL HISTOGRAM WERE
+ * AVAILABLE THERE. It is not, and that instruction was circular. Two live runs
+ * returned "User memory limit exceeded" - at 40 km and then at 10 km - because
+ * an exhaustive reduction in 'compute' mode is ~1.2e12 kernel operations.
+ *
+ * The circle breaks on a fact about the export rather than about the compute
+ * budget: STAGE A writes BOTH bands, persist AND frac. persistenceThreshold is
+ * applied only inside buildPersistence(), so frac is the raw per-pixel
+ * detection frequency with the threshold nowhere in it. Choosing a different
+ * threshold is a RE-READ of frac, not a re-export. Only a change to the
+ * DETECTOR - k, analysisScaleM, detectionPols - invalidates the asset.
+ *
+ * So committing to STAGE A before the threshold is settled costs nothing that
+ * cannot be recovered, and it is the only point at which the evidence for the
+ * threshold becomes affordable. The sampled spot check in step 1 exists so the
+ * step is not taken blind.
  *
  * Doing step 3 with PERSISTENCE_MODE = 'compute' is legal and produces the
  * same numbers, but it re-evaluates the detector over every scene of every
