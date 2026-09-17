@@ -527,7 +527,9 @@ section('15. Study scripts LOAD, not just parse');
     var rel = path.relative(ROOT, file);
     var sandbox = { console: { log: function () {}, error: function () {} } };
     vm.createContext(sandbox);
-    stub.install(sandbox);
+    // Keep the recorded prints reachable: the BUILD-line rules below assert on
+    // what the script actually printed, not on what the source looks like.
+    sandbox.__prints = stub.install(sandbox).prints;
     var threw = null;
     try {
       vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: rel });
@@ -694,6 +696,48 @@ section('15. Study scripts LOAD, not just parse');
 
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
+
+      // THE BUILD LINE. The Code Editor holds a COPY of this script, so every
+      // merged fix needs a hand re-paste, and nothing in the console used to
+      // say which version was in the tab. That cost a cycle: two exports failed
+      // the tile limit, the fix merged 27 minutes later, and the same two
+      // failures - same task IDs, same timestamps - then read as if the fix had
+      // not worked. The line must read from the LIVE config, never from a typed
+      // string, or it goes stale exactly like the TOOL_VERSION stamps this
+      // project got wrong three times.
+      var buildPrints = (sandbox.__prints || []).filter(function (p) {
+        return /^BUILD/.test(String(p));
+      });
+      ok(rel + ': a BUILD line prints which copy of the script is running',
+        buildPrints.length === 1, 'found ' + buildPrints.length);
+      ok(rel + ': the BUILD line reports the levers that have caused failures',
+        buildPrints.length === 1 &&
+        /param_set=\S+/.test(buildPrints[0]) &&
+        /tileScale=\d+/.test(buildPrints[0]) &&
+        /persistence=\w+/.test(buildPrints[0]) &&
+        /landDilate=\w+/.test(buildPrints[0]) &&
+        /radii_km=\S+/.test(buildPrints[0]),
+        buildPrints[0] || 'no BUILD line');
+      // Behavioural, not textual - and deliberately so. A hardcoded stamp is
+      // only a problem because it DRIFTS from the config it claims to describe,
+      // so the test compares what the line printed against the config parsed
+      // out of the source. They must agree. (Grepping the source for the
+      // interpolation cannot work here anyway: code10 has string bodies
+      // blanked, which is what the ES5 gate strips them for.)
+      function cfgVal(re) { return (src10.match(re) || [])[1]; }
+      var cfgTile = cfgVal(/^[ \t]*tileScale:\s*(\d+)/m);
+      var cfgSet = cfgVal(/^[ \t]*PARAM_SET_ID:\s*'([^']+)'/m);
+      var cfgPersist = cfgVal(/^[ \t]*PERSISTENCE_MODE:\s*'([^']+)'/m);
+      var cfgDilate = cfgVal(/^[ \t]*LAND_DILATE_METHOD:\s*'([^']+)'/m);
+      ok(rel + ': the BUILD line agrees with the config it claims to describe',
+        buildPrints.length === 1 && !!cfgTile &&
+        buildPrints[0].indexOf('tileScale=' + cfgTile) !== -1 &&
+        buildPrints[0].indexOf('param_set=' + cfgSet) !== -1 &&
+        buildPrints[0].indexOf('persistence=' + cfgPersist) !== -1 &&
+        buildPrints[0].indexOf('landDilate=' + cfgDilate) !== -1,
+        'config says tileScale=' + cfgTile + ' set=' + cfgSet + ' persistence=' +
+        cfgPersist + ' dilate=' + cfgDilate + '; line says: ' +
+        (buildPrints[0] || 'nothing'));
 
       // THE p002 EXPORT DIED ON A PER-TILE OUTPUT LIMIT, not on memory or time:
       // "Output of image computation is too large (1 bands for 18939904 pixels
