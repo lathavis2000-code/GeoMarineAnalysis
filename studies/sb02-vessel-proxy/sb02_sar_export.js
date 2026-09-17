@@ -196,6 +196,13 @@ var CONFIG = {
   // the p002 prototype, so deriving this from MAX_RADIUS_M would quietly test
   // the wrong thing whenever the radius list changes.
   CHECK3C_BOUNDS_RADIUS_M: 40000,
+  // Radii the probe SWEEPS, to pin the recorded query's bounds rather than
+  // infer it. The 40 km probe returned 523, not 278 - but it also showed the
+  // recorded DESCENDING 185 is exactly orbit 40 (92) + orbit 142 (93), and
+  // that orbit 62 runs 92 at the point and 184 at 40 km. 92 + 93 + 93 = 278
+  // with DESC 185 and ASC 93, matching all three recorded figures, so the
+  // recorded bounds sat BETWEEN the point and 40 km. This finds where.
+  CHECK3C_SWEEP_RADII_M: [2000, 5000, 10000, 20000, 30000, 40000],
   // CHECK 10 reduces at analysisScaleM (10 m). Over the full 40 km disc in
   // 'compute' mode that exceeded the Code Editor's memory limit on a live run.
   // The documented remedy is to shrink the REGION, never to coarsen the scale -
@@ -879,7 +886,15 @@ function buildDetectionImage(img, params) {
   }
 
   // valid-data mask of the scene, optionally eroded to kill GRD border noise
-  var validMask = img.select(pols[0]).mask().rename('b');
+  // THRESHOLD BEFORE ERODING, so this is a BYTE image rather than a float one.
+  // .mask() returns floats, focal_min keeps them floats, and every float band
+  // in this graph is a candidate for the 80 MiB per-tile output limit that has
+  // now failed three exports (see the LAND MASKING section for the one that
+  // was measured). Equivalent, not approximate: the original eroded the float
+  // mask and then relied on .and() treating non-zero as true, i.e. "no fully
+  // masked pixel in the neighbourhood". gt(0) then focal_min says the same
+  // thing, and says it in one byte instead of eight.
+  var validMask = img.select(pols[0]).mask().gt(0).rename('b');
   if (params.edgeErodeM > 0) {
     validMask = validMask.focal_min({
       radius: params.edgeErodeM, kernelType: 'circle', units: 'meters'
@@ -1585,6 +1600,31 @@ print('CHECK 3b - configured orbits with NO scenes in this window ' +
       .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
   }
   var km = CONFIG.CHECK3C_BOUNDS_RADIUS_M / 1000;
+
+  // THE SWEEP. Metadata filters only, so six radii cost what one costs.
+  // A count that equals EXPECTED_SCENES at some radius identifies the bounds
+  // the recorded figures were taken with, which is the one thing that would
+  // let EXPECTED_* be restated WITH its conditions instead of retired.
+  var sweep = ee.Dictionary({});
+  var j, rKm, probeJ;
+  for (j = 0; j < CONFIG.CHECK3C_SWEEP_RADII_M.length; j++) {
+    rKm = CONFIG.CHECK3C_SWEEP_RADII_M[j];
+    probeJ = ee.ImageCollection(CONFIG.S1_COLLECTION)
+      .filterBounds(SITE_POINT.buffer(rKm))
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.eq('instrumentMode', CONFIG.INSTRUMENT_MODE));
+    if (CONFIG.REQUIRE_DUAL_POL) {
+      probeJ = probeJ
+        .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+        .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
+    }
+    sweep = sweep.set((rKm / 1000) + 'km', probeJ.size());
+  }
+  print('CHECK 3c-sweep - scene count vs BOUNDS RADIUS. The recorded ' +
+        CONFIG.EXPECTED_SCENES + ' should appear at exactly one radius if the ' +
+        'figures came from a disc query; if no radius yields it, they did not:',
+        sweep);
+
   print('CHECK 3c - scene count under a ' + km + ' km BOUNDS filter instead of ' +
         'the hydrophone point (diagnostic only - FILTER_BOUNDS is unchanged and ' +
         'the export still uses "' + CONFIG.FILTER_BOUNDS + '"):', probe.size());

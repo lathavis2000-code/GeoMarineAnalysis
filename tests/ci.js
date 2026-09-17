@@ -779,6 +779,31 @@ section('15. Study scripts LOAD, not just parse');
         probeDecls > 0 && !probeOutside,
         'probe is referenced outside its IIFE');
 
+      // The sweep is what turns the recorded 278 from an inference into a
+      // measurement. It must probe MORE THAN ONE radius - a one-element sweep
+      // is the single probe again under a new name - and must stay inside the
+      // same IIFE as the rest of the diagnostic.
+      var sweepMatch = src10.match(/CHECK3C_SWEEP_RADII_M:\s*\[([^\]]*)\]/);
+      var sweepRadii = sweepMatch ? sweepMatch[1].split(',').filter(function (t) {
+        return t.trim().length > 0;
+      }) : [];
+      ok(rel + ': the bounds probe sweeps several radii, not one',
+        sweepRadii.length >= 3, 'sweep has ' + sweepRadii.length + ' radii');
+      ok(rel + ': the sweep brackets the point query and the 40 km probe',
+        sweepRadii.length >= 3 &&
+        Math.min.apply(null, sweepRadii.map(Number)) <= 5000 &&
+        Math.max.apply(null, sweepRadii.map(Number)) >= 40000,
+        'the recorded count sits between the point and 40 km, so the sweep ' +
+        'must span that range: ' + sweepRadii.join(','));
+
+      // The scene validity mask is a FLOAT image straight from .mask(), and
+      // every float band is a candidate for the 80 MiB per-tile limit that has
+      // failed three exports. gt(0) before focal_min is exactly equivalent and
+      // costs one byte per pixel instead of eight.
+      ok(rel + ': the scene valid-data mask is thresholded before eroding',
+        /select\(pols\[0\]\)\.mask\(\)\.gt\(0\)/.test(code10),
+        'mask().focal_min() keeps a float band where a byte would do');
+
       // And it must not quietly become the export's bounds filter.
       ok(rel + ': CHECK 3c does not change FILTER_BOUNDS',
         /FILTER_BOUNDS:\s*'point'/.test(src10),
