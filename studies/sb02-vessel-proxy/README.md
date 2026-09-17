@@ -41,6 +41,32 @@ Every row now carries `p_persistence_mode` and `p_persistence_threshold`, so a
 persistence-off table can never be mistaken for a persistence-on one. Before
 that, the two were distinguishable only by their numbers.
 
+## Read the BUILD line first, every time
+
+The Code Editor holds a **copy** of `sb02_sar_export.js`. Every fix merged here
+has to be re-pasted by hand, and nothing in the console used to say which
+version was in the tab. That cost a full cycle: two exports failed the 80 MiB
+tile limit, the fix raising `tileScale` to 16 merged **27 minutes later**, and
+the next look at the task list showed the same two failures — same task IDs,
+same timestamps — which read as if the fix had not worked. It had not been run.
+
+So the pre-flight now opens with a line like:
+
+```
+BUILD (read from live config - if this disagrees with the repo, re-paste the
+script): param_set=p002  radii_km=2/5/10  persistence=off  tileScale=16
+analysisScale=10m  landDilate=distance  medianBg=on
+```
+
+Every value is read from the live `CONFIG`/`PARAMS`, never typed into a string,
+so it cannot go stale the way a hand-maintained version stamp does — which this
+project got wrong three times (see the CHANGELOG). CI asserts the printed line
+**agrees with the config parsed from source**, which is the check that catches a
+stamp drifting from what it claims to describe.
+
+If a value disagrees with what you expect, the tab is out of date. Re-paste
+before reading anything below it.
+
 ## The p002 export failed a THIRD way, and it was mine
 
 Not memory, not a timeout — a per-tile output limit:

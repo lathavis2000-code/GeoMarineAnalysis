@@ -1479,6 +1479,33 @@ print('Window: ' + CONFIG.DATE_START + ' .. ' + CONFIG.DATE_END +
 print('Radii (m): ' + CONFIG.RADII_M.join(', ') +
       '   (largest = ' + MAX_RADIUS_M + ' m)');
 print('Parameter set: ' + CONFIG.PARAM_SET_ID);
+/* BUILD LINE - WHICH COPY OF THIS SCRIPT IS ACTUALLY RUNNING.
+ *
+ * The Code Editor holds a COPY. Every fix merged to the repository has to be
+ * re-pasted by hand, and until this line existed nothing in the console said
+ * which version was in the tab. That cost a full cycle: two exports failed on
+ * the 80 MiB tile limit, the fix raising tileScale to 16 was merged 27 minutes
+ * LATER, and the next look at the task list showed the same two failures - same
+ * task IDs, same timestamps - read as if the fix had not worked.
+ *
+ * Every value here is read from the live CONFIG/PARAMS rather than typed into a
+ * string, so it cannot go stale the way a hand-maintained version stamp does -
+ * which this project has done three times, see the CHANGELOG. If a number here
+ * disagrees with what you expect, the tab is out of date; re-paste before
+ * reading anything below it.
+ */
+print('BUILD (read from live config - if this disagrees with the repo, ' +
+      're-paste the script): param_set=' + CONFIG.PARAM_SET_ID +
+      '  radii_km=' + (function () {
+        var t = [], i;
+        for (i = 0; i < CONFIG.RADII_M.length; i++) { t.push(CONFIG.RADII_M[i] / 1000); }
+        return t.join('/');
+      })() +
+      '  persistence=' + CONFIG.PERSISTENCE_MODE +
+      '  tileScale=' + PARAMS.tileScale +
+      '  analysisScale=' + PARAMS.analysisScaleM + 'm' +
+      '  landDilate=' + CONFIG.LAND_DILATE_METHOD +
+      '  medianBg=' + (PARAMS.useMedianBackground ? 'on' : 'OFF'));
 
 /* THE EXPECTED COUNTS ARE PROVISIONAL. They came from an exploratory query
  * whose date window, bounds filter and polarisation filter were never written
