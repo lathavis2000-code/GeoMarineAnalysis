@@ -38,7 +38,14 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
 
 1. `python3 fetch_ships.py` — writes `sb02_ships.json` (~715 KB, gitignored)
 2. In GEE: read **CHECK 1–10** before exporting anything.
-   CHECK 1 must print **278**; CHECK 2 **93 ASC / 185 DESC**.
+   **The 278 / 93 ASC / 185 DESC figures are PROVISIONAL.** They came from an
+   exploratory query whose window and filters were never recorded beside
+   them, and a live run of the shipped configuration
+   (`2018-11-12 .. 2021-12-16`, end exclusive) returned **184 scenes across
+   2 relative orbits**. One is wrong and the file cannot say which. CHECK 1b
+   prints MATCH or MISMATCH; CHECK 3b names any configured orbit the window
+   does not contain. Settle the window you want, re-measure, and update
+   `EXPECTED_*` together with the query that produced it.
 3. **CHECK 10 is a decision point.** The persistence histogram must be
    *bimodal* for the 0.20 threshold to be defensible. See the warning below.
    It reduces at `analysisScaleM` (10 m), the scale the mask is actually
@@ -114,6 +121,26 @@ Both passed `node --check` and the ES5 gate. `tests/ci.js` section 15 now
 *executes* every script under `studies/` against the Earth Engine stub, which
 catches an undefined identifier and a use-before-assignment alike. Run
 `node tests/ci.js` before pasting this file into the Code Editor.
+
+## What a live run found (2026-09, config as shipped)
+
+| | |
+|---|---|
+| CHECK 1 | **184**, not the recorded 278. CHECK 5a = 5b, so nothing was lost to the dual-pol filter |
+| CHECK 3 | **2** of the 3 configured relative orbits present — one contributes zero scenes |
+| CHECK 10, orbit 142 | `Image.divide: ... Got 0 and 1` — the empty-orbit crash, now fixed |
+| CHECK 10, orbits 40 / 62 | `User memory limit exceeded` at 10 m over the 40 km disc |
+
+The empty-orbit crash was real: `ee.ImageCollection([]).sum()` has zero bands, so
+dividing it by the scene count threw, and the first empty orbit killed the whole
+diagnostic. An empty orbit now produces an all-zero mask — the correct reading of
+no evidence — and **CHECK 3b names it**, so a zero is never read as "nothing is
+persistent here" when it means "nothing was looked at".
+
+The memory limit is the cost the previous change warned about. `CHECK10_RADIUS_M`
+defaults to **10 km** so CHECK 10 fits; both labels print the radius used. Raise
+it once `PERSISTENCE_MODE` is `'asset'` and the detector is no longer re-evaluated
+per scene. **Shrink the region, never coarsen the scale.**
 
 ## Still open, deliberately
 
