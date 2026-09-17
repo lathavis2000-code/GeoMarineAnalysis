@@ -556,23 +556,49 @@ section('15. Study scripts LOAD, not just parse');
       var orbits = roMatch ? roMatch[1].split(',').map(function (t) {
         return t.trim();
       }).filter(function (t) { return t.length > 0; }) : [];
+      var modeMatch = src10.match(/PERSISTENCE_MODE:\s*'([a-z]+)'/);
+      var pMode = modeMatch ? modeMatch[1] : '';
       ok(rel + ': RELATIVE_ORBITS is readable from source', orbits.length > 0);
-      ok(rel + ': STAGE A exports one asset per CONFIGURED orbit',
-        assets.length === orbits.length,
-        'configured ' + orbits.length + ' (' + orbits.join(',') + '), exported ' +
-        assets.length);
-      ok(rel + ': every configured orbit has its own STAGE A asset',
-        orbits.every(function (o) {
-          return assets.some(function (e) {
-            return String(e.opts.assetId).indexOf('_' + o + '_') !== -1;
-          });
-        }),
-        assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
+      ok(rel + ': PERSISTENCE_MODE is readable from source',
+        pMode === 'off' || pMode === 'compute' || pMode === 'asset', pMode);
+
+      // The invariant is MODE-DEPENDENT, and saying so is the point. STAGE A
+      // only queues in 'compute' mode, so a fixed "3 assets" rule fails the
+      // moment the shipped config is 'off' or 'asset' - and it would fail for
+      // the right answer, which is the worst kind of test.
+      if (pMode === 'compute') {
+        // Written set == read set. The loader walks CONFIG.RELATIVE_ORBITS and
+        // builds ee.Image(prefix + orbit + '_' + id) for every entry; an orbit
+        // whose task was never queued throws "Image.load: asset not found" on
+        // evaluation, after the early CHECKs have printed clean.
+        ok(rel + ': STAGE A exports one asset per CONFIGURED orbit',
+          assets.length === orbits.length,
+          'configured ' + orbits.length + ' (' + orbits.join(',') + '), exported ' +
+          assets.length);
+        ok(rel + ': every configured orbit has its own STAGE A asset',
+          orbits.every(function (o) {
+            return assets.some(function (e) {
+              return String(e.opts.assetId).indexOf('_' + o + '_') !== -1;
+            });
+          }),
+          assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
+      } else {
+        // 'off' and 'asset' must queue NO asset writes. In 'off' there is no
+        // mask to write; in 'asset' the masks already exist and re-writing them
+        // mid-read is how you get an asset that disagrees with itself.
+        ok(rel + ': PERSISTENCE_MODE "' + pMode + '" queues no STAGE A writes',
+          assets.length === 0,
+          'got ' + assets.length + ': ' +
+          assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
+      }
 
       // PR #19: the write path appends _<PARAM_SET_ID> and the read path did
       // not, so asset mode asked for images STAGE A never wrote. Both build the
       // id from one expression now - assert the written id still carries it.
+      // Vacuously true with no assets, so it is stated as a conditional rather
+      // than left to look like coverage it is not.
       ok(rel + ': every persistence assetId carries the parameter set id',
+        assets.length === 0 ||
         assets.every(function (e) { return /_p\d+$/.test(String(e.opts.assetId)); }),
         assets.map(function (e) { return String(e.opts.assetId); }).join(' | '));
 
@@ -654,14 +680,33 @@ section('15. Study scripts LOAD, not just parse');
 
       // A boolean mask pyramided with the default MEAN policy stops being a
       // mask at every zoom above native scale.
-      var persistExport = assets.length ? assets[0].opts : {};
-      ok(rel + ': the persistence asset pins a pyramiding policy',
-        !!persistExport.pyramidingPolicy &&
-        persistExport.pyramidingPolicy.persist === 'mode',
-        JSON.stringify(persistExport.pyramidingPolicy || null));
+      ok(rel + ': STAGE A pins a pyramiding policy in source',
+        /pyramidingPolicy:\s*\{[^}]*persist:\s*'mode'/.test(src10),
+        'the persist band would pyramid with the default MEAN policy');
+      if (assets.length) {
+        var persistExport = assets[0].opts;
+        ok(rel + ': the queued persistence asset pins a pyramiding policy',
+          !!persistExport.pyramidingPolicy &&
+          persistExport.pyramidingPolicy.persist === 'mode',
+          JSON.stringify(persistExport.pyramidingPolicy || null));
+      }
 
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
+
+      // A persistence-off table and a persistence-on one differ in their
+      // NUMBERS and in nothing else a reader can see, so the mode has to ride
+      // in the row. Asserted on the exported selector list, not on the source,
+      // because a prop that never reaches SELECTORS never reaches the CSV.
+      var sceneTable = exps.filter(function (e) {
+        return e.dest === 'toDrive' && e.opts.selectors &&
+               e.opts.selectors.indexOf('vessels_2km') !== -1;
+      })[0];
+      ok(rel + ': a per-scene table export exists to check', !!sceneTable);
+      ok(rel + ': the per-scene CSV records the persistence mode it was built with',
+        !!sceneTable && sceneTable.opts.selectors.indexOf('p_persistence_mode') !== -1 &&
+        sceneTable.opts.selectors.indexOf('p_persistence_threshold') !== -1,
+        sceneTable ? sceneTable.opts.selectors.join(',') : 'no scene table');
 
       // CHECK 6 was print(..., s1Joined.size()) over an ee.Join.saveBest of
       // 184 scenes against ~27,000 hourly ERA5 images, and a live run returned
