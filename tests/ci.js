@@ -637,6 +637,84 @@ section('15. Study scripts LOAD, not just parse');
 
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
+
+      // CHECK 6 was print(..., s1Joined.size()) over an ee.Join.saveBest of
+      // 184 scenes against ~27,000 hourly ERA5 images, and a live run returned
+      // "User memory limit exceeded" on what is only a count. That collection
+      // also fed both exports and buildPersistence, so the cost was under
+      // everything, not just the print that exposed it. The nearest hour is
+      // now looked up per scene over a +/-tolerance window (~3 candidates).
+      // Scanned over the CODE, not the source: the fix's own comments name
+      // ee.Join.saveBest to explain what was removed and why, and a raw grep
+      // would fail on a file that is correct - the same trap tests/es5.js
+      // exists to avoid. stripCommentsAndStrings blanks comment and string
+      // bodies, so only a real call site can trip this.
+      var code10 = es5.stripCommentsAndStrings(src10).code;
+      ok(rel + ': the ERA5 wind is not a collection-wide saveBest join',
+        code10.indexOf('ee.Join.saveBest') === -1 &&
+        code10.indexOf('ee.Filter.maxDifference') === -1 &&
+        /function era5At\(/.test(code10),
+        'the saveBest join over the whole ERA5 collection is back');
+
+      // And the check that replaced it must ask something - re-counting the
+      // same collection under a new name would pass the rule above and test
+      // nothing.
+      var check6 = src10.slice(src10.indexOf("CHECK 6 - scenes"));
+      check6 = check6.slice(0, check6.indexOf('CHECK 7'));
+      ok(rel + ': CHECK 6 counts ERA5 matches, not the collection again',
+        check6.indexOf('era5At') !== -1 &&
+        check6.indexOf('aggregate_sum') !== -1,
+        'CHECK 6 no longer measures anything');
+
+      // WATER_MASK is read by the detector on every scene and by CHECK 7, 10
+      // and 10b. Growing its 1000 m buffer with focal_max means a radius-100 px
+      // circle (~31,400 weights per pixel) at the 10 m analysis scale - which
+      // is why CHECK 10 was expensive even for the EMPTY orbit 142, whose frac
+      // image is a constant. fastDistanceTransform selects the same set.
+      ok(rel + ': the land buffer is not grown with focal_max by default',
+        /fastDistanceTransform\(/.test(src10) &&
+        src10.indexOf("LAND_DILATE_METHOD: 'distance'") !== -1,
+        'the 1000 m land dilation is back on the focal_max path');
+
+      // The sampled spot check ALSO failed with "User memory limit exceeded",
+      // because sample() bounds the OUTPUT while the image is still evaluated
+      // across the whole region. Bounding the region is therefore not enough:
+      // the scene count has to be capped too, and the capped mask has to be
+      // what the check reduces - reading PERSIST_FRAC would drag the
+      // all-scenes graph back in and silently undo the cap.
+      ok(rel + ': the compute-mode spot check caps scenes as well as region',
+        src10.indexOf('CHECK10_MAX_SCENES') !== -1 &&
+        src10.indexOf('CHECK10_SPOT_RADIUS_M') !== -1 &&
+        /buildPersistence\(roD, PARAMS, CONFIG\.CHECK10_MAX_SCENES\)/.test(check10),
+        'the spot check is still unbounded in scenes');
+      // PERSIST_FRAC is the all-scenes graph. It belongs to the asset branch
+      // only; reaching for it in the compute branch would restore the cost the
+      // scene cap exists to remove, while leaving every grep above satisfied.
+      var elseAt = check10.indexOf('} else {');
+      var fracAt = check10.indexOf('PERSIST_FRAC[roD]');
+      ok(rel + ': the spot check does not reduce the all-scenes frac image',
+        elseAt !== -1 && fracAt !== -1 && fracAt < elseAt &&
+        check10.indexOf('PERSIST_FRAC[roD]', elseAt) === -1,
+        'PERSIST_FRAC is read from the compute-mode branch');
+
+      // The old text called the sampled path "~300x cheaper than the disc".
+      // Asserting that string's ABSENCE cannot work - the correction quotes it
+      // - so assert the correction instead. It is the claim that mattered: a
+      // reader who believes sampling bounds the input will shrink numPixels
+      // when this fails again, which does nothing.
+      ok(rel + ': the file states what sample() actually bounds',
+        src10.indexOf('bounds the OUTPUT') !== -1 &&
+        src10.indexOf('bounds how many pixels come BACK') !== -1,
+        'sample() bounds the output, not the input, and the file must say so');
+
+      // CHECK 10b over the full mask is the reduction that returned "Earth
+      // Engine memory capacity exceeded". There is no honest cheap form of it
+      // in compute mode - the capped subset is not the mask any export applies
+      // - so it is skipped and says so, as CHECK 8 already does.
+      ok(rel + ': CHECK 10b is skipped rather than approximated in compute mode',
+        check10.indexOf('CHECK 10b - SKIPPED') !== -1 &&
+        check10.indexOf('CHECK 10b - water area masked as persistent') !== -1,
+        'CHECK 10b must be skipped in compute mode and exhaustive in asset mode');
     }
   });
 })();
