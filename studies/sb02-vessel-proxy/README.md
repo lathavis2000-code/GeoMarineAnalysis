@@ -60,12 +60,30 @@ sound-level record. Exporting 44 months would pull scenes with no ground truth.
    check; if it is already clearly unimodal, stop and reconsider before
    spending a STAGE A run.
 4. Run STAGE A (persistence assets) with `PERSISTENCE_MODE: 'compute'`.
+   **Check the asset root first** — it is the one pre-flight check no CHECK in
+   the script can make. The export dialog validates the root only when you
+   press RUN, so a root that does not exist fails there and nowhere earlier
+   (`projects/ee-lathavis` was a guess and returned *Resource
+   projects/ee-lathavis could not be found*). The Code Editor's **Assets** tab
+   lists every root the account can write to.
+   **Run one orbit first and let it finish** before starting the next. Each is
+   ~50 M pixels × ~92 scenes × a 4,316-weight annulus median; batch tasks do
+   not share the interactive timeout but can still time out after hours, and
+   one orbit tells you whether the budget holds for half the cost of finding
+   out the hard way. Orbit 142 is empty, so its task writes an all-zero image —
+   cheap and harmless, since no scene carries that orbit.
+   Do **not** run the two table exports yet: in `'compute'` mode they
+   re-evaluate the detector over every scene of the orbit inside every scene's
+   own computation. They are step 5.
 5. Switch to `PERSISTENCE_MODE: 'asset'` and **read CHECK 10 again** — now
    exhaustive over the full 40 km disc, cheap because the detector is no longer
    being re-evaluated. **This is the histogram to base the threshold on.** Then
-   run the per-scene and detection exports. `PERSISTENCE_ASSET_PREFIX` already points at
-   `projects/ee-lathavis/assets/`; change it if you export elsewhere. Both
-   the write and the read path append `_<PARAM_SET_ID>`, so bumping
+   run the per-scene and detection exports. `PERSISTENCE_ASSET_PREFIX` points at
+   `projects/stem-marine-engine/assets/`; change it if you export elsewhere —
+   **in the config, never in the export dialog.** The dialog sets where that one
+   task writes, while the read path builds its id from the config string, so
+   fixing only the dialog leaves STAGE A writing where step 2 will not look.
+   Both the write and the read path append `_<PARAM_SET_ID>`, so bumping
    `PARAM_SET_ID` for a sweep requires re-running STAGE A for that set.
 6. Offline: join detections to acoustic labels, sweep radius, flag ambiguities.
 
