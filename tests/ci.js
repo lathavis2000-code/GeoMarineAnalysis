@@ -538,6 +538,7 @@ section('15. Study scripts LOAD, not just parse');
 
     if (threw === null && /sb02_sar_export/.test(rel)) {
       var src10 = fs.readFileSync(file, 'utf8');
+      var code10 = es5.stripCommentsAndStrings(src10).code;
       var exps = sandbox.Export.exports;
       var assets = exps.filter(function (e) { return e.dest === 'toAsset'; });
 
@@ -694,6 +695,32 @@ section('15. Study scripts LOAD, not just parse');
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
 
+      // CHECK 3c-3f probe a WIDER bounds filter to test where the recorded 278
+      // came from. The probe must stay diagnostic: if its collection ever
+      // reached the export, the CSV would carry a scene set that no CHECK
+      // reported, which is the failure the probe exists to avoid causing.
+      // It is scoped inside an IIFE, so this asserts the scoping rather than
+      // trusting it - `probe` must not be referenced anywhere outside.
+      var probeDecls = (code10.match(/\bprobe\b/g) || []).length;
+      var iifeStart = code10.indexOf('var probeBounds');
+      var iifeEnd = code10.indexOf('})();', iifeStart);
+      var probeOutside = iifeStart === -1 || iifeEnd === -1 ||
+        (code10.slice(0, iifeStart) + code10.slice(iifeEnd)).indexOf('probe') !== -1;
+      ok(rel + ': the CHECK 3c bounds probe is scoped out of the export path',
+        probeDecls > 0 && !probeOutside,
+        'probe is referenced outside its IIFE');
+
+      // And it must not quietly become the export's bounds filter.
+      ok(rel + ': CHECK 3c does not change FILTER_BOUNDS',
+        /FILTER_BOUNDS:\s*'point'/.test(src10),
+        'the shipped bounds filter is no longer the point query CHECK 1 reports');
+
+      // Its radius must be independent of RADII_M - the hypothesis is about a
+      // 40 km bounds filter, and RADII_M is 10 km under the p002 prototype.
+      ok(rel + ': the probe radius is not derived from RADII_M',
+        src10.indexOf('CHECK3C_BOUNDS_RADIUS_M') !== -1 &&
+        code10.indexOf('SITE_POINT.buffer(CONFIG.CHECK3C_BOUNDS_RADIUS_M)') !== -1);
+
       // A persistence-off table and a persistence-on one differ in their
       // NUMBERS and in nothing else a reader can see, so the mode has to ride
       // in the row. Asserted on the exported selector list, not on the source,
@@ -719,7 +746,6 @@ section('15. Study scripts LOAD, not just parse');
       // would fail on a file that is correct - the same trap tests/es5.js
       // exists to avoid. stripCommentsAndStrings blanks comment and string
       // bodies, so only a real call site can trip this.
-      var code10 = es5.stripCommentsAndStrings(src10).code;
       ok(rel + ': the ERA5 wind is not a collection-wide saveBest join',
         code10.indexOf('ee.Join.saveBest') === -1 &&
         code10.indexOf('ee.Filter.maxDifference') === -1 &&

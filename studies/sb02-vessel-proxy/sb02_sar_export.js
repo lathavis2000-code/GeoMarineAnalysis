@@ -191,6 +191,11 @@ var CONFIG = {
   EXPECTED_SCENES: 278,
   EXPECTED_ASC: 93,
   EXPECTED_DESC: 185,
+  // Radius of the bounds filter CHECK 3c probes with. NOT tied to RADII_M: the
+  // 278 hypothesis is about a 40 km bounds filter, and RADII_M is 10 km under
+  // the p002 prototype, so deriving this from MAX_RADIUS_M would quietly test
+  // the wrong thing whenever the radius list changes.
+  CHECK3C_BOUNDS_RADIUS_M: 40000,
   // CHECK 10 reduces at analysisScaleM (10 m). Over the full 40 km disc in
   // 'compute' mode that exceeded the Code Editor's memory limit on a live run.
   // The documented remedy is to shrink the REGION, never to coarsen the scale -
@@ -1483,6 +1488,70 @@ print('CHECK 3b - configured orbits with NO scenes in this window ' +
 // dictionary if that property is absent or named differently - a silent blank
 // rather than a caught error. Derived from the scene id prefix instead, which
 // is the same source both output tables use.
+/* CHECK 3c-3f - THE 278 HYPOTHESIS, TESTED RATHER THAN ARGUED.
+ *
+ * THE ARITHMETIC THAT MOTIVATES IT. A live run of the shipped configuration
+ * gives 184 scenes: 92 ASCENDING + 92 DESCENDING, orbits 40 and 62 at 92 each,
+ * and orbit 142 absent. The recorded expectation is 278 = 93 ASC + 185 DESC.
+ * A third, DESCENDING orbit of ~93 scenes closes both gaps at once:
+ *     DESC  92 + 93 = 185   ASC  92 + 1 = 93   total 278
+ * Orbit 142 is the obvious candidate - it can cover part of a 40 km disc around
+ * the site without covering the hydrophone itself, which is exactly the set a
+ * 'maxdisc' bounds filter takes in and a 'point' filter does not.
+ *
+ * WHY THIS IS A CHECK AND NOT AN INSTRUCTION TO FLIP FILTER_BOUNDS. Flipping
+ * it and flipping it back is a footgun: left flipped, the EXPORT silently
+ * carries a different scene set than the one CHECK 1 reported, and nothing
+ * downstream would say so. This probe builds its own collection, inside an
+ * IIFE so the identifier cannot be reached from the export path at all, and
+ * CONFIG.FILTER_BOUNDS is untouched. It costs nothing to leave on: metadata
+ * filters only, no pixels.
+ *
+ * READ 3f FIRST. If it says CONFIRMED, the recorded 278 was a maxdisc query and
+ * EXPECTED_* can finally be restated WITH its conditions. If NOT CONFIRMED, the
+ * hypothesis is dead and 278 came from somewhere else - a different window, a
+ * different site, or a different product - and it should be retired rather than
+ * carried around as an expectation nothing can reproduce.
+ */
+(function () {
+  var probeBounds = SITE_POINT.buffer(CONFIG.CHECK3C_BOUNDS_RADIUS_M);
+  var probe = ee.ImageCollection(CONFIG.S1_COLLECTION)
+    .filterBounds(probeBounds)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.eq('instrumentMode', CONFIG.INSTRUMENT_MODE));
+  if (CONFIG.REQUIRE_DUAL_POL) {
+    probe = probe
+      .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+      .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
+  }
+  var km = CONFIG.CHECK3C_BOUNDS_RADIUS_M / 1000;
+  print('CHECK 3c - scene count under a ' + km + ' km BOUNDS filter instead of ' +
+        'the hydrophone point (diagnostic only - FILTER_BOUNDS is unchanged and ' +
+        'the export still uses "' + CONFIG.FILTER_BOUNDS + '"):', probe.size());
+  print('CHECK 3d - that set by orbit pass (the hypothesis predicts ASCENDING ' +
+        CONFIG.EXPECTED_ASC + ', DESCENDING ' + CONFIG.EXPECTED_DESC + '):',
+        probe.aggregate_histogram('orbitProperties_pass'));
+  print('CHECK 3e - that set by relative orbit (the hypothesis predicts orbit ' +
+        '142 present, DESCENDING, with ~93 scenes):',
+        probe.aggregate_histogram('relativeOrbitNumber_start'));
+  print('CHECK 3f - VERDICT on the recorded ' + CONFIG.EXPECTED_SCENES + ':',
+    ee.Algorithms.If(probe.size().eq(CONFIG.EXPECTED_SCENES),
+      ee.String('CONFIRMED: a ').cat(ee.Number(km).format('%d'))
+        .cat(' km bounds filter reproduces the recorded ')
+        .cat(ee.Number(CONFIG.EXPECTED_SCENES).format('%d'))
+        .cat(' exactly. The recorded figures were a maxdisc query, not a point ')
+        .cat('query. Restate EXPECTED_* WITH that condition, or set ')
+        .cat('FILTER_BOUNDS to "maxdisc" if that wider set is the one you want ')
+        .cat('- they are different studies, not different spellings.'),
+      ee.String('NOT CONFIRMED: this bounds filter yields ')
+        .cat(probe.size().format('%d')).cat(', not ')
+        .cat(ee.Number(CONFIG.EXPECTED_SCENES).format('%d'))
+        .cat('. The orbit-142 hypothesis does not explain the recorded figures, ')
+        .cat('so they came from some other query - a different window, site or ')
+        .cat('product. Retire them rather than carry an expectation nothing ')
+        .cat('reproduces. Compare CHECK 3d and 3e to see how it differs.')));
+})();
+
 print('CHECK 4 - by platform, from the scene id prefix (S1A / S1B split):',
       s1.map(function (im) {
         return im.set('platform_id',
