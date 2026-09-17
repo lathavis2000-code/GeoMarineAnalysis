@@ -454,7 +454,17 @@ var PARAMS = {
   ambigMaxKm: 7.5,
   ambigParentDb: 15.0,
   analysisScaleM: 10,
-  tileScale: 4,
+  // RAISED 4 -> 16, the maximum, and it is the remedy Earth Engine's own error
+  // message names: "If this is a reduction, try specifying a larger 'tileScale'
+  // parameter." A larger tileScale means SMALLER tiles, so each tile's
+  // intermediate output is smaller. It is a pure compute-partitioning knob - it
+  // changes how the work is divided and never a number in the output - which is
+  // why it is the first thing to reach for, and the land-mask type fix in the
+  // LAND MASKING section is the second.
+  // Not free: more, smaller tiles means more per-tile overhead, so a job that
+  // already fits runs somewhat slower at 16 than at 4. That is the right trade
+  // when the alternative is a job that does not run at all.
+  tileScale: 16,
   maxPixels: 1e10,
   geomMaxErrorM: 10,
   fullCoverageMinFrac: 0.999
@@ -584,20 +594,43 @@ if (CONFIG.LAND_DILATE_METHOD === 'focal') {
   // the area of the pixel in the REQUEST projection, so its square root is the
   // pixel side in metres at whatever scale the consumer asked for, which is
   // the same projection the transform counted pixels in.
-  var landDistM = landBinary
+  // COMPARED IN SQUARED UNITS, AND IN float32. Both changes are about the
+  // BYTES of the intermediate tile, not about the answer.
+  //
+  // The first version was .sqrt().multiply(pixelArea().sqrt()).lte(B) and it
+  // failed the p002 export with "Output of image computation is too large
+  // (1 bands for 18939904 pixels = 144.5 MiB > 80.0 MiB)". That is 8.0
+  // bytes/px EXACTLY - a float64 tile - over 4352 x 4352, which is a 4096 px
+  // tile plus a 128 px halo. sqrt() and pixelArea() are both doubles, so the
+  // node was a double too.
+  //
+  // Squaring the comparison instead is EXACTLY equivalent, not an
+  // approximation: fastDistanceTransform returns d_px^2, pixelArea is the
+  // pixel's area (side^2) in the request projection, so
+  //     d_px^2 * side^2 = d_m^2
+  // and for non-negative quantities, d_m <= B says the same thing as
+  // d_m^2 <= B^2. It drops two sqrt nodes as well.
+  //
+  // float32 then halves the tile: 4352^2 x 4 = 72.2 MiB, inside the 80 MiB
+  // limit. Precision is nowhere near being the constraint - the product tops
+  // out around 6.5e6 against a 1e6 threshold and float32 carries ~7 digits.
+  // Cast BEFORE the multiply, not after: casting after still builds the
+  // double-typed product first, and that is the node that blew the limit.
+  var bufSqM2 = CONFIG.LAND_BUFFER_M * CONFIG.LAND_BUFFER_M;
+  var landDistSqM2 = landBinary
     .fastDistanceTransform({
       neighborhood: CONFIG.LAND_DILATE_NEIGHBOURHOOD_PX,
       units: 'pixels',
       metric: 'squared_euclidean'
     })
-    .sqrt()
-    .multiply(ee.Image.pixelArea().sqrt());
+    .toFloat()
+    .multiply(ee.Image.pixelArea().toFloat());
   // Beyond the search radius the transform returns a CLAMPED distance. That is
   // safe here only because the clamp (2560 m at 10 m, 7680 m at MASK_SCALE_M)
   // is larger than LAND_BUFFER_M - see LAND_DILATE_NEIGHBOURHOOD_PX. If either
   // the buffer grows or the neighbourhood shrinks, open ocean starts reporting
   // a distance below the buffer and the mask eats the search area.
-  landDilated = landDistM.lte(CONFIG.LAND_BUFFER_M);
+  landDilated = landDistSqM2.lte(bufSqM2);
 }
 var WATER_MASK = landDilated.not().rename('water');   // 1 = searchable water
 
