@@ -41,6 +41,39 @@ Every row now carries `p_persistence_mode` and `p_persistence_threshold`, so a
 persistence-off table can never be mistaken for a persistence-on one. Before
 that, the two were distinguishable only by their numbers.
 
+## The p002 export failed a THIRD way, and it was mine
+
+Not memory, not a timeout — a per-tile output limit:
+
+> Output of image computation is too large (1 bands for 18939904 pixels =
+> 144.5 MiB > 80.0 MiB). If this is a reduction, try specifying a larger
+> `tileScale` parameter.
+
+The arithmetic names the culprit. 144.5 MiB / 18,939,904 px is **8.0 bytes per
+pixel exactly** — a float64 tile — and 18,939,904 is 4352², which is a 4096 px
+tile plus a 128 px halo. The distance-transform land mask built that double: it
+did `.sqrt().multiply(pixelArea().sqrt())`, and both are doubles.
+
+Two fixes, in the order they should be reached for:
+
+1. **`tileScale` 4 → 16** (the maximum), which is the remedy the error message
+   itself names. Larger tileScale means *smaller* tiles. It is a pure
+   compute-partitioning knob — it changes how the work is divided and never a
+   number in the output. Not free: more, smaller tiles means more per-tile
+   overhead, so a job that already fits runs somewhat slower.
+2. **The land buffer is compared in squared units, in float32.** This is
+   *exactly* equivalent, not an approximation: `fastDistanceTransform` returns
+   d_px², `pixelArea` is side², so d_px²·side² = d_m², and for non-negative
+   quantities `d_m <= B` says the same thing as `d_m² <= B²`. It drops two sqrt
+   nodes, and float32 halves the tile to 72.2 MiB. The cast must come *before*
+   the multiply — casting after still builds the double-typed product first.
+
+**If it fails this way again**, `LAND_DILATE_METHOD: 'focal'` reverts to the
+byte-typed `focal_max` path in one line. It is the slower mask, but it cannot
+produce a wide-typed tile. The next lever after that is the detector's own
+`work` image, which is also a double — casting it changes the numbers in their
+last bits, so it is a change to make deliberately and report, not quietly.
+
 ## The two ways this prototype could produce a confident wrong answer
 
 **Wind confounds both sides.** Higher wind means more sea clutter (fewer or

@@ -695,6 +695,31 @@ section('15. Study scripts LOAD, not just parse');
       ok(rel + ': the placeholder asset root is gone',
         !assets.some(function (e) { return /CHANGE_ME/.test(String(e.opts.assetId)); }));
 
+      // THE p002 EXPORT DIED ON A PER-TILE OUTPUT LIMIT, not on memory or time:
+      // "Output of image computation is too large (1 bands for 18939904 pixels
+      // = 144.5 MiB > 80.0 MiB)". 144.5 MiB / 18939904 px is 8.0 bytes/px
+      // exactly - a float64 tile - and the distance-transform land mask built
+      // one, via .sqrt() and pixelArea(), both doubles.
+      // The comparison is now made in SQUARED units (exactly equivalent for
+      // non-negative quantities, and two fewer sqrt nodes) in float32, which
+      // halves the tile to 72.2 MiB. The cast must come BEFORE the multiply:
+      // casting after still builds the double-typed product node first.
+      ok(rel + ': the land distance path does not build a float64 tile',
+        /fastDistanceTransform\([\s\S]{0,240}?\.toFloat\(\)\s*\n\s*\.multiply/.test(code10),
+        'toFloat() must sit between fastDistanceTransform and multiply');
+      ok(rel + ': the land buffer is compared in squared units',
+        code10.indexOf('bufSqM2') !== -1 &&
+        !/fastDistanceTransform\([\s\S]{0,240}?\.sqrt\(\)/.test(code10),
+        'a sqrt on the distance transform reintroduces the double node');
+
+      // tileScale is the remedy the error message itself names, and 16 is the
+      // maximum. It partitions the work differently and changes no output
+      // number, so there is no reason to sit below the maximum on a job that
+      // has already failed this way once.
+      ok(rel + ': tileScale is at the maximum',
+        /tileScale:\s*16\b/.test(src10),
+        'tileScale is below 16 on an export that failed the 80 MiB tile limit');
+
       // CHECK 3c-3f probe a WIDER bounds filter to test where the recorded 278
       // came from. The probe must stay diagnostic: if its collection ever
       // reached the export, the CSV would carry a scene set that no CHECK
